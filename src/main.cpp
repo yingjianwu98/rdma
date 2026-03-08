@@ -31,7 +31,7 @@ int main() {
                 node.start(RDMA_PORT);
             } else {
                 MuFollower node(node_id);
-                node.start(RDMA_PORT);
+                node.connect_to_leader(CLUSTER_NODES[0], RDMA_PORT);
             }
         }
     } catch (const std::exception& e) {
