@@ -131,18 +131,17 @@ void Server::start(uint16_t port) {
             accept_params.initiator_depth     = 1;
             accept_params.private_data        = &server_creds_;
             accept_params.private_data_len    = sizeof(server_creds_);
-        } else {
-            accept_params.responder_resources = 1;
-            accept_params.initiator_depth     = 1;
         }
 
         if (rdma_accept(new_id, &accept_params)) {
             int err = errno;
             std::cerr << "[Server " << node_id_ << "] rdma_accept failed: "
-                      << strerror(err) << " (errno " << err << ")\n";
+                      << strerror(err) << " (errno " << err << ")"
+                      << " type=" << static_cast<int>(incoming->type)
+                      << " node=" << incoming->node_id << "\n";
             rdma_destroy_qp(new_id);
             rdma_ack_cm_event(event);
-            throw std::runtime_error("rdma_accept failed");
+            continue;  // don't throw — skip this one and keep going
         }
         if (incoming->type == ConnType::FOLLOWER) {
             uint32_t nid = incoming->node_id;
