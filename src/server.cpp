@@ -126,11 +126,12 @@ void Server::start(uint16_t port) {
 
         // Everyone gets the same credentials — same buffer, same rkey
         rdma_conn_param accept_params{};
+        accept_params.responder_resources = 1;
+        accept_params.initiator_depth     = 1;
+
         if (incoming->type == ConnType::CLIENT) {
-            accept_params.responder_resources = 1;
-            accept_params.initiator_depth     = 1;
-            accept_params.private_data        = &server_creds_;
-            accept_params.private_data_len    = sizeof(server_creds_);
+            accept_params.private_data     = &server_creds_;
+            accept_params.private_data_len = sizeof(server_creds_);
         }
 
         if (rdma_accept(new_id, &accept_params)) {
