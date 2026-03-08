@@ -29,6 +29,7 @@ int main() {
             // SynraNode node(node_id);
             // node.start(RDMA_PORT);
             if (node_id == 0) {
+                std::cout << "Starting mu leader" << std::endl;
                 MuLeader node(node_id);
                 node.start(RDMA_PORT);
             } else {
