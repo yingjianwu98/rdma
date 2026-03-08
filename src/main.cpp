@@ -15,7 +15,7 @@ int main() {
             for (uint32_t i = 0; i < NUM_CLIENTS; ++i) {
                 workers.emplace_back([i]() {
                     Client client(i);
-                    client.connect(CLUSTER_NODES, RDMA_PORT);
+                    client.connect({CLUSTER_NODES[0]}, RDMA_PORT);
                     std::cout << "[Client " << i << "] Connected. Ready.\n";
                     while (true) {
                         std::this_thread::sleep_for(std::chrono::seconds(60));
