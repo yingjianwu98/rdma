@@ -1,0 +1,127 @@
+#pragma once
+
+#include <array>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <iostream>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+#include <pthread.h>
+#include <sys/mman.h>
+#include <rdma/rdma_cma.h>
+#include <infiniband/verbs.h>
+
+// ─── Cluster config ───
+
+inline const std::vector<std::string> CLUSTER_NODES = {
+    "192.168.1.1",
+    "192.168.1.2",
+    "192.168.1.3",
+};
+
+inline const size_t QUORUM = (CLUSTER_NODES.size() / 2) + 1;
+
+// ─── RDMA constants ───
+
+constexpr uint16_t RDMA_PORT        = 6969;
+constexpr size_t MAX_LOG_ENTRIES     = 10000000;
+constexpr size_t ENTRY_SIZE          = 8;
+constexpr size_t TOTAL_POOL_SIZE     = MAX_LOG_ENTRIES * ENTRY_SIZE;
+constexpr size_t METADATA_SIZE       = 4096;
+constexpr size_t FINAL_POOL_SIZE     = TOTAL_POOL_SIZE + METADATA_SIZE;
+constexpr size_t HUGE_PAGE_SIZE      = 2 * 1024 * 1024;
+constexpr size_t ALIGNED_SIZE        = ((FINAL_POOL_SIZE + HUGE_PAGE_SIZE - 1) / HUGE_PAGE_SIZE) * HUGE_PAGE_SIZE;
+constexpr size_t QP_DEPTH            = 2048;
+constexpr size_t MAX_INLINE_DEPTH    = 64;
+constexpr size_t CLIENT_SLOT_SIZE    = 1024;
+constexpr size_t MAX_REPLICAS        = 10;
+
+// ─── Benchmark constants ───
+
+constexpr size_t NUM_OPS             = 2000000;
+constexpr size_t NUM_CLIENTS         = 8;
+constexpr size_t NUM_OPS_PER_CLIENT  = NUM_OPS / NUM_CLIENTS;
+constexpr size_t NUM_TOTAL_OPS       = NUM_OPS_PER_CLIENT * NUM_CLIENTS;
+
+// ─── Sentinel values ───
+
+constexpr uint64_t EMPTY_SLOT        = 0xFFFFFFFFFFFFFFFF;
+constexpr auto     FRONTIER_OFFSET   = ALIGNED_SIZE - 8;
+
+// ─── Connection types ───
+
+enum class ConnType : uint8_t { FOLLOWER, CLIENT, LEADER };
+
+struct ConnPrivateData {
+    uintptr_t addr;
+    uint32_t  rkey;
+    uint32_t  node_id;
+    ConnType  type;
+} __attribute__((packed));
+
+struct RemoteNode {
+    rdma_cm_id* id;
+    uintptr_t   addr;
+    uint32_t    rkey;
+};
+
+struct RemoteConnection {
+    uint32_t    id;
+    rdma_cm_id* cm_id;
+    uintptr_t   remote_addr;
+    uint32_t    rkey;
+    ConnType    type;
+};
+
+struct alignas(64) LocalState {
+    uint64_t frontier_values[MAX_REPLICAS];
+    uint64_t cas_results[MAX_REPLICAS];
+    uint64_t learn_results[MAX_REPLICAS];
+    uint64_t next_frontier;
+    uint64_t metadata;
+};
+
+// ─── Helpers ───
+
+inline unsigned int get_uint_env(const std::string& name) {
+    const char* val = std::getenv(name.c_str());
+    if (!val || std::string(val).empty()) {
+        throw std::runtime_error("Environment variable '" + name + "' is not set or empty");
+    }
+    return static_cast<unsigned int>(std::stoul(val));
+}
+
+inline void* allocate_rdma_buffer() {
+    void* ptr = mmap(nullptr, ALIGNED_SIZE,
+                     PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB,
+                     -1, 0);
+    if (ptr == MAP_FAILED) {
+        std::cerr << "[memory] HugePage alloc failed, falling back to aligned_alloc\n";
+        ptr = aligned_alloc(4096, ALIGNED_SIZE);
+        if (!ptr) throw std::runtime_error("Could not allocate RDMA buffer");
+    }
+    std::fill_n(static_cast<uint64_t*>(ptr), ALIGNED_SIZE / sizeof(uint64_t),
+                0xFFFFFFFFFFFFFFFF);
+    return ptr;
+}
+
+inline void pin_thread_to_cpu(int cpu) {
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(cpu, &cpuset);
+    if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset) != 0) {
+        throw std::runtime_error("pthread_setaffinity_np failed");
+    }
+}
+
+inline int pick_cpu_for_client(int client_id) {
+    static const int CPU_ORDER[16] = {
+        0,2,4,6,8,10,12,14,
+        1,3,5,7,9,11,13,15
+    };
+    return CPU_ORDER[client_id % 16];
+}
