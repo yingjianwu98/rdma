@@ -135,7 +135,7 @@ inline void* allocate_rdma_buffer() {
     return ptr;
 }
 
-inline void pin_thread_to_cpu(int cpu) {
+inline void pin_thread_to_cpu(const int cpu) {
     cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
     CPU_SET(cpu, &cpuset);
@@ -144,7 +144,7 @@ inline void pin_thread_to_cpu(int cpu) {
     }
 }
 
-inline int pick_cpu_for_client(int client_id) {
+inline int pick_cpu_for_client(const int client_id) {
     static const int CPU_ORDER[16] = {
         0, 2, 4, 6, 8, 10, 12, 14,
         1, 3, 5, 7, 9, 11, 13, 15
