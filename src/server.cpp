@@ -93,8 +93,7 @@ void Server::start(uint16_t port) {
             pd_ = ibv_alloc_pd(new_id->verbs);
             if (!pd_) throw std::runtime_error("ibv_alloc_pd failed");
 
-            cq_ = ibv_create_cq(new_id->verbs, QP_DEPTH * 2,
-                                nullptr, nullptr, 0);
+            cq_ = ibv_create_cq(new_id->verbs, QP_DEPTH * (NUM_CLIENTS + CLUSTER_NODES.size()), nullptr, nullptr, 0);
             if (!cq_) throw std::runtime_error("ibv_create_cq failed");
 
             mr_ = ibv_reg_mr(pd_, buf_, ALIGNED_SIZE,
@@ -127,17 +126,24 @@ void Server::start(uint16_t port) {
 
         // Everyone gets the same credentials — same buffer, same rkey
         rdma_conn_param accept_params{};
-        accept_params.responder_resources = 1;
-        accept_params.initiator_depth     = 1;
-        accept_params.private_data        = &server_creds_;
-        accept_params.private_data_len    = sizeof(server_creds_);
+        if (incoming->type == ConnType::CLIENT) {
+            accept_params.responder_resources = 1;
+            accept_params.initiator_depth     = 1;
+            accept_params.private_data        = &server_creds_;
+            accept_params.private_data_len    = sizeof(server_creds_);
+        } else {
+            accept_params.responder_resources = 1;
+            accept_params.initiator_depth     = 1;
+        }
 
         if (rdma_accept(new_id, &accept_params)) {
+            int err = errno;
+            std::cerr << "[Server " << node_id_ << "] rdma_accept failed: "
+                      << strerror(err) << " (errno " << err << ")\n";
             rdma_destroy_qp(new_id);
             rdma_ack_cm_event(event);
             throw std::runtime_error("rdma_accept failed");
         }
-
         if (incoming->type == ConnType::FOLLOWER) {
             uint32_t nid = incoming->node_id;
             peers_[nid] = {nid, new_id, incoming->addr, incoming->rkey, incoming->type};
