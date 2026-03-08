@@ -4,10 +4,11 @@
 
 class SynraNode final : public Server {
 public:
-    explicit SynraNode(const uint32_t node_id) : Server(node_id) {}
+    explicit SynraNode(const uint32_t node_id) : Server(node_id) {
+    }
 
 protected:
     [[nodiscard]] uint32_t expected_followers() const override { return 0; }
-    [[nodiscard]] uint32_t expected_clients()   const override { return NUM_CLIENTS; }
+    [[nodiscard]] uint32_t expected_clients() const override { return NUM_CLIENTS; }
     void run() override;
 };

@@ -26,16 +26,15 @@ int main() {
         } else {
             pin_thread_to_cpu(1);
             const uint32_t node_id = get_uint_env("NODE_ID");
-            // SynraNode node(node_id);
-            // node.start(RDMA_PORT);
             if (node_id == 0) {
-                std::cout << "Starting mu leader" << std::endl;
-                MuLeader node(node_id);
-                node.start(RDMA_PORT);
+                MuLeader leader(node_id);
+                leader.start(RDMA_PORT);
             } else {
-                MuFollower node(node_id);
-                node.connect_to_leader(CLUSTER_NODES[0], RDMA_PORT);
+                MuFollower follower(node_id);
+                follower.connect_to_leader(CLUSTER_NODES[0], node_id);
             }
+            SynraNode node(node_id);
+            node.start(RDMA_PORT);
         }
     } catch (const std::exception& e) {
         std::cerr << "[error] " << e.what() << "\n";

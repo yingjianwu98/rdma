@@ -18,13 +18,13 @@ public:
     void unlock();
     void cleanup() const;
 
-    [[nodiscard]] bool     is_locked() const { return locked_; }
-    [[nodiscard]] uint32_t lock_id()   const { return lock_id_; }
+    [[nodiscard]] bool is_locked() const { return locked_; }
+    [[nodiscard]] uint32_t lock_id() const { return lock_id_; }
 
 private:
-    Client*       client_;
+    Client* client_;
     LockStrategy* strategy_;
-    uint32_t      lock_id_;
-    int           op_id_;
-    bool          locked_   = false;
+    uint32_t lock_id_;
+    int op_id_;
+    bool locked_ = false;
 };

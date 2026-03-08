@@ -37,7 +37,7 @@ public:
     [[nodiscard]] Selection random(Client& client) {
         thread_local std::mt19937 rng(std::random_device{}());
         std::uniform_int_distribution<uint32_t> dist(0, entries_.size() - 1);
-        uint32_t id = dist(rng);
+        const uint32_t id = dist(rng);
         return { id, Lock(client, *entries_[id].strategy, id) };
     }
 

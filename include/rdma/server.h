@@ -21,17 +21,17 @@ public:
 
 protected:
     [[nodiscard]] virtual uint32_t expected_followers() const = 0;
-    [[nodiscard]] virtual uint32_t expected_clients()   const = 0;
+    [[nodiscard]] virtual uint32_t expected_clients() const = 0;
     virtual void run() = 0;
 
     uint32_t node_id_;
 
-    rdma_event_channel* ec_       = nullptr;
-    rdma_cm_id*         listener_ = nullptr;
-    ibv_pd*             pd_       = nullptr;
-    ibv_cq*             cq_       = nullptr;
-    void*               buf_      = nullptr;
-    ibv_mr*             mr_       = nullptr;
+    rdma_event_channel* ec_ = nullptr;
+    rdma_cm_id* listener_ = nullptr;
+    ibv_pd* pd_ = nullptr;
+    ibv_cq* cq_ = nullptr;
+    void* buf_ = nullptr;
+    ibv_mr* mr_ = nullptr;
 
     std::vector<RemoteConnection> peers_;
     std::vector<RemoteConnection> clients_;
