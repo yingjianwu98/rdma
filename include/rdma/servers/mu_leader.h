@@ -14,12 +14,6 @@ protected:
         return NUM_CLIENTS;
     }
 
-    void on_accept(
-        rdma_cm_id* new_id,
-        const ConnPrivateData& incoming,
-        rdma_conn_param& accept_params
-    ) override;
-
     void run() override;
 
 private:

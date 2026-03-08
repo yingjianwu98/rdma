@@ -1,44 +1,16 @@
 #include "rdma/servers/mu_leader.h"
+#include "rdma/common.h"
 
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
-#include <sys/mman.h>
-
-void MuLeader::on_accept(
-    rdma_cm_id* /*new_id*/,
-    const ConnPrivateData& incoming,
-    rdma_conn_param& accept_params
-) {
-    // Mu leader gives clients a separate client_pool buffer
-    // (not the log buffer that followers replicate to)
-    if (incoming.type == ConnType::CLIENT) {
-        if (!client_pool_) {
-            client_pool_ = allocate_rdma_buffer();
-            client_mr_ = ibv_reg_mr(pd_, client_pool_, ALIGNED_SIZE,
-                                    IBV_ACCESS_LOCAL_WRITE |
-                                    IBV_ACCESS_REMOTE_WRITE |
-                                    IBV_ACCESS_REMOTE_READ);
-            if (!client_mr_) throw std::runtime_error("client_mr reg failed");
-
-            // Override server_creds to point to client_pool
-            server_creds_.addr = reinterpret_cast<uintptr_t>(client_pool_);
-            server_creds_.rkey = client_mr_->rkey;
-        }
-
-        accept_params.responder_resources = 1;
-        accept_params.initiator_depth     = 1;
-        accept_params.private_data        = &server_creds_;
-        accept_params.private_data_len    = sizeof(server_creds_);
-    }
-}
 
 void MuLeader::run() {
     std::cout << "[MuLeader " << node_id_ << "] Starting sequential replication loop\n";
 
     const uint32_t majority = CLUSTER_NODES.size() - 1;
     uint32_t current_index = 0;
-    auto* local_log = static_cast<char*>(log_pool_);
+    auto* local_log = static_cast<char*>(buf_);
 
     // Pre-post receives for all clients
     for (size_t i = 0; i < NUM_CLIENTS; ++i) {
@@ -70,7 +42,6 @@ void MuLeader::run() {
             }
 
             if (wc[i].opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
-                // Client request arrived
                 uint32_t client_id = wc[i].imm_data;
                 pending.push(client_id);
 
@@ -82,7 +53,6 @@ void MuLeader::run() {
             } else if (wc[i].opcode == IBV_WC_RDMA_WRITE) {
                 if (wc[i].wr_id == current_index) {
                     if (++acks >= static_cast<int>(majority)) {
-                        // Got quorum — ack back to client
                         ibv_send_wr swr{};
                         swr.wr_id      = current_index;
                         swr.opcode     = IBV_WR_RDMA_WRITE_WITH_IMM;
@@ -105,7 +75,6 @@ void MuLeader::run() {
             }
         }
 
-        // Replicate next request
         if (should_write) {
             uint32_t client_id;
             if (!pending.pop(client_id)) continue;
@@ -121,7 +90,7 @@ void MuLeader::run() {
                 ibv_sge sge{};
                 sge.addr   = reinterpret_cast<uintptr_t>(local_log + (slot * ENTRY_SIZE));
                 sge.length = ENTRY_SIZE;
-                sge.lkey   = log_mr_->lkey;
+                sge.lkey   = mr_->lkey;
 
                 ibv_send_wr swr{}, *bad = nullptr;
                 swr.wr_id      = current_index;
