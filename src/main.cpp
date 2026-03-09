@@ -19,18 +19,19 @@
 int main() {
     try {
         if (get_uint_env("IS_CLIENT") != 0) {
-            CasStrategy strategy;
-            LockTable table;
-            table.add(strategy);
 
             auto all_latencies = std::make_unique<std::array<uint64_t, NUM_TOTAL_OPS>>();
             std::latch start_latch(NUM_CLIENTS + 1);
             std::vector<std::thread> workers;
 
             for (uint32_t i = 0; i < NUM_CLIENTS; ++i) {
-                workers.emplace_back([i, &start_latch, &table, &all_latencies]() {
+                workers.emplace_back([i, &start_latch, &all_latencies]() {
                     try {
                         pin_thread_to_cpu(pick_cpu_for_client(i));
+
+                        CasStrategy strategy;
+                        LockTable table;
+                        table.add(strategy);
 
                         Client client(i);
                         client.connect(CLUSTER_NODES, RDMA_PORT);
@@ -45,9 +46,9 @@ int main() {
 
                             auto lock = table.get(0, client);
                             lock.lock();
-                            std::cout << "Client - " << client.id() << " Acquired lock for op: " << op << "\n";
+                            // std::cout << "Client - " << client.id() << " Acquired lock for op: " << op << "\n";
                             lock.unlock();
-                            std::cout << "Client - " << client.id() << " Unlocked lock for op: " << op << "\n";
+                            // std::cout << "Client - " << client.id() << " Unlocked lock for op: " << op << "\n";
 
                             auto t1 = std::chrono::steady_clock::now();
                             latencies[op] = std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
