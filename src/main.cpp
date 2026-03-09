@@ -5,7 +5,7 @@
 #include "rdma/servers/mu_follower.h"
 #include "rdma/client.h"
 #include "rdma/lock_table.h"
-#include "rdma/strategies/synra_cas.h"
+#include "rdma/strategies/cas_strategy.h"
 
 #include <chrono>
 #include <cmath>
