@@ -18,7 +18,7 @@ sudo bash -c "$(wget -O - https://apt.llvm.org/llvm.sh)"
 # 3. Load Kernel Modules
 sudo modprobe ib_uverbs ib_ipoib rdma_ucm
 sudo modprobe -r ib_ipoib && sudo modprobe ib_ipoib
-sudo sysctl -w vm.nr_hugepages=512
+sudo sysctl -w vm.nr_hugepages=2048
 
 # 4. Extract the last digit of the IP from enp8s0d1
 NODE_ID=$(ifconfig enp8s0d1 | grep 'inet ' | awk '{print $2}' | cut -d'.' -f4)
