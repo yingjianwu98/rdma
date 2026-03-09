@@ -35,10 +35,10 @@ int main() {
                     try {
                         pin_thread_to_cpu(pick_cpu_for_client(i));
 
-                        std::vector<std::unique_ptr<TasStrategy>> strategies;
+                        std::vector<std::unique_ptr<CasStrategy>> strategies;
                         LockTable table;
                         for (size_t l = 0; l < NUM_LOCKS; ++l) {
-                            strategies.push_back(std::make_unique<TasStrategy>());
+                            strategies.push_back(std::make_unique<CasStrategy>());
                             table.add(*strategies.back());
                         }
 
