@@ -6,16 +6,17 @@
 #include "rdma/client.h"
 #include "rdma/lock_table.h"
 #include "rdma/strategies/cas_strategy.h"
+#include "rdma/strategies/tas_strategy.h"
 
 #include <chrono>
 #include <cmath>
 #include <iomanip>
 #include <iostream>
 #include <latch>
+#include <memory>
 #include <thread>
 
-#include "rdma/strategies/cas_strategy.h"
-#include "rdma/strategies/tas_strategy.h"
+constexpr size_t NUM_LOCKS = 4;
 
 int main() {
     try {
@@ -25,14 +26,21 @@ int main() {
             std::latch start_latch(NUM_CLIENTS + 1);
             std::vector<std::thread> workers;
 
+            // Track per-client, per-lock commit counts for verification
+            auto lock_counts = std::make_unique<std::array<std::array<uint64_t, NUM_LOCKS>, NUM_CLIENTS>>();
+            for (auto& client_counts : *lock_counts) client_counts.fill(0);
+
             for (uint32_t i = 0; i < NUM_CLIENTS; ++i) {
-                workers.emplace_back([i, &start_latch, &all_latencies]() {
+                workers.emplace_back([i, &start_latch, &all_latencies, &lock_counts]() {
                     try {
                         pin_thread_to_cpu(pick_cpu_for_client(i));
 
-                        TasStrategy strategy;
+                        std::vector<std::unique_ptr<CasStrategy>> strategies;
                         LockTable table;
-                        table.add(strategy);
+                        for (size_t l = 0; l < NUM_LOCKS; ++l) {
+                            strategies.push_back(std::make_unique<CasStrategy>());
+                            table.add(*strategies.back());
+                        }
 
                         Client client(i);
                         client.connect(CLUSTER_NODES, RDMA_PORT);
@@ -45,15 +53,13 @@ int main() {
                         for (size_t op = 0; op < NUM_OPS_PER_CLIENT; ++op) {
                             auto t0 = std::chrono::steady_clock::now();
 
-                            auto lock = table.get(0, client);
+                            auto [lock_id, lock] = table.random(client);
                             lock.lock();
-                            // std::cout << "Client - " << client.id() << " Acquired lock for op: " << op << "\n";
                             lock.unlock();
-                            // std::cout << "Client - " << client.id() << " Unlocked lock for op: " << op << "\n";
 
                             auto t1 = std::chrono::steady_clock::now();
                             latencies[op] = std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
-                            lock.cleanup();
+                            (*lock_counts)[i][lock_id]++;
                         }
 
                         std::cout << "[Client " << i << "] Done.\n";
@@ -70,11 +76,130 @@ int main() {
             for (auto& w : workers) w.join();
             auto wall_end = std::chrono::steady_clock::now();
 
+            // ─── Verify correctness ───
+
+            std::cout << "\n" << std::string(42, '-') << "\n";
+            std::cout << " VERIFICATION\n";
+            std::cout << std::string(42, '-') << "\n";
+
+            uint64_t total_committed = 0;
+            bool correct = true;
+
+            for (size_t l = 0; l < NUM_LOCKS; ++l) {
+                uint64_t lock_total = 0;
+                for (size_t c = 0; c < NUM_CLIENTS; ++c) {
+                    lock_total += (*lock_counts)[c][l];
+                }
+                total_committed += lock_total;
+
+                std::cout << "[VERIFY] Lock " << l << " | ops=" << lock_total << " | per-client: [";
+                for (size_t c = 0; c < NUM_CLIENTS; ++c) {
+                    if (c > 0) std::cout << ", ";
+                    std::cout << (*lock_counts)[c][l];
+                }
+                std::cout << "]\n";
+            }
+
+            std::cout << "[VERIFY] Total committed: " << total_committed
+                      << " / " << NUM_TOTAL_OPS;
+
+            if (total_committed == NUM_TOTAL_OPS) {
+                std::cout << " ✓ PASS\n";
+            } else {
+                std::cout << " ✗ FAIL\n";
+                correct = false;
+            }
+
+            // ─── Remote verification: read back logs from server ───
+
+            {
+                // Reuse client 0's connection pattern — create a fresh verifier
+                Client verifier(NUM_CLIENTS); // id beyond normal clients
+                verifier.connect(CLUSTER_NODES, RDMA_PORT);
+
+                auto* cq = verifier.cq();
+                auto* mr = verifier.mr();
+                const auto& conns = verifier.connections();
+
+                for (size_t l = 0; l < NUM_LOCKS; ++l) {
+                    // Read control word
+                    uint64_t control_val = EMPTY_SLOT;
+
+                    ibv_sge sge{
+                        .addr   = reinterpret_cast<uintptr_t>(&control_val),
+                        .length = 8,
+                        .lkey   = mr->lkey
+                    };
+                    ibv_send_wr wr{}, *bad;
+                    wr.wr_id      = l;
+                    wr.opcode     = IBV_WR_RDMA_READ;
+                    wr.send_flags = IBV_SEND_SIGNALED;
+                    wr.sg_list    = &sge;
+                    wr.num_sge    = 1;
+                    wr.wr.rdma.remote_addr = conns[0].addr + lock_control_offset(l);
+                    wr.wr.rdma.rkey        = conns[0].rkey;
+
+                    if (ibv_post_send(conns[0].id->qp, &wr, &bad))
+                        throw std::runtime_error("Verify: read control failed");
+
+                    ibv_wc wc{};
+                    while (ibv_poll_cq(cq, 1, &wc) == 0) {}
+                    if (wc.status != IBV_WC_SUCCESS)
+                        throw std::runtime_error("Verify: read control WC error");
+
+                    // Count non-empty log slots
+                    uint64_t committed = 0;
+                    uint64_t bad_slots = 0;
+
+                    for (uint64_t slot = 0; slot < MAX_LOG_PER_LOCK; ++slot) {
+                        uint64_t val = EMPTY_SLOT;
+
+                        ibv_sge slot_sge{
+                            .addr   = reinterpret_cast<uintptr_t>(&val),
+                            .length = 8,
+                            .lkey   = mr->lkey
+                        };
+                        ibv_send_wr slot_wr{}, *slot_bad;
+                        slot_wr.wr_id      = slot;
+                        slot_wr.opcode     = IBV_WR_RDMA_READ;
+                        slot_wr.send_flags = IBV_SEND_SIGNALED;
+                        slot_wr.sg_list    = &slot_sge;
+                        slot_wr.num_sge    = 1;
+                        slot_wr.wr.rdma.remote_addr = conns[0].addr + lock_log_slot_offset(l, slot);
+                        slot_wr.wr.rdma.rkey        = conns[0].rkey;
+
+                        if (ibv_post_send(conns[0].id->qp, &slot_wr, &slot_bad))
+                            throw std::runtime_error("Verify: read slot failed");
+
+                        ibv_wc slot_wc{};
+                        while (ibv_poll_cq(cq, 1, &slot_wc) == 0) {}
+
+                        if (val == EMPTY_SLOT) break; // end of log
+                        if (val >= NUM_CLIENTS) {
+                            bad_slots++;
+                        }
+                        committed++;
+                    }
+
+                    std::cout << "[REMOTE] Lock " << l
+                              << " | control=" << control_val
+                              << " | log_entries=" << committed;
+                    if (bad_slots > 0) {
+                        std::cout << " | BAD_SLOTS=" << bad_slots << " ✗";
+                        correct = false;
+                    } else {
+                        std::cout << " ✓";
+                    }
+                    std::cout << "\n";
+                }
+
+                std::cout << "[VERIFY] Overall: " << (correct ? "✓ PASS" : "✗ FAIL") << "\n";
+            }
+
             // ─── Compute stats ───
 
             std::sort(all_latencies->begin(), all_latencies->end());
 
-            // Per-client active time → aggregate throughput
             std::vector<double> client_durations_s(NUM_CLIENTS, 0.0);
             for (size_t i = 0; i < NUM_CLIENTS; ++i) {
                 uint64_t sum_ns = 0;
@@ -90,10 +215,9 @@ int main() {
             }
             double effective_total_time = NUM_TOTAL_OPS / total_throughput;
 
-            // Latency stats
             auto get_p = [&](double p) {
                 size_t idx = static_cast<size_t>(p * (NUM_TOTAL_OPS - 1));
-                return (*all_latencies)[idx] / 1000.0;  // ns → us
+                return (*all_latencies)[idx] / 1000.0;
             };
 
             double sum = 0;
@@ -111,12 +235,13 @@ int main() {
             std::cout << " RDMA BENCHMARK RESULTS\n";
             std::cout << std::string(42, '=') << "\n";
             std::cout << "Strategy:     " << std::setw(10) << "SYNRA_CAS" << "\n";
+            std::cout << "Locks:        " << std::setw(10) << NUM_LOCKS << "\n";
             std::cout << "Clients:      " << std::setw(10) << NUM_CLIENTS << "\n";
             std::cout << "Ops/Client:   " << std::setw(10) << NUM_OPS_PER_CLIENT << "\n";
             std::cout << "Total Ops:    " << std::setw(10) << NUM_TOTAL_OPS << "\n";
             const auto wall_ms = std::chrono::duration_cast<std::chrono::milliseconds>(wall_end - wall_start);
             std::cout << "Wall Clock:   " << std::setw(10) << std::fixed << std::setprecision(3) << (wall_ms.count() / 1000.0) << " s\n";
-            std::cout << "Total Active Time:   " << std::setw(10) << std::fixed << std::setprecision(3) << effective_total_time << " s\n";
+            std::cout << "Active Time:  " << std::setw(10) << std::fixed << std::setprecision(3) << effective_total_time << " s\n";
             std::cout << "Throughput:   " << std::setw(10) << std::fixed << std::setprecision(0) << total_throughput << " ops/s\n";
             std::cout << std::string(42, '-') << "\n";
             std::cout << "LATENCY (Microseconds)\n";

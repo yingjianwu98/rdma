@@ -52,9 +52,10 @@ void Server::start(uint16_t port) {
 
     buf_ = allocate_rdma_buffer();
 
-    // Initialize frontier to 0 for synra protocols
-    *reinterpret_cast<uint64_t*>(
-        reinterpret_cast<uint8_t*>(buf_) + FRONTIER_OFFSET) = 0;
+    auto* base = static_cast<uint8_t*>(buf_);
+    for (uint32_t i = 0; i < MAX_LOCKS; ++i) {
+        *reinterpret_cast<uint64_t*>(base + lock_control_offset(i)) = 0;
+    }
 
     const uint32_t num_followers = expected_followers();
     const uint32_t num_clients   = expected_clients();

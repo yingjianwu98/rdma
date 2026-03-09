@@ -27,17 +27,12 @@ inline const size_t QUORUM = (CLUSTER_NODES.size() / 2) + 1;
 // ─── RDMA constants ───
 
 constexpr uint16_t RDMA_PORT = 6969;
-constexpr size_t MAX_LOG_ENTRIES = 10000000;
 constexpr size_t ENTRY_SIZE = 8;
-constexpr size_t TOTAL_POOL_SIZE = MAX_LOG_ENTRIES * ENTRY_SIZE;
-constexpr size_t METADATA_SIZE = 4096;
-constexpr size_t FINAL_POOL_SIZE = TOTAL_POOL_SIZE + METADATA_SIZE;
-constexpr size_t HUGE_PAGE_SIZE = 2 * 1024 * 1024;
-constexpr size_t ALIGNED_SIZE = ((FINAL_POOL_SIZE + HUGE_PAGE_SIZE - 1) / HUGE_PAGE_SIZE) * HUGE_PAGE_SIZE;
 constexpr size_t QP_DEPTH = 2048;
 constexpr size_t MAX_INLINE_DEPTH = 64;
 constexpr size_t CLIENT_SLOT_SIZE = 1024;
 constexpr size_t MAX_REPLICAS = 10;
+constexpr size_t HUGE_PAGE_SIZE = 2 * 1024 * 1024;
 
 // ─── Benchmark constants ───
 
@@ -46,10 +41,43 @@ constexpr size_t NUM_CLIENTS = 4;
 constexpr size_t NUM_OPS_PER_CLIENT = NUM_OPS / NUM_CLIENTS;
 constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * NUM_CLIENTS;
 
+// ─── Lock table layout ───
+//
+// Each lock region: [8-byte control word] [log of MAX_LOG_PER_LOCK × 8]
+// All locks laid out contiguously in the RDMA buffer.
+
+constexpr size_t MAX_LOCKS = 64;
+constexpr size_t MAX_LOG_PER_LOCK = NUM_OPS; // enough for full benchmark
+constexpr size_t LOCK_HEADER_SIZE = 8; // control word
+constexpr size_t LOCK_LOG_SIZE = MAX_LOG_PER_LOCK * ENTRY_SIZE;
+constexpr size_t LOCK_REGION_SIZE = LOCK_HEADER_SIZE + LOCK_LOG_SIZE;
+constexpr size_t LOCK_TABLE_SIZE = LOCK_REGION_SIZE * MAX_LOCKS;
+
+// ─── Buffer sizing — derived from lock table ───
+
+constexpr size_t METADATA_SIZE = 4096;
+constexpr size_t FINAL_POOL_SIZE = LOCK_TABLE_SIZE + METADATA_SIZE;
+constexpr size_t ALIGNED_SIZE = ((FINAL_POOL_SIZE + HUGE_PAGE_SIZE - 1) / HUGE_PAGE_SIZE) * HUGE_PAGE_SIZE;
+
+static_assert(LOCK_TABLE_SIZE <= ALIGNED_SIZE, "Lock table exceeds RDMA buffer size");
+
+// ─── Per-lock offset helpers ───
+
+inline constexpr size_t lock_base_offset(uint32_t lock_id) {
+    return lock_id * LOCK_REGION_SIZE;
+}
+
+inline constexpr size_t lock_control_offset(uint32_t lock_id) {
+    return lock_base_offset(lock_id);
+}
+
+inline constexpr size_t lock_log_slot_offset(uint32_t lock_id, uint64_t slot) {
+    return lock_base_offset(lock_id) + LOCK_HEADER_SIZE + (slot * ENTRY_SIZE);
+}
+
 // ─── Sentinel values ───
 
 constexpr uint64_t EMPTY_SLOT = 0xFFFFFFFFFFFFFFFF;
-constexpr auto FRONTIER_OFFSET = ALIGNED_SIZE - 8;
 
 // ─── Connection types ───
 
@@ -131,7 +159,7 @@ inline void* allocate_rdma_buffer() {
         if (!ptr) throw std::runtime_error("Could not allocate RDMA buffer");
     }
     std::fill_n(static_cast<uint64_t*>(ptr), ALIGNED_SIZE / sizeof(uint64_t),
-                0xFFFFFFFFFFFFFFFF);
+                EMPTY_SLOT);
     return ptr;
 }
 

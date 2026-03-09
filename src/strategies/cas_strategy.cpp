@@ -9,7 +9,7 @@
 #include <string>
 
 static void advance_frontier(
-    LocalState* state, const uint64_t slot,
+    LocalState* state, const uint64_t slot, uint32_t lock_id,
     const std::vector<RemoteNode>& conns, const ibv_mr* mr
 ) {
     state->next_frontier = slot;
@@ -26,7 +26,7 @@ static void advance_frontier(
         wr.send_flags = IBV_SEND_SIGNALED;
         wr.sg_list = &sge;
         wr.num_sge = 1;
-        wr.wr.rdma.remote_addr = conns[i].addr + FRONTIER_OFFSET;
+        wr.wr.rdma.remote_addr = conns[i].addr + lock_control_offset(lock_id);
         wr.wr.rdma.rkey = conns[i].rkey;
 
         if (ibv_post_send(conns[i].id->qp, &wr, &bad)) {
@@ -35,7 +35,7 @@ static void advance_frontier(
     }
 }
 
-uint64_t CasStrategy::acquire(Client& client, int op_id, uint32_t /*lock_id*/) {
+uint64_t CasStrategy::acquire(Client& client, int op_id, uint32_t lock_id) {
     auto* state = static_cast<LocalState*>(client.buffer());
     auto* cq = client.cq();
     auto* mr = client.mr();
@@ -46,7 +46,7 @@ uint64_t CasStrategy::acquire(Client& client, int op_id, uint32_t /*lock_id*/) {
     while (true) {
         const uint64_t expected = target_slot_ - 1;
 
-        // ── Step 1: CAS on the sequencer (connections[0]) ──
+        // ── Step 1: CAS on this lock's control word ──
 
         state->cas_results[0] = 0xFEFEFEFEFEFEFEFE;
 
@@ -62,7 +62,7 @@ uint64_t CasStrategy::acquire(Client& client, int op_id, uint32_t /*lock_id*/) {
         wr.send_flags = IBV_SEND_SIGNALED;
         wr.sg_list = &sge;
         wr.num_sge = 1;
-        wr.wr.atomic.remote_addr = conns[0].addr + FRONTIER_OFFSET;
+        wr.wr.atomic.remote_addr = conns[0].addr + lock_control_offset(lock_id);
         wr.wr.atomic.rkey = conns[0].rkey;
         wr.wr.atomic.compare_add = expected;
         wr.wr.atomic.swap = target_slot_;
@@ -93,7 +93,7 @@ uint64_t CasStrategy::acquire(Client& client, int op_id, uint32_t /*lock_id*/) {
         // ── Step 3: Did we win? ──
 
         if (result == expected) {
-            // We won — replicate our client_id to all nodes at this slot
+            // We won — replicate our client_id to this lock's log on all nodes
             state->next_frontier = static_cast<uint64_t>(client.id());
 
             ibv_sge replication_sge{
@@ -102,8 +102,6 @@ uint64_t CasStrategy::acquire(Client& client, int op_id, uint32_t /*lock_id*/) {
                 .lkey = mr->lkey
             };
 
-            const uint64_t log_offset = target_slot_ * 8;
-
             for (size_t i = 0; i < conns.size(); ++i) {
                 ibv_send_wr rep_wr{}, *bad = nullptr;
                 rep_wr.wr_id = (target_slot_ << 32) | static_cast<uint32_t>(i);
@@ -111,7 +109,7 @@ uint64_t CasStrategy::acquire(Client& client, int op_id, uint32_t /*lock_id*/) {
                 rep_wr.num_sge = 1;
                 rep_wr.opcode = IBV_WR_RDMA_WRITE;
                 rep_wr.send_flags = IBV_SEND_SIGNALED;
-                rep_wr.wr.rdma.remote_addr = conns[i].addr + log_offset;
+                rep_wr.wr.rdma.remote_addr = conns[i].addr + lock_log_slot_offset(lock_id, target_slot_);
                 rep_wr.wr.rdma.rkey = conns[i].rkey;
 
                 if (ibv_post_send(conns[i].id->qp, &rep_wr, &bad)) {
@@ -143,12 +141,12 @@ uint64_t CasStrategy::acquire(Client& client, int op_id, uint32_t /*lock_id*/) {
     }
 }
 
-void CasStrategy::release(Client& client, int /*op_id*/, uint32_t /*lock_id*/) {
+void CasStrategy::release(Client& client, int /*op_id*/, uint32_t lock_id) {
     auto* state = static_cast<LocalState*>(client.buffer());
     const auto& conns = client.connections();
     const auto* mr = client.mr();
 
-    advance_frontier(state, target_slot_ + 1, conns, mr);
+    advance_frontier(state, target_slot_ + 1, lock_id, conns, mr);
     target_slot_ += 2;
 }
 
