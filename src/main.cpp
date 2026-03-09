@@ -47,6 +47,7 @@ int main() {
                             lock.lock();
                             std::cout << "Client - " << client.id() << " Acquired lock for op: " << op << "\n";
                             lock.unlock();
+                            std::cout << "Client - " << client.id() << " Unlocked lock for op: " << op << "\n";
 
                             auto t1 = std::chrono::steady_clock::now();
                             latencies[op] = std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
