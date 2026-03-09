@@ -270,21 +270,21 @@ uint64_t TasStrategy::acquire(Client& client, const int op_id, uint32_t /*lock_i
 }
 
 void TasStrategy::release(Client& client, int /*op_id*/, uint32_t /*lock_id*/) {
-    synra_reset(
-            static_cast<LocalState*>(client.buffer()),
-            client.id(),
-            client.connections(),
-            client.cq(),
-            client.mr()
-        );
+    // synra_reset(
+    //         static_cast<LocalState*>(client.buffer()),
+    //         client.id(),
+    //         client.connections(),
+    //         client.cq(),
+    //         client.mr()
+    //     );
 }
 
 void TasStrategy::cleanup(Client& client, int /*op_id*/, uint32_t /*lock_id*/) {
-    // synra_reset(
-    //     static_cast<LocalState*>(client.buffer()),
-    //     client.id(),
-    //     client.connections(),
-    //     client.cq(),
-    //     client.mr()
-    // );
+    synra_reset(
+        static_cast<LocalState*>(client.buffer()),
+        client.id(),
+        client.connections(),
+        client.cq(),
+        client.mr()
+    );
 }
