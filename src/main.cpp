@@ -45,6 +45,7 @@ int main() {
 
                             auto lock = table.get(0, client);
                             lock.lock();
+                            std::cout << "Client - " << client.id() << " Acquired lock for op: " << op << "\n";
                             lock.unlock();
 
                             auto t1 = std::chrono::steady_clock::now();
