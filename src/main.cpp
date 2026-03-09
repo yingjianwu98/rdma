@@ -15,6 +15,7 @@
 #include <thread>
 
 #include "rdma/strategies/cas_strategy.h"
+#include "rdma/strategies/tas_strategy.h"
 
 int main() {
     try {
@@ -29,7 +30,7 @@ int main() {
                     try {
                         pin_thread_to_cpu(pick_cpu_for_client(i));
 
-                        CasStrategy strategy;
+                        TasStrategy strategy;
                         LockTable table;
                         table.add(strategy);
 
