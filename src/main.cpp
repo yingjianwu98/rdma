@@ -112,7 +112,9 @@ int main() {
             std::cout << "Clients:      " << std::setw(10) << NUM_CLIENTS << "\n";
             std::cout << "Ops/Client:   " << std::setw(10) << NUM_OPS_PER_CLIENT << "\n";
             std::cout << "Total Ops:    " << std::setw(10) << NUM_TOTAL_OPS << "\n";
-            std::cout << "Total Time:   " << std::setw(10) << std::fixed << std::setprecision(3) << effective_total_time << " s\n";
+            const auto wall_ms = std::chrono::duration_cast<std::chrono::milliseconds>(wall_end - wall_start);
+            std::cout << "Wall Clock:   " << std::setw(10) << std::fixed << std::setprecision(3) << (wall_ms.count() / 1000.0) << " s\n";
+            std::cout << "Total Active Time:   " << std::setw(10) << std::fixed << std::setprecision(3) << effective_total_time << " s\n";
             std::cout << "Throughput:   " << std::setw(10) << std::fixed << std::setprecision(0) << total_throughput << " ops/s\n";
             std::cout << std::string(42, '-') << "\n";
             std::cout << "LATENCY (Microseconds)\n";
