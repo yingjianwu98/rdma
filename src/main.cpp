@@ -177,7 +177,7 @@ int main() {
                 leader.start(RDMA_PORT);
             } else {
                 MuFollower follower(node_id);
-                follower.connect_to_leader(CLUSTER_NODES[0], RDMA_PORT);
+                follower.start(RDMA_PORT);  // same path, mesh handles connections
             }
         }
     } catch (const std::exception& e) {

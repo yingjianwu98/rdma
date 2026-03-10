@@ -20,7 +20,6 @@ public:
     [[nodiscard]] uint32_t id() const { return node_id_; }
 
 protected:
-    [[nodiscard]] virtual uint32_t expected_followers() const = 0;
     [[nodiscard]] virtual uint32_t expected_clients() const = 0;
     virtual void run() = 0;
 
