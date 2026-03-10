@@ -69,6 +69,7 @@ int main() {
                             lock.lock();
                             auto t1 = std::chrono::steady_clock::now();
                             lock.unlock();
+                            lock.cleanup();
 
                             latencies[op] = std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
                             (*lock_counts)[i][lock_id]++;
