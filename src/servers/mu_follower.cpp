@@ -92,18 +92,18 @@ void MuFollower::connect_to_leader(const std::string& leader_ip, uint16_t port) 
 void MuFollower::run() {
     std::cout << "[MuFollower " << node_id_ << "] Processing replicated writes\n";
 
-    uint64_t applied[MAX_LOCKS] = {};
-    auto* local_buf = static_cast<uint8_t*>(buf_);
+    // uint64_t applied[MAX_LOCKS] = {};
+    // auto* local_buf = static_cast<uint8_t*>(buf_);
 
     while (true) {
-        for (uint32_t lock_id = 0; lock_id < MAX_LOCKS; ++lock_id) {
-            auto* lock_base = mu_lock_base(local_buf, lock_id);
-            const uint64_t committed = mu_read_commit_index(lock_base);
-
-            while (applied[lock_id] < committed) {
-
-                applied[lock_id]++;
-            }
+        // for (uint32_t lock_id = 0; lock_id < MAX_LOCKS; ++lock_id) {
+        //     auto* lock_base = mu_lock_base(local_buf, lock_id);
+        //     const uint64_t committed = mu_read_commit_index(lock_base);
+        //
+        //     while (applied[lock_id] < committed) {
+        //
+        //         applied[lock_id]++;
+        //     }
         }
     }
 }
