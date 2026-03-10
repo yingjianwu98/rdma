@@ -26,32 +26,32 @@ inline const size_t QUORUM = (CLUSTER_NODES.size() / 2) + 1;
 
 // ─── RDMA constants ───
 
-constexpr uint16_t RDMA_PORT        = 6969;
-constexpr size_t ENTRY_SIZE         = 8;
-constexpr size_t QP_DEPTH           = 2048;
-constexpr size_t MAX_INLINE_DEPTH   = 64;
-constexpr size_t CLIENT_SLOT_SIZE   = 1024;
-constexpr size_t MAX_REPLICAS       = 10;
-constexpr size_t HUGE_PAGE_SIZE     = 2 * 1024 * 1024;
+constexpr uint16_t RDMA_PORT = 6969;
+constexpr size_t ENTRY_SIZE = 8;
+constexpr size_t QP_DEPTH = 2048;
+constexpr size_t MAX_INLINE_DEPTH = 64;
+constexpr size_t CLIENT_SLOT_SIZE = 1024;
+constexpr size_t MAX_REPLICAS = 10;
+constexpr size_t HUGE_PAGE_SIZE = 2 * 1024 * 1024;
 
 // ─── Benchmark constants ───
 
-constexpr size_t NUM_OPS            = 2000000;
-constexpr size_t NUM_CLIENTS        = 4;
+constexpr size_t NUM_OPS = 2000000;
+constexpr size_t NUM_CLIENTS = 4;
 constexpr size_t NUM_OPS_PER_CLIENT = NUM_OPS / NUM_CLIENTS;
-constexpr size_t NUM_TOTAL_OPS      = NUM_OPS_PER_CLIENT * NUM_CLIENTS;
+constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * NUM_CLIENTS;
 
 // ─── Lock table layout ───
 //
 // Each lock region: [8-byte control word] [log of MAX_LOG_PER_LOCK × ENTRY_SIZE]
 // All locks laid out contiguously in the RDMA buffer.
 
-constexpr size_t MAX_LOCKS          = 64;
-constexpr size_t MAX_LOG_PER_LOCK   = NUM_OPS;
-constexpr size_t LOCK_HEADER_SIZE   = 8;
-constexpr size_t LOCK_LOG_SIZE      = MAX_LOG_PER_LOCK * ENTRY_SIZE;
-constexpr size_t LOCK_REGION_SIZE   = LOCK_HEADER_SIZE + LOCK_LOG_SIZE;
-constexpr size_t LOCK_TABLE_SIZE    = LOCK_REGION_SIZE * MAX_LOCKS;
+constexpr size_t MAX_LOCKS = 32;
+constexpr size_t MAX_LOG_PER_LOCK = NUM_OPS;
+constexpr size_t LOCK_HEADER_SIZE = 8;
+constexpr size_t LOCK_LOG_SIZE = MAX_LOG_PER_LOCK * ENTRY_SIZE;
+constexpr size_t LOCK_REGION_SIZE = LOCK_HEADER_SIZE + LOCK_LOG_SIZE;
+constexpr size_t LOCK_TABLE_SIZE = LOCK_REGION_SIZE * MAX_LOCKS;
 
 // ─── Client staging area ───
 //
@@ -59,15 +59,15 @@ constexpr size_t LOCK_TABLE_SIZE    = LOCK_REGION_SIZE * MAX_LOCKS;
 // its request payload. The leader reads from here after receiving the IMM.
 // For now each staging slot is one ENTRY_SIZE. Increase if payloads grow.
 
-constexpr size_t CLIENT_STAGING_SIZE   = CLIENT_SLOT_SIZE;
+constexpr size_t CLIENT_STAGING_SIZE = CLIENT_SLOT_SIZE;
 constexpr size_t CLIENT_STAGING_OFFSET = LOCK_TABLE_SIZE;
-constexpr size_t CLIENT_STAGING_TOTAL  = CLIENT_STAGING_SIZE * NUM_CLIENTS;
+constexpr size_t CLIENT_STAGING_TOTAL = CLIENT_STAGING_SIZE * NUM_CLIENTS;
 
 // ─── Buffer sizing — derived from lock table + staging ───
 
-constexpr size_t METADATA_SIZE      = 4096;
-constexpr size_t FINAL_POOL_SIZE    = LOCK_TABLE_SIZE + CLIENT_STAGING_TOTAL + METADATA_SIZE;
-constexpr size_t ALIGNED_SIZE       = ((FINAL_POOL_SIZE + HUGE_PAGE_SIZE - 1) / HUGE_PAGE_SIZE) * HUGE_PAGE_SIZE;
+constexpr size_t METADATA_SIZE = 4096;
+constexpr size_t FINAL_POOL_SIZE = LOCK_TABLE_SIZE + CLIENT_STAGING_TOTAL + METADATA_SIZE;
+constexpr size_t ALIGNED_SIZE = ((FINAL_POOL_SIZE + HUGE_PAGE_SIZE - 1) / HUGE_PAGE_SIZE) * HUGE_PAGE_SIZE;
 
 static_assert(LOCK_TABLE_SIZE <= ALIGNED_SIZE, "Lock table exceeds RDMA buffer size");
 
@@ -92,19 +92,6 @@ inline constexpr size_t client_staging_offset(const uint32_t client_id) {
 }
 
 // ─── Mu protocol IMM encoding ───
-// imm_data layout: [16-bit lock_id] [16-bit client_id]
-
-inline constexpr uint32_t mu_encode_imm(const uint16_t lock_id, const uint16_t client_id) {
-    return (static_cast<uint32_t>(lock_id) << 16) | client_id;
-}
-
-inline constexpr uint16_t mu_decode_lock_id(const uint32_t imm) {
-    return static_cast<uint16_t>(imm >> 16);
-}
-
-inline constexpr uint16_t mu_decode_client_id(const uint32_t imm) {
-    return static_cast<uint16_t>(imm & 0xFFFF);
-}
 
 // ─── Sentinel values ───
 
