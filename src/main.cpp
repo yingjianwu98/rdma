@@ -4,8 +4,7 @@
 #include "rdma/servers/mu_follower.h"
 #include "rdma/client.h"
 #include "rdma/lock_table.h"
-#include "rdma/strategies/tas_strategy.h"
-#include "rdma/strategies/cas_strategy.h"
+#include "rdma/strategies/mu_strategy.h"
 
 #include <chrono>
 #include <cmath>
@@ -16,8 +15,10 @@
 #include <thread>
 
 #include "rdma/servers/synra_node.h"
+#include "rdma/strategies/cas_strategy.h"
+#include "rdma/strategies/tas_strategy.h"
 
-constexpr size_t NUM_LOCKS = 8;
+constexpr size_t NUM_LOCKS = 16;
 
 int main() {
     try {
@@ -35,14 +36,10 @@ int main() {
                     try {
                         pin_thread_to_cpu(pick_cpu_for_client(i));
 
-                        std::vector<std::unique_ptr<LockStrategy>> strategies;
+                        std::vector<std::unique_ptr<MuStrategy>> strategies;
                         LockTable table;
                         for (size_t l = 0; l < NUM_LOCKS; ++l) {
-                            if (l < NUM_LOCKS / 2) {
-                                strategies.push_back(std::make_unique<CasStrategy>());
-                            } else {
-                                strategies.push_back(std::make_unique<TasStrategy>());
-                            }
+                            strategies.push_back(std::make_unique<MuStrategy>());
                             table.add(*strategies.back());
                         }
 
@@ -104,8 +101,7 @@ int main() {
                 }
                 total_committed += lock_total;
 
-                const char* type = (l < NUM_LOCKS / 2) ? "CAS" : "TAS";
-                std::cout << "[VERIFY] Lock " << l << " (" << type << ") | ops=" << lock_total << " | per-client: [";
+                std::cout << "[VERIFY] Lock " << l << " | ops=" << lock_total << " | per-client: [";
                 for (size_t c = 0; c < NUM_CLIENTS; ++c) {
                     if (c > 0) std::cout << ", ";
                     std::cout << (*lock_counts)[c][l];
@@ -159,11 +155,10 @@ int main() {
             const auto wall_ms = std::chrono::duration_cast<std::chrono::milliseconds>(wall_end - wall_start);
 
             std::cout << "\n" << std::string(42, '=') << "\n";
-            std::cout << " RDMA BENCHMARK RESULTS (CAS + TAS mixed)\n";
+            std::cout << " RDMA BENCHMARK RESULTS\n";
             std::cout << std::string(42, '=') << "\n";
-            std::cout << "Locks 0-" << (NUM_LOCKS / 2 - 1) << ":     " << std::setw(10) << "CAS" << "\n";
-            std::cout << "Locks " << (NUM_LOCKS / 2) << "-" << (NUM_LOCKS - 1) << ":     " << std::setw(10) << "TAS" << "\n";
-            std::cout << "Total Locks:  " << std::setw(10) << NUM_LOCKS << "\n";
+            std::cout << "Strategy:     " << std::setw(10) << "Mu" << "\n";
+            std::cout << "Locks:        " << std::setw(10) << NUM_LOCKS << "\n";
             std::cout << "Clients:      " << std::setw(10) << NUM_CLIENTS << "\n";
             std::cout << "Ops/Client:   " << std::setw(10) << NUM_OPS_PER_CLIENT << "\n";
             std::cout << "Total Ops:    " << std::setw(10) << NUM_TOTAL_OPS << "\n";
@@ -184,8 +179,16 @@ int main() {
         } else {
             pin_thread_to_cpu(1);
             const uint32_t node_id = get_uint_env("NODE_ID");
-            SynraNode node(node_id);
-            node.start(RDMA_PORT);
+            // SynraNode node(node_id);
+            // node.start(RDMA_PORT);
+            //
+            if (node_id == 0) {
+                MuLeader leader(node_id);
+                leader.start(RDMA_PORT);
+            } else {
+                MuFollower follower(node_id);
+                follower.start(RDMA_PORT);
+            }
         }
     } catch (const std::exception& e) {
         std::cerr << "[error] " << e.what() << "\n";
