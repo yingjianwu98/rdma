@@ -56,12 +56,11 @@ int main() {
                               lock.lock();
                                   // std::cout << "[Client " << i << "] ACQUIRED lock=" << lock_id
                                   //           << " op=" << op << "\n";
-
+                            auto t1 = std::chrono::steady_clock::now();
                               lock.unlock();
                                   // std::cout << "[Client " << i << "] RELEASED lock=" << lock_id
                                   //           << " op=" << op << "\n";
 
-                            auto t1 = std::chrono::steady_clock::now();
                             latencies[op] = std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
                             (*lock_counts)[i][lock_id]++;
                         }
