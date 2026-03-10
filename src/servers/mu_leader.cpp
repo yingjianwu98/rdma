@@ -107,7 +107,7 @@ void MuLeader::run() {
                         swr.wr_id = (ACK_TAG << 48) | client_id;
                         swr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
                         swr.num_sge = 0;
-                        swr.send_flags = IBV_SEND_INLINE;  // unsignaled
+                        swr.send_flags = IBV_SEND_INLINE | IBV_SEND_SIGNALED;  // unsignaled
                         swr.imm_data = htonl(mu_encode_ack(lock_id, lock_state.commit_index, false));
                         swr.wr.rdma.remote_addr = clients_[client_id].remote_addr;
                         swr.wr.rdma.rkey = clients_[client_id].rkey;
@@ -131,7 +131,7 @@ void MuLeader::run() {
                             swr.wr_id = (ACK_TAG << 48) | next_client_id;
                             swr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
                             swr.num_sge = 0;
-                            swr.send_flags = IBV_SEND_INLINE;  // unsignaled
+                            swr.send_flags = IBV_SEND_INLINE | IBV_SEND_SIGNALED;  // unsignaled
                             swr.imm_data = htonl(mu_encode_ack(lock_id, lock_state.holder_slot, true));
                             swr.wr.rdma.remote_addr = clients_[next_client_id].remote_addr;
                             swr.wr.rdma.rkey = clients_[next_client_id].rkey;
@@ -171,7 +171,7 @@ void MuLeader::run() {
                     wr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
                     wr.sg_list = nullptr;
                     wr.num_sge = 0;
-                    wr.send_flags = IBV_SEND_INLINE;  // unsignaled
+                    wr.send_flags = IBV_SEND_INLINE | IBV_SEND_SIGNALED;  // unsignaled
                     wr.imm_data = htonl(mu_encode_commit_notify(lock_id, ls.commit_index));
                     wr.wr.rdma.remote_addr = peers_[f].remote_addr;
                     wr.wr.rdma.rkey = peers_[f].rkey;
