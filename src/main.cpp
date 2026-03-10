@@ -14,7 +14,7 @@
 #include <memory>
 #include <thread>
 
-constexpr size_t NUM_LOCKS = 1;
+constexpr size_t NUM_LOCKS = 32;  // test with multiple locks
 
 int main() {
     try {
@@ -39,7 +39,6 @@ int main() {
                             table.add(*strategies.back());
                         }
 
-                        // connect to leader only
                         Client client(i);
                         client.connect({ CLUSTER_NODES[0] }, RDMA_PORT);
 
@@ -54,12 +53,8 @@ int main() {
 
                             auto [lock_id, lock] = table.random(client);
                               lock.lock();
-                                  // std::cout << "[Client " << i << "] ACQUIRED lock=" << lock_id
-                                  //           << " op=" << op << "\n";
                             auto t1 = std::chrono::steady_clock::now();
                               lock.unlock();
-                                  // std::cout << "[Client " << i << "] RELEASED lock=" << lock_id
-                                  //           << " op=" << op << "\n";
 
                             latencies[op] = std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
                             (*lock_counts)[i][lock_id]++;
@@ -174,11 +169,9 @@ int main() {
             const uint32_t node_id = get_uint_env("NODE_ID");
 
             if (node_id == 0) {
-                // node 1 = leader
                 MuLeader leader(node_id);
                 leader.start(RDMA_PORT);
             } else {
-                // nodes 2, 3 = followers
                 MuFollower follower(node_id);
                 follower.connect_to_leader(CLUSTER_NODES[0], RDMA_PORT);
             }
