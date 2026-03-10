@@ -47,7 +47,7 @@ constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * NUM_CLIENTS;
 // All locks laid out contiguously in the RDMA buffer.
 
 constexpr size_t MAX_LOCKS = 32;
-constexpr size_t MAX_LOG_PER_LOCK = NUM_OPS;
+constexpr size_t MAX_LOG_PER_LOCK = NUM_OPS * 2;
 constexpr size_t LOCK_HEADER_SIZE = 8;
 constexpr size_t LOCK_LOG_SIZE = MAX_LOG_PER_LOCK * ENTRY_SIZE;
 constexpr size_t LOCK_REGION_SIZE = LOCK_HEADER_SIZE + LOCK_LOG_SIZE;
