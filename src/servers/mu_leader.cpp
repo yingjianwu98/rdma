@@ -33,8 +33,9 @@ void MuLeader::run() {
     auto post_client_ack = [&](uint16_t client_id, uint32_t imm_data) {
         ibv_send_wr swr{}, *bad_wr = nullptr;
         swr.wr_id = (ACK_TAG << 48) | client_id;
-        swr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
+        swr.opcode = IBV_WR_SEND_WITH_IMM;
         swr.num_sge = 0;
+        swr.sg_list = nullptr;
         swr.send_flags = IBV_SEND_INLINE;
 
         client_unsignaled[client_id]++;
@@ -44,8 +45,8 @@ void MuLeader::run() {
         }
 
         swr.imm_data = htonl(imm_data);
-        swr.wr.rdma.remote_addr = clients_[client_id].remote_addr;
-        swr.wr.rdma.rkey = clients_[client_id].rkey;
+        // no wr.wr.rdma needed — SEND doesn't use remote_addr/rkey
+
         if (ibv_post_send(clients_[client_id].cm_id->qp, &swr, &bad_wr)) {
             throw std::runtime_error("Failed to post client ack");
         }
