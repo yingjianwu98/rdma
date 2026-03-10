@@ -34,12 +34,14 @@ void MuLeader::run() {
     auto* locks = new LockState[MAX_LOCKS]();
 
     for (size_t i = 0; i < NUM_CLIENTS; ++i) {
-        ibv_recv_wr wr{}, *bad = nullptr;
-        wr.wr_id = i;
-        wr.sg_list = nullptr;
-        wr.num_sge = 0;
-        if (ibv_post_recv(clients_[i].cm_id->qp, &wr, &bad)) {
-            throw std::runtime_error("Failed to post initial recv");
+        for (size_t r = 0; r < 16; ++r) {
+            ibv_recv_wr wr{}, *bad = nullptr;
+            wr.wr_id = i;
+            wr.sg_list = nullptr;
+            wr.num_sge = 0;
+            if (ibv_post_recv(clients_[i].cm_id->qp, &wr, &bad)) {
+                throw std::runtime_error("Failed to post initial recv");
+            }
         }
     }
 
