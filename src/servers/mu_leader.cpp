@@ -65,11 +65,11 @@ void MuLeader::run() {
                 auto& lock_state = locks[lock_id];
                 lock_state.pending.push(imm);
 
-                std::cout << "[MuLeader] RECV lock=" << lock_id
-                          << " client=" << client_id
-                          << " op=" << (op == MU_OP_CLIENT_UNLOCK ? "unlock" : "lock")
-                          << " pending=" << lock_state.pending.size()
-                          << "\n";
+                // std::cout << "[MuLeader] RECV lock=" << lock_id
+                //           << " client=" << client_id
+                //           << " op=" << (op == MU_OP_CLIENT_UNLOCK ? "unlock" : "lock")
+                //           << " pending=" << lock_state.pending.size()
+                //           << "\n";
 
                 ibv_recv_wr next{}, *bad = nullptr;
                 next.wr_id = client_id;
@@ -92,11 +92,11 @@ void MuLeader::run() {
 
                 lock_state.acks[slot]++;
 
-                std::cout << "[MuLeader] REPL_ACK lock=" << lock_id
-                          << " slot=" << slot
-                          << " acks=" << (int)lock_state.acks[slot]
-                          << " need=" << QUORUM
-                          << "\n";
+                // std::cout << "[MuLeader] REPL_ACK lock=" << lock_id
+                //           << " slot=" << slot
+                //           << " acks=" << (int)lock_state.acks[slot]
+                //           << " need=" << QUORUM
+                //           << "\n";
 
                 const uint64_t old_commit = lock_state.commit_index;
 
@@ -109,13 +109,13 @@ void MuLeader::run() {
                     const uint16_t client_id = mu_decode_client_id(entry_imm);
                     const uint32_t op = mu_decode_op(entry_imm);
 
-                    std::cout << "[MuLeader] COMMIT lock=" << lock_id
-                              << " slot=" << lock_state.commit_index
-                              << " client=" << client_id
-                              << " op=" << (op == MU_OP_CLIENT_UNLOCK ? "unlock" : "lock")
-                              << " locked=" << lock_state.locked
-                              << " holder_slot=" << lock_state.holder_slot
-                              << "\n";
+                    // std::cout << "[MuLeader] COMMIT lock=" << lock_id
+                    //           << " slot=" << lock_state.commit_index
+                    //           << " client=" << client_id
+                    //           << " op=" << (op == MU_OP_CLIENT_UNLOCK ? "unlock" : "lock")
+                    //           << " locked=" << lock_state.locked
+                    //           << " holder_slot=" << lock_state.holder_slot
+                    //           << "\n";
 
                     if (op == MU_OP_CLIENT_UNLOCK) {
                         if (!lock_state.locked) {
@@ -123,7 +123,7 @@ void MuLeader::run() {
                         }
                         lock_state.locked = false;
 
-                        std::cout << "[MuLeader] SEND unlock_ack to client=" << client_id << "\n";
+                        // std::cout << "[MuLeader] SEND unlock_ack to client=" << client_id << "\n";
 
                         ibv_send_wr swr{}, *bad_wr = nullptr;
                         swr.wr_id = (ACK_TAG << 48) | client_id;
@@ -168,9 +168,9 @@ void MuLeader::run() {
 
                 if (lock_state.commit_index != old_commit) {
                     lock_state.commit_dirty = true;
-                    std::cout << "[MuLeader] commit advanced to " << lock_state.commit_index
-                              << " inflight=" << lock_state.inflight
-                              << "\n";
+                    // std::cout << "[MuLeader] commit advanced to " << lock_state.commit_index
+                    //           << " inflight=" << lock_state.inflight
+                    //           << "\n";
                 }
             }
         }
@@ -214,11 +214,11 @@ void MuLeader::run() {
 
             const size_t to_drain = std::min(ls.pending.size(), MAX_INFLIGHT - ls.inflight);
 
-            std::cout << "[MuLeader] DRAIN lock=" << lock_id
-                      << " to_drain=" << to_drain
-                      << " inflight=" << ls.inflight
-                      << " current_index=" << ls.current_index
-                      << "\n";
+            // std::cout << "[MuLeader] DRAIN lock=" << lock_id
+            //           << " to_drain=" << to_drain
+            //           << " inflight=" << ls.inflight
+            //           << " current_index=" << ls.current_index
+            //           << "\n";
 
             for (size_t j = 0; j < to_drain; ++j) {
                 uint32_t imm;

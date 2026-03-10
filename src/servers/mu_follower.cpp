@@ -152,12 +152,12 @@ void MuFollower::run() {
                 const uint16_t client_id = mu_decode_client_id(entry_imm);
                 const uint32_t op = mu_decode_op(entry_imm);
 
-                std::cout << "[MuFollower " << node_id_
-                    << "] applying lock=" << lock_id
-                    << " slot=" << applied[lock_id]
-                    << " client=" << client_id
-                    << " op=" << (op == MU_OP_CLIENT_UNLOCK ? "unlock" : "lock")
-                    << "\n";
+                // std::cout << "[MuFollower " << node_id_
+                //     << "] applying lock=" << lock_id
+                //     << " slot=" << applied[lock_id]
+                //     << " client=" << client_id
+                //     << " op=" << (op == MU_OP_CLIENT_UNLOCK ? "unlock" : "lock")
+                //     << "\n";
 
                 applied[lock_id]++;
             }
