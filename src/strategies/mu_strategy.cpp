@@ -3,15 +3,11 @@
 #include "rdma/common.h"
 #include "rdma/mu_encoding.h"
 
-#include <iostream>
 #include <stdexcept>
 #include <string>
 
-static constexpr uint64_t MU_SEND_TAG = 0xAA;
-
 static void mu_send_and_wait(Client& client, uint32_t lock_id, uint32_t op) {
     auto* cq = client.cq();
-    // client connects to leader only, so connections()[0] is the leader
     auto& leader = client.connections()[0];
 
     const uint32_t imm = mu_encode_imm(
@@ -29,27 +25,29 @@ static void mu_send_and_wait(Client& client, uint32_t lock_id, uint32_t op) {
         throw std::runtime_error("MuStrategy: Failed to pre-post recv");
     }
 
-    // ── send zero-length WRITE_WITH_IMM to leader ──
+    // ── fire-and-forget SEND_WITH_IMM ──
+    // signal every 1024th to drain the SQ
+    thread_local uint32_t send_count = 0;
+    send_count++;
+
     ibv_send_wr wr{}, *bad = nullptr;
-    wr.wr_id = MU_SEND_TAG;
-    wr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
-    wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE;
+    wr.wr_id = 0;
+    wr.opcode = IBV_WR_SEND_WITH_IMM;
+    wr.send_flags = IBV_SEND_INLINE;
+    if ((send_count & 1023) == 0) {
+        wr.send_flags |= IBV_SEND_SIGNALED;
+    }
     wr.num_sge = 0;
     wr.sg_list = nullptr;
     wr.imm_data = htonl(imm);
-    wr.wr.rdma.remote_addr = leader.addr + client_staging_offset(client.id());
-    wr.wr.rdma.rkey = leader.rkey;
 
     if (ibv_post_send(leader.id->qp, &wr, &bad)) {
         throw std::runtime_error("MuStrategy: Failed to post send to leader");
     }
 
-    // ── drain CQ: wait for send completion + ack ──
-    bool send_done = false;
-    bool ack_done = false;
+    // ── wait for ack only ──
     ibv_wc wc{};
-
-    while (!send_done || !ack_done) {
+    while (true) {
         int n = ibv_poll_cq(cq, 1, &wc);
         if (n <= 0) continue;
 
@@ -59,11 +57,8 @@ static void mu_send_and_wait(Client& client, uint32_t lock_id, uint32_t op) {
                 + " opcode " + std::to_string(wc.opcode));
         }
 
-        if (wc.opcode == IBV_WC_RDMA_WRITE && wc.wr_id == MU_SEND_TAG) {
-            send_done = true;
-        } else if (wc.opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
-            ack_done = true;
-        }
+        if (wc.opcode & IBV_WC_RECV) return;  // got ack
+        // else: periodic signaled send completion — ignore
     }
 }
 

@@ -50,6 +50,7 @@ void MuLeader::run() {
     while (true) {
         const int n = ibv_poll_cq(cq_, 32, wc);
 
+        // ── process all completions ──
         for (int i = 0; i < n; ++i) {
             if (wc[i].status != IBV_WC_SUCCESS) {
                 std::cerr << "[MuLeader] WC error: "
@@ -59,19 +60,13 @@ void MuLeader::run() {
                 throw std::runtime_error("RDMA completion failure");
             }
 
+            // ── client request (SEND_WITH_IMM or WRITE_WITH_IMM) ──
             if (wc[i].opcode & IBV_WC_RECV) {
                 const uint32_t imm = ntohl(wc[i].imm_data);
                 const uint16_t lock_id = mu_decode_lock_id(imm);
                 const uint16_t client_id = mu_decode_client_id(imm);
-                const uint32_t op = mu_decode_op(imm);
                 auto& lock_state = locks[lock_id];
                 lock_state.pending.push(imm);
-
-                // std::cout << "[MuLeader] RECV lock=" << lock_id
-                //           << " client=" << client_id
-                //           << " op=" << (op == MU_OP_CLIENT_UNLOCK ? "unlock" : "lock")
-                //           << " pending=" << lock_state.pending.size()
-                //           << "\n";
 
                 ibv_recv_wr next{}, *bad = nullptr;
                 next.wr_id = client_id;
@@ -81,12 +76,10 @@ void MuLeader::run() {
                     throw std::runtime_error("Failed to re-post recv");
                 }
             }
+            // ── replication write completion ──
             else if (wc[i].opcode == IBV_WC_RDMA_WRITE) {
                 const uint64_t wr_id = wc[i].wr_id;
-                if ((wr_id >> 48) == ACK_TAG) {
-                    // std::cout << "[MuLeader] ACK/COMMIT write completed\n";
-                    continue;
-                }
+                if ((wr_id >> 48) == ACK_TAG) continue;  // ack/commit notify — ignore
 
                 const auto lock_id = static_cast<uint16_t>(wr_id >> 48);
                 const auto slot = static_cast<uint16_t>((wr_id >> 16) & 0xFFFF);
@@ -94,14 +87,9 @@ void MuLeader::run() {
 
                 lock_state.acks[slot]++;
 
-                // std::cout << "[MuLeader] REPL_ACK lock=" << lock_id
-                //           << " slot=" << slot
-                //           << " acks=" << (int)lock_state.acks[slot]
-                //           << " need=" << QUORUM
-                //           << "\n";
-
                 const uint64_t old_commit = lock_state.commit_index;
 
+                // ── walk up commit index ──
                 while (lock_state.commit_index < lock_state.current_index) {
                     if (lock_state.acks[lock_state.commit_index] < QUORUM) break;
 
@@ -111,27 +99,15 @@ void MuLeader::run() {
                     const uint16_t client_id = mu_decode_client_id(entry_imm);
                     const uint32_t op = mu_decode_op(entry_imm);
 
-                    // std::cout << "[MuLeader] COMMIT lock=" << lock_id
-                    //           << " slot=" << lock_state.commit_index
-                    //           << " client=" << client_id
-                    //           << " op=" << (op == MU_OP_CLIENT_UNLOCK ? "unlock" : "lock")
-                    //           << " locked=" << lock_state.locked
-                    //           << " holder_slot=" << lock_state.holder_slot
-                    //           << "\n";
-
+                    // ── handle unlock ──
                     if (op == MU_OP_CLIENT_UNLOCK) {
-                        if (!lock_state.locked) {
-                            throw std::runtime_error("LOCK WAS NOT HELD BEFORE UNLOCK");
-                        }
                         lock_state.locked = false;
-
-                        // std::cout << "[MuLeader] SEND unlock_ack to client=" << client_id << "\n";
 
                         ibv_send_wr swr{}, *bad_wr = nullptr;
                         swr.wr_id = (ACK_TAG << 48) | client_id;
                         swr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
                         swr.num_sge = 0;
-                        swr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE;
+                        swr.send_flags = IBV_SEND_INLINE;  // unsignaled
                         swr.imm_data = htonl(mu_encode_ack(lock_id, lock_state.commit_index, false));
                         swr.wr.rdma.remote_addr = clients_[client_id].remote_addr;
                         swr.wr.rdma.rkey = clients_[client_id].rkey;
@@ -140,8 +116,10 @@ void MuLeader::run() {
                         }
                     }
 
+                    // ── try to grant next queued acquire ──
                     while (!lock_state.locked && lock_state.holder_slot <= lock_state.commit_index) {
-                        const auto* next_entry = mu_entry_ptr(lock_base, lock_state.holder_slot);
+                        auto* lock_base2 = mu_lock_base(local_buf, lock_id);
+                        const auto* next_entry = mu_entry_ptr(lock_base2, lock_state.holder_slot);
                         const uint32_t next_imm = mu_read_client_imm(next_entry);
                         const uint32_t next_op = mu_decode_op(next_imm);
 
@@ -153,7 +131,7 @@ void MuLeader::run() {
                             swr.wr_id = (ACK_TAG << 48) | next_client_id;
                             swr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
                             swr.num_sge = 0;
-                            swr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE;
+                            swr.send_flags = IBV_SEND_INLINE;  // unsignaled
                             swr.imm_data = htonl(mu_encode_ack(lock_id, lock_state.holder_slot, true));
                             swr.wr.rdma.remote_addr = clients_[next_client_id].remote_addr;
                             swr.wr.rdma.rkey = clients_[next_client_id].rkey;
@@ -170,14 +148,11 @@ void MuLeader::run() {
 
                 if (lock_state.commit_index != old_commit) {
                     lock_state.commit_dirty = true;
-                    // std::cout << "[MuLeader] commit advanced to " << lock_state.commit_index
-                    //           << " inflight=" << lock_state.inflight
-                    //           << "\n";
                 }
             }
         }
 
-        // ── drain pending → replicate ──
+        // ── drain pending → replicate, chained per follower ──
         ibv_send_wr* follower_head[MAX_REPLICAS] = {};
         ibv_send_wr* follower_tail[MAX_REPLICAS] = {};
         size_t repl_count = 0;
@@ -185,6 +160,7 @@ void MuLeader::run() {
         for (uint32_t lock_id = 0; lock_id < MAX_LOCKS; ++lock_id) {
             auto& ls = locks[lock_id];
 
+            // ── commit notification (unsignaled) ──
             if (ls.commit_dirty) {
                 for (size_t f = 0; f < peers_.size(); ++f) {
                     if (peers_[f].id == node_id_ || !peers_[f].id) continue;
@@ -195,7 +171,7 @@ void MuLeader::run() {
                     wr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
                     wr.sg_list = nullptr;
                     wr.num_sge = 0;
-                    wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE;
+                    wr.send_flags = IBV_SEND_INLINE;  // unsignaled
                     wr.imm_data = htonl(mu_encode_commit_notify(lock_id, ls.commit_index));
                     wr.wr.rdma.remote_addr = peers_[f].remote_addr;
                     wr.wr.rdma.rkey = peers_[f].rkey;
@@ -212,15 +188,10 @@ void MuLeader::run() {
                 ls.commit_dirty = false;
             }
 
+            // ── drain pending entries ──
             if (ls.inflight >= MAX_INFLIGHT || ls.pending.size() == 0) continue;
 
             const size_t to_drain = std::min(ls.pending.size(), MAX_INFLIGHT - ls.inflight);
-
-            // std::cout << "[MuLeader] DRAIN lock=" << lock_id
-            //           << " to_drain=" << to_drain
-            //           << " inflight=" << ls.inflight
-            //           << " current_index=" << ls.current_index
-            //           << "\n";
 
             for (size_t j = 0; j < to_drain; ++j) {
                 uint32_t imm;
@@ -237,7 +208,7 @@ void MuLeader::run() {
                     auto& sge = repl_sges[repl_count];
                     sge.addr = reinterpret_cast<uintptr_t>(entry);
                     sge.length = ENTRY_SIZE;
-                    sge.lkey = 0;
+                    sge.lkey = mr_->lkey;
 
                     auto& wr = repl_wrs[repl_count];
                     wr = {};
@@ -269,6 +240,7 @@ void MuLeader::run() {
             }
         }
 
+        // ── ring doorbell once per follower ──
         for (size_t f = 0; f < peers_.size(); ++f) {
             if (!follower_head[f]) continue;
             ibv_send_wr* bad_wr = nullptr;

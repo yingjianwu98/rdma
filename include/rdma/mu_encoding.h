@@ -26,7 +26,7 @@ static constexpr uint32_t MU_OP_CLIENT_UNLOCK  = 1;
 
 static inline uint32_t mu_encode_imm(uint16_t lock_id, uint16_t client_id, uint32_t op) {
     return (static_cast<uint32_t>(lock_id) << 16)
-        | (1u << 15)  // sentinel bit, always set
+        | (1u << 15)
         | ((static_cast<uint32_t>(client_id) & 0x3FFF) << 1)
         | (op & 0x1);
 }
@@ -59,7 +59,6 @@ inline constexpr uint32_t mu_encode_ack(uint8_t lock_id, uint16_t slot, bool gra
         | (static_cast<uint32_t>(slot) << 8)
         | (granted ? 1u : 0u);
 }
-
 
 static constexpr uint32_t MU_REPL_COMMIT_BIT = (1u << 31);
 
