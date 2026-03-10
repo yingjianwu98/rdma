@@ -81,8 +81,8 @@ void MuLeader::run() {
                 const uint64_t wr_id = wc[i].wr_id;
                 if ((wr_id >> 48) == ACK_TAG) continue;  // ack/commit notify — ignore
 
-                const auto lock_id = static_cast<uint16_t>(wr_id >> 48);
-                const auto slot = static_cast<uint16_t>((wr_id >> 16) & 0xFFFF);
+                const auto lock_id = static_cast<uint16_t>(wr_id >> 32);
+                const auto slot = static_cast<uint32_t>(wr_id & 0xFFFFFFFF);
                 auto& lock_state = locks[lock_id];
 
                 lock_state.acks[slot]++;
@@ -197,7 +197,7 @@ void MuLeader::run() {
                 uint32_t imm;
                 if (!ls.pending.pop(imm)) break;
 
-                const uint16_t slot = ls.current_index;
+                const uint32_t slot = ls.current_index;
                 auto* lock_base = mu_lock_base(local_buf, lock_id);
                 auto* entry = mu_entry_ptr(lock_base, slot);
                 mu_write_entry(entry, imm);
@@ -212,8 +212,8 @@ void MuLeader::run() {
 
                     auto& wr = repl_wrs[repl_count];
                     wr = {};
-                    wr.wr_id = (static_cast<uint64_t>(lock_id) << 48)
-                        | (static_cast<uint64_t>(slot) << 16);
+                    wr.wr_id = (static_cast<uint64_t>(lock_id) << 32)
+                   | static_cast<uint64_t>(slot);
                     wr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
                     wr.sg_list = &sge;
                     wr.num_sge = 1;
