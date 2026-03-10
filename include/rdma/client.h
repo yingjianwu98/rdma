@@ -22,12 +22,14 @@ public:
     Client& operator=(const Client&) = delete;
 
     void connect(const std::vector<std::string>& node_ips, uint16_t port);
+    void connect_peers(uint16_t peer_port);
 
     [[nodiscard]] uint32_t id() const { return id_; }
     [[nodiscard]] ibv_cq* cq() const { return cq_; }
     [[nodiscard]] ibv_mr* mr() const { return mr_; }
     [[nodiscard]] void* buffer() const { return buf_; }
     [[nodiscard]] const std::vector<RemoteNode>& connections() const { return connections_; }
+    [[nodiscard]] const std::vector<RemoteNode>& peers() const { return peers_; }
 
 private:
     uint32_t id_;
@@ -38,4 +40,5 @@ private:
     ibv_mr* mr_ = nullptr;
     void* buf_ = nullptr;
     std::vector<RemoteNode> connections_;
+    std::vector<RemoteNode> peers_;
 };

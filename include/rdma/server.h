@@ -36,4 +36,7 @@ protected:
     std::vector<RemoteConnection> peers_;
     std::vector<RemoteConnection> clients_;
     ConnPrivateData server_creds_{};
+
+private:
+    RemoteConnection connect_to_node(const std::string& ip, uint16_t port);
 };
