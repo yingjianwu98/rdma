@@ -82,7 +82,7 @@ void MuLeader::run() {
             else if (wc[i].opcode == IBV_WC_RDMA_WRITE) {
                 const uint64_t wr_id = wc[i].wr_id;
                 if ((wr_id >> 48) == ACK_TAG) {
-                    std::cout << "[MuLeader] ACK/COMMIT write completed\n";
+                    // std::cout << "[MuLeader] ACK/COMMIT write completed\n";
                     continue;
                 }
 
