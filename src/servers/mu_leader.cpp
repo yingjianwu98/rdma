@@ -59,6 +59,8 @@ void MuLeader::run() {
                 throw std::runtime_error("RDMA completion failure");
             }
 
+            std::cout << "Got some message with opcode: " << wc[i].opcode << "\n";
+
             if (wc[i].opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
                 const uint32_t imm = ntohl(wc[i].imm_data);
                 const uint16_t lock_id = mu_decode_lock_id(imm);
