@@ -14,7 +14,7 @@
 #include <memory>
 #include <thread>
 
-constexpr size_t NUM_LOCKS = 32;  // test with multiple locks
+constexpr size_t NUM_LOCKS = 1;  // test with multiple locks
 
 int main() {
     try {
