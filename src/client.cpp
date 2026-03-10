@@ -94,8 +94,11 @@ void Client::connect(const std::vector<std::string>& node_ips, const uint16_t po
             if (!cq_) throw std::runtime_error("ibv_create_cq failed");
 
             mr_ = ibv_reg_mr(
-                pd_, buf_, FINAL_POOL_SIZE,
-                IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
+                pd_, buf_, ALIGNED_SIZE,
+                IBV_ACCESS_LOCAL_WRITE |
+                    IBV_ACCESS_REMOTE_WRITE |
+                    IBV_ACCESS_REMOTE_READ |
+                    IBV_ACCESS_REMOTE_ATOMIC);
             if (!mr_) throw std::runtime_error("ibv_reg_mr failed");
         }
 
