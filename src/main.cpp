@@ -1,12 +1,10 @@
 #include "rdma/common.h"
 #include "rdma/server.h"
-#include "rdma/servers/synra_node.h"
 #include "rdma/servers/mu_leader.h"
 #include "rdma/servers/mu_follower.h"
 #include "rdma/client.h"
 #include "rdma/lock_table.h"
-#include "rdma/strategies/cas_strategy.h"
-#include "rdma/strategies/tas_strategy.h"
+#include "rdma/strategies/mu_strategy.h"
 
 #include <chrono>
 #include <cmath>
@@ -16,7 +14,7 @@
 #include <memory>
 #include <thread>
 
-constexpr size_t NUM_LOCKS = 4;
+constexpr size_t NUM_LOCKS = 1;
 
 int main() {
     try {
@@ -26,7 +24,6 @@ int main() {
             std::latch start_latch(NUM_CLIENTS + 1);
             std::vector<std::thread> workers;
 
-            // Track per-client, per-lock commit counts for verification
             auto lock_counts = std::make_unique<std::array<std::array<uint64_t, NUM_LOCKS>, NUM_CLIENTS>>();
             for (auto& client_counts : *lock_counts) client_counts.fill(0);
 
@@ -35,15 +32,16 @@ int main() {
                     try {
                         pin_thread_to_cpu(pick_cpu_for_client(i));
 
-                        std::vector<std::unique_ptr<CasStrategy>> strategies;
+                        std::vector<std::unique_ptr<MuStrategy>> strategies;
                         LockTable table;
                         for (size_t l = 0; l < NUM_LOCKS; ++l) {
-                            strategies.push_back(std::make_unique<CasStrategy>());
+                            strategies.push_back(std::make_unique<MuStrategy>());
                             table.add(*strategies.back());
                         }
 
+                        // connect to leader only
                         Client client(i);
-                        client.connect(CLUSTER_NODES, RDMA_PORT);
+                        client.connect({ CLUSTER_NODES[0] }, RDMA_PORT);
 
                         std::cout << "[Client " << i << "] Connected.\n";
                         start_latch.arrive_and_wait();
@@ -54,12 +52,16 @@ int main() {
                             auto t0 = std::chrono::steady_clock::now();
 
                             auto [lock_id, lock] = table.random(client);
-                            lock.lock();
-                            lock.unlock();
+                              lock.lock();
+                                  std::cout << "[Client " << i << "] ACQUIRED lock=" << lock_id
+                                            << " op=" << op << "\n";
+
+                              lock.unlock();
+                                  std::cout << "[Client " << i << "] RELEASED lock=" << lock_id
+                                            << " op=" << op << "\n";
 
                             auto t1 = std::chrono::steady_clock::now();
                             latencies[op] = std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
-                            lock.cleanup();
                             (*lock_counts)[i][lock_id]++;
                         }
 
@@ -84,7 +86,6 @@ int main() {
             std::cout << std::string(42, '-') << "\n";
 
             uint64_t total_committed = 0;
-            bool correct = true;
 
             for (size_t l = 0; l < NUM_LOCKS; ++l) {
                 uint64_t lock_total = 0;
@@ -108,9 +109,7 @@ int main() {
                 std::cout << " ✓ PASS\n";
             } else {
                 std::cout << " ✗ FAIL\n";
-                correct = false;
             }
-
 
             // ─── Compute stats ───
 
@@ -129,7 +128,6 @@ int main() {
             for (size_t i = 0; i < NUM_CLIENTS; ++i) {
                 total_throughput += (NUM_OPS_PER_CLIENT / client_durations_s[i]);
             }
-            double effective_total_time = NUM_TOTAL_OPS / total_throughput;
 
             auto get_p = [&](double p) {
                 size_t idx = static_cast<size_t>(p * (NUM_TOTAL_OPS - 1));
@@ -147,17 +145,17 @@ int main() {
             }
             double std_dev = std::sqrt(sq_sum / NUM_TOTAL_OPS);
 
+            const auto wall_ms = std::chrono::duration_cast<std::chrono::milliseconds>(wall_end - wall_start);
+
             std::cout << "\n" << std::string(42, '=') << "\n";
             std::cout << " RDMA BENCHMARK RESULTS\n";
             std::cout << std::string(42, '=') << "\n";
-            std::cout << "Strategy:     " << std::setw(10) << "SYNRA_CAS" << "\n";
+            std::cout << "Strategy:     " << std::setw(10) << "Mu" << "\n";
             std::cout << "Locks:        " << std::setw(10) << NUM_LOCKS << "\n";
             std::cout << "Clients:      " << std::setw(10) << NUM_CLIENTS << "\n";
             std::cout << "Ops/Client:   " << std::setw(10) << NUM_OPS_PER_CLIENT << "\n";
             std::cout << "Total Ops:    " << std::setw(10) << NUM_TOTAL_OPS << "\n";
-            const auto wall_ms = std::chrono::duration_cast<std::chrono::milliseconds>(wall_end - wall_start);
             std::cout << "Wall Clock:   " << std::setw(10) << std::fixed << std::setprecision(3) << (wall_ms.count() / 1000.0) << " s\n";
-            std::cout << "Active Time:  " << std::setw(10) << std::fixed << std::setprecision(3) << effective_total_time << " s\n";
             std::cout << "Throughput:   " << std::setw(10) << std::fixed << std::setprecision(0) << total_throughput << " ops/s\n";
             std::cout << std::string(42, '-') << "\n";
             std::cout << "LATENCY (Microseconds)\n";
@@ -174,8 +172,16 @@ int main() {
         } else {
             pin_thread_to_cpu(1);
             const uint32_t node_id = get_uint_env("NODE_ID");
-            SynraNode node(node_id);
-            node.start(RDMA_PORT);
+
+            if (node_id == 1) {
+                // node 1 = leader
+                MuLeader leader(node_id);
+                leader.start(RDMA_PORT);
+            } else {
+                // nodes 2, 3 = followers
+                MuFollower follower(node_id);
+                follower.connect_to_leader(CLUSTER_NODES[0], RDMA_PORT);
+            }
         }
     } catch (const std::exception& e) {
         std::cerr << "[error] " << e.what() << "\n";

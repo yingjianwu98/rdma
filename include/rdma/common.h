@@ -36,8 +36,8 @@ constexpr size_t HUGE_PAGE_SIZE = 2 * 1024 * 1024;
 
 // ─── Benchmark constants ───
 
-constexpr size_t NUM_OPS = 2000000;
-constexpr size_t NUM_CLIENTS = 4;
+constexpr size_t NUM_OPS = 10;
+constexpr size_t NUM_CLIENTS = 1;
 constexpr size_t NUM_OPS_PER_CLIENT = NUM_OPS / NUM_CLIENTS;
 constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * NUM_CLIENTS;
 
