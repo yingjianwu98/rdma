@@ -92,10 +92,9 @@ void MuFollower::connect_to_leader(const std::string& leader_ip, uint16_t port) 
 void MuFollower::run() {
     std::cout << "[MuFollower " << node_id_ << "] Processing replicated writes\n";
 
-    auto* local_buf = static_cast<uint8_t*>(buf_);
     ibv_qp* qp = leader_id_->qp;
 
-    constexpr int RECV_DEPTH = MAX_LOCKS * MAX_INFLIGHT * 2;  // entries + commits
+    constexpr int RECV_DEPTH = 512;
     for (int i = 0; i < RECV_DEPTH; ++i) {
         ibv_recv_wr rr{}, *bad = nullptr;
         rr.wr_id = i;
@@ -105,10 +104,11 @@ void MuFollower::run() {
             throw std::runtime_error("Failed to pre-post recv");
     }
 
-    uint64_t replicated[MAX_LOCKS] = {};  // how many entries have arrived
-    uint64_t committed[MAX_LOCKS] = {};   // leader's commit index
-    uint64_t applied[MAX_LOCKS] = {};     // how far we've applied
+    uint64_t replicated[MAX_LOCKS] = {};
+    uint64_t committed[MAX_LOCKS] = {};
+    uint64_t applied[MAX_LOCKS] = {};
 
+    auto* local_buf = static_cast<uint8_t*>(buf_);
     ibv_wc wc[32];
 
     while (true) {
@@ -116,7 +116,8 @@ void MuFollower::run() {
 
         for (int i = 0; i < n; ++i) {
             if (wc[i].status != IBV_WC_SUCCESS) {
-                std::cerr << "[MuFollower] WC error: " << ibv_wc_status_str(wc[i].status) << "\n";
+                std::cerr << "[MuFollower] WC error: "
+                    << ibv_wc_status_str(wc[i].status) << "\n";
                 throw std::runtime_error("Follower completion failure");
             }
 
@@ -124,17 +125,14 @@ void MuFollower::run() {
                 const uint32_t imm = ntohl(wc[i].imm_data);
 
                 if (mu_is_commit_notify(imm)) {
-                    // ── commit notification ──
                     const uint16_t lock_id = mu_decode_commit_lock_id(imm);
                     const uint16_t commit_idx = mu_decode_commit_index(imm);
                     committed[lock_id] = commit_idx;
                 } else {
-                    // ── replication message ──
                     const uint16_t lock_id = mu_decode_lock_id(imm);
                     replicated[lock_id]++;
                 }
 
-                // re-post recv
                 ibv_recv_wr rr{}, *bad = nullptr;
                 rr.wr_id = wc[i].wr_id;
                 rr.sg_list = nullptr;
@@ -144,9 +142,9 @@ void MuFollower::run() {
             }
         }
 
-        // ── apply committed + replicated entries ──
         for (uint32_t lock_id = 0; lock_id < MAX_LOCKS; ++lock_id) {
-            while (applied[lock_id] < committed[lock_id] && applied[lock_id] < replicated[lock_id]) {
+            while (applied[lock_id] < committed[lock_id]
+                && applied[lock_id] < replicated[lock_id]) {
 
                 auto* lock_base = mu_lock_base(local_buf, lock_id);
                 auto* entry = mu_entry_ptr(lock_base, applied[lock_id]);
