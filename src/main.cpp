@@ -173,7 +173,7 @@ int main() {
             pin_thread_to_cpu(1);
             const uint32_t node_id = get_uint_env("NODE_ID");
 
-            if (node_id == 1) {
+            if (node_id == 0) {
                 // node 1 = leader
                 MuLeader leader(node_id);
                 leader.start(RDMA_PORT);
