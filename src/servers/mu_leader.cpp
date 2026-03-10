@@ -138,24 +138,14 @@ void MuLeader::run() {
                         }
                     }
 
-                    if (!lock_state.locked && lock_state.holder_slot <= lock_state.commit_index) {
+                    while (!lock_state.locked && lock_state.holder_slot <= lock_state.commit_index) {
                         const auto* next_entry = mu_entry_ptr(lock_base, lock_state.holder_slot);
                         const uint32_t next_imm = mu_read_client_imm(next_entry);
                         const uint32_t next_op = mu_decode_op(next_imm);
 
-                        std::cout << "[MuLeader] TRY_GRANT holder_slot=" << lock_state.holder_slot
-                                  << " next_op=" << (next_op == MU_OP_CLIENT_UNLOCK ? "unlock" : "lock")
-                                  << " next_imm=0x" << std::hex << next_imm << std::dec
-                                  << "\n";
-
                         if (next_op == MU_OP_CLIENT_LOCK) {
                             const uint16_t next_client_id = mu_decode_client_id(next_imm);
                             lock_state.locked = true;
-
-                            std::cout << "[MuLeader] GRANT lock=" << lock_id
-                                      << " to client=" << next_client_id
-                                      << " at slot=" << lock_state.holder_slot
-                                      << "\n";
 
                             ibv_send_wr swr{}, *bad_wr = nullptr;
                             swr.wr_id = (ACK_TAG << 48) | next_client_id;
