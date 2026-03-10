@@ -41,4 +41,9 @@ private:
     void* buf_ = nullptr;
     std::vector<RemoteNode> connections_;
     std::vector<RemoteNode> peers_;
+
+    // peer mesh resources — kept alive for connection lifetime
+    rdma_event_channel* peer_ec_ = nullptr;
+    rdma_cm_id* peer_listener_ = nullptr;
+    std::vector<rdma_event_channel*> peer_conn_ecs_;
 };
