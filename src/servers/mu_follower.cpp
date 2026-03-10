@@ -105,5 +105,5 @@ void MuFollower::run() {
         //         applied[lock_id]++;
         //     }
         }
-    }
+    // }
 }
