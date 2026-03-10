@@ -17,7 +17,7 @@ void MuFollower::connect_to_leader(const std::string& leader_ip, uint16_t port) 
     // Initialize control words to 0
     auto* base = static_cast<uint8_t*>(buf_);
     for (uint32_t i = 0; i < MAX_LOCKS; ++i) {
-        *reinterpret_cast<uint64_t*>(base + lock_control_offset(i)) = 0;
+        mu_write_commit_index(base + i * LOCK_REGION_SIZE, 0);
     }
 
     rdma_cm_id* id = nullptr;
