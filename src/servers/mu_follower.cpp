@@ -92,72 +92,15 @@ void MuFollower::connect_to_leader(const std::string& leader_ip, uint16_t port) 
 void MuFollower::run() {
     std::cout << "[MuFollower " << node_id_ << "] Processing replicated writes\n";
 
-    ibv_qp* qp = leader_id_->qp;
-
-    constexpr int RECV_DEPTH = 512;
-    for (int i = 0; i < RECV_DEPTH; ++i) {
-        ibv_recv_wr rr{}, *bad = nullptr;
-        rr.wr_id = i;
-        rr.sg_list = nullptr;
-        rr.num_sge = 0;
-        if (ibv_post_recv(qp, &rr, &bad))
-            throw std::runtime_error("Failed to pre-post recv");
-    }
-
-    uint64_t replicated[MAX_LOCKS] = {};
-    uint64_t committed[MAX_LOCKS] = {};
     uint64_t applied[MAX_LOCKS] = {};
-
     auto* local_buf = static_cast<uint8_t*>(buf_);
-    ibv_wc wc[32];
 
     while (true) {
-        const int n = ibv_poll_cq(cq_, 32, wc);
-
-        for (int i = 0; i < n; ++i) {
-            if (wc[i].status != IBV_WC_SUCCESS) {
-                std::cerr << "[MuFollower] WC error: "
-                    << ibv_wc_status_str(wc[i].status) << "\n";
-                throw std::runtime_error("Follower completion failure");
-            }
-
-            if (wc[i].opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
-                const uint32_t imm = ntohl(wc[i].imm_data);
-
-                if (mu_is_commit_notify(imm)) {
-                    const uint16_t lock_id = mu_decode_commit_lock_id(imm);
-                    const uint16_t commit_idx = mu_decode_commit_index(imm);
-                    committed[lock_id] = commit_idx;
-                } else {
-                    const uint16_t lock_id = mu_decode_lock_id(imm);
-                    replicated[lock_id]++;
-                }
-
-                ibv_recv_wr rr{}, *bad = nullptr;
-                rr.wr_id = wc[i].wr_id;
-                rr.sg_list = nullptr;
-                rr.num_sge = 0;
-                if (ibv_post_recv(qp, &rr, &bad))
-                    throw std::runtime_error("Failed to re-post recv");
-            }
-        }
-
         for (uint32_t lock_id = 0; lock_id < MAX_LOCKS; ++lock_id) {
-            while (applied[lock_id] < committed[lock_id]
-                && applied[lock_id] < replicated[lock_id]) {
+            auto* lock_base = mu_lock_base(local_buf, lock_id);
+            const uint64_t committed = mu_read_commit_index(lock_base);
 
-                auto* lock_base = mu_lock_base(local_buf, lock_id);
-                auto* entry = mu_entry_ptr(lock_base, applied[lock_id]);
-                const uint32_t entry_imm = mu_read_client_imm(entry);
-                const uint16_t client_id = mu_decode_client_id(entry_imm);
-                const uint32_t op = mu_decode_op(entry_imm);
-
-                // std::cout << "[MuFollower " << node_id_
-                //     << "] applying lock=" << lock_id
-                //     << " slot=" << applied[lock_id]
-                //     << " client=" << client_id
-                //     << " op=" << (op == MU_OP_CLIENT_UNLOCK ? "unlock" : "lock")
-                //     << "\n";
+            while (applied[lock_id] < committed) {
 
                 applied[lock_id]++;
             }
