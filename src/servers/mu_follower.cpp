@@ -91,32 +91,15 @@ void MuFollower::connect_to_leader(const std::string& leader_ip, uint16_t port) 
 
 void MuFollower::run() {
     std::cout << "[MuFollower " << node_id_ << "] Processing replicated writes\n";
-    std::cout << "[MuFollower] buf_=" << buf_ << "\n";
-    std::cout.flush();
 
     uint64_t applied[MAX_LOCKS] = {};
-    std::cout << "[MuFollower] applied ok\n";
-    std::cout.flush();
-
     auto* local_buf = static_cast<uint8_t*>(buf_);
-    std::cout << "[MuFollower] local_buf=" << (void*)local_buf << "\n";
+
+    // test: read just the first header
+    volatile uint64_t* p = reinterpret_cast<volatile uint64_t*>(local_buf);
+    uint64_t val = *p;
+    std::cout << "[MuFollower] lock 0 header = " << val << "\n";
     std::cout.flush();
 
     while (true) {}
-    // std::cout << "[MuFollower " << node_id_ << "] Processing replicated writes\n";
-    //
-    // uint64_t applied[MAX_LOCKS] = {};
-    // auto* local_buf = static_cast<uint8_t*>(buf_);
-    //
-    // while (true) {
-    //     for (uint32_t lock_id = 0; lock_id < MAX_LOCKS; ++lock_id) {
-    //     //     auto* lock_base = mu_lock_base(local_buf, lock_id);
-    //     //     const uint64_t committed = mu_read_commit_index(lock_base);
-    //     //
-    //     //     while (applied[lock_id] < committed) {
-    //     //
-    //     //         applied[lock_id]++;
-    //     //     }
-    //     }
-    // }
 }
