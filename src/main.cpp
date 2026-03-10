@@ -54,12 +54,12 @@ int main() {
 
                             auto [lock_id, lock] = table.random(client);
                               lock.lock();
-                                  std::cout << "[Client " << i << "] ACQUIRED lock=" << lock_id
-                                            << " op=" << op << "\n";
+                                  // std::cout << "[Client " << i << "] ACQUIRED lock=" << lock_id
+                                  //           << " op=" << op << "\n";
 
                               lock.unlock();
-                                  std::cout << "[Client " << i << "] RELEASED lock=" << lock_id
-                                            << " op=" << op << "\n";
+                                  // std::cout << "[Client " << i << "] RELEASED lock=" << lock_id
+                                  //           << " op=" << op << "\n";
 
                             auto t1 = std::chrono::steady_clock::now();
                             latencies[op] = std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
