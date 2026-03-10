@@ -129,6 +129,7 @@ void Server::start(uint16_t port) {
         rdma_conn_param accept_params{};
         accept_params.responder_resources = 1;
         accept_params.initiator_depth     = 1;
+        accept_params.rnr_retry_count = 10;
 
         if (incoming->type == ConnType::CLIENT) {
             accept_params.private_data     = &server_creds_;

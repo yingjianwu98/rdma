@@ -128,6 +128,7 @@ void Client::connect(const std::vector<std::string>& node_ips, const uint16_t po
         param.private_data_len = sizeof(priv);
         param.responder_resources = 1;
         param.initiator_depth = 1;
+        param.rnr_retry_count = 10;
 
         if (rdma_connect(cm_id, &param)) {
             throw std::runtime_error("rdma_connect failed for node " + std::to_string(i));
