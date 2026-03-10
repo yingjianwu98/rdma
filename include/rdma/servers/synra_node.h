@@ -8,7 +8,6 @@ public:
     }
 
 protected:
-    [[nodiscard]] uint32_t expected_followers() const override { return 0; }
     [[nodiscard]] uint32_t expected_clients() const override { return NUM_CLIENTS; }
     void run() override;
 };
