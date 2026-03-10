@@ -44,6 +44,7 @@ int main() {
                         client.connect({ CLUSTER_NODES[0] }, RDMA_PORT);
 
                         std::cout << "[Client " << i << "] Connected.\n";
+                        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
                         start_latch.arrive_and_wait();
 
                         uint64_t* latencies = &((*all_latencies)[i * NUM_OPS_PER_CLIENT]);
