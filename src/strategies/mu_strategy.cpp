@@ -37,7 +37,7 @@ static void mu_send_and_wait(Client& client, uint32_t lock_id, uint32_t op) {
     wr.num_sge = 0;
     wr.sg_list = nullptr;
     wr.imm_data = htonl(imm);
-    wr.wr.rdma.remote_addr = 0;
+    wr.wr.rdma.remote_addr = leader.addr + client_staging_offset(client.id());
     wr.wr.rdma.rkey = leader.rkey;
 
     if (ibv_post_send(leader.id->qp, &wr, &bad)) {
