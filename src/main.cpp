@@ -16,6 +16,7 @@
 
 #include "rdma/servers/synra_node.h"
 #include "rdma/strategies/cas_strategy.h"
+#include "rdma/strategies/tas_strategy.h"
 
 constexpr size_t NUM_LOCKS = 16;
 
@@ -35,10 +36,10 @@ int main() {
                     try {
                         pin_thread_to_cpu(pick_cpu_for_client(i));
 
-                        std::vector<std::unique_ptr<CasStrategy>> strategies;
+                        std::vector<std::unique_ptr<TasStrategy>> strategies;
                         LockTable table;
                         for (size_t l = 0; l < NUM_LOCKS; ++l) {
-                            strategies.push_back(std::make_unique<CasStrategy>());
+                            strategies.push_back(std::make_unique<TasStrategy>());
                             table.add(*strategies.back());
                         }
 
