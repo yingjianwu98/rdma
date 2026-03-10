@@ -28,6 +28,29 @@ struct FollowerBatch {
 };
 
 void MuLeader::run() {
+    uint32_t client_unsignaled[NUM_CLIENTS] = {};
+
+    auto post_client_ack = [&](uint16_t client_id, uint32_t imm_data) {
+        ibv_send_wr swr{}, *bad_wr = nullptr;
+        swr.wr_id = (ACK_TAG << 48) | client_id;
+        swr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
+        swr.num_sge = 0;
+        swr.send_flags = IBV_SEND_INLINE;
+
+        client_unsignaled[client_id]++;
+        if (client_unsignaled[client_id] >= 512) {
+            swr.send_flags |= IBV_SEND_SIGNALED;
+            client_unsignaled[client_id] = 0;
+        }
+
+        swr.imm_data = htonl(imm_data);
+        swr.wr.rdma.remote_addr = clients_[client_id].remote_addr;
+        swr.wr.rdma.rkey = clients_[client_id].rkey;
+        if (ibv_post_send(clients_[client_id].cm_id->qp, &swr, &bad_wr)) {
+            throw std::runtime_error("Failed to post client ack");
+        }
+    };
+
     std::cout << "[MuLeader " << node_id_ << "] Starting MCS pipelined replication loop\n";
 
     auto* local_buf = static_cast<uint8_t*>(buf_);
@@ -124,18 +147,7 @@ void MuLeader::run() {
 
                         if (op == MU_OP_CLIENT_UNLOCK) {
                             ls.locked = false;
-
-                            ibv_send_wr swr{}, *bad_wr = nullptr;
-                            swr.wr_id = (ACK_TAG << 48) | client_id;
-                            swr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
-                            swr.num_sge = 0;
-                            swr.send_flags = IBV_SEND_INLINE;
-                            swr.imm_data = htonl(mu_encode_ack(lid, ls.commit_index, false));
-                            swr.wr.rdma.remote_addr = clients_[client_id].remote_addr;
-                            swr.wr.rdma.rkey = clients_[client_id].rkey;
-                            if (ibv_post_send(clients_[client_id].cm_id->qp, &swr, &bad_wr)) {
-                                throw std::runtime_error("Failed to ack unlock");
-                            }
+                            post_client_ack(client_id, mu_encode_ack(lid, ls.commit_index, false));
                         }
 
                         while (!ls.locked && ls.holder_slot <= ls.commit_index) {
@@ -146,18 +158,8 @@ void MuLeader::run() {
                             if (next_op == MU_OP_CLIENT_LOCK) {
                                 const uint16_t next_client_id = mu_decode_client_id(next_imm);
                                 ls.locked = true;
-
-                                ibv_send_wr swr{}, *bad_wr = nullptr;
-                                swr.wr_id = (ACK_TAG << 48) | next_client_id;
-                                swr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
-                                swr.num_sge = 0;
-                                swr.send_flags = IBV_SEND_INLINE;
-                                swr.imm_data = htonl(mu_encode_ack(lid, ls.holder_slot, true));
-                                swr.wr.rdma.remote_addr = clients_[next_client_id].remote_addr;
-                                swr.wr.rdma.rkey = clients_[next_client_id].rkey;
-                                if (ibv_post_send(clients_[next_client_id].cm_id->qp, &swr, &bad_wr)) {
-                                    throw std::runtime_error("Failed to ack lock grant");
-                                }
+                                post_client_ack(next_client_id,
+                                    mu_encode_ack(lid, ls.holder_slot, true));
                             }
                             ls.holder_slot++;
                         }
