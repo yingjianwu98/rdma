@@ -30,10 +30,13 @@ int main() {
 
                         Client client(i);
                         client.connect(CLUSTER_NODES, RDMA_PORT);
+
+                        std::cout << "[Client " << i << "] Fully connected: "
+                          << client.connections().size() << " nodes,\n";
+
                         client.connect_peers(7000);
 
                         std::cout << "[Client " << i << "] Fully connected: "
-                                  << client.connections().size() << " nodes, "
                                   << (NUM_CLIENTS - 1) << " peers\n";
 
                         start_latch.arrive_and_wait();
