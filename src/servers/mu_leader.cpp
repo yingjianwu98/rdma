@@ -6,9 +6,6 @@
 #include <iostream>
 #include <stdexcept>
 
-static constexpr uint64_t ACK_TAG = 0xFFFF;
-static constexpr size_t MAX_INFLIGHT = 20;
-
 struct LockState {
     size_t inflight = 0;
 
