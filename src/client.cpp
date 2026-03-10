@@ -166,6 +166,10 @@ void Client::connect(const std::vector<std::string>& node_ips, const uint16_t po
 void Client::connect_peers(uint16_t peer_port) {
     peers_.resize(NUM_CLIENTS);
 
+    // separate event channel for peer mesh — avoids mixing with node ec_
+    rdma_event_channel* peer_ec = rdma_create_event_channel();
+    if (!peer_ec) throw std::runtime_error("rdma_create_event_channel failed for peers");
+
     // grab our IB IP from an existing node connection
     const sockaddr* local_addr = rdma_get_local_addr(connections_[0].id);
     const auto* local_in = reinterpret_cast<const sockaddr_in*>(local_addr);
@@ -176,7 +180,7 @@ void Client::connect_peers(uint16_t peer_port) {
 
     // Each client listens on peer_port + id_
     rdma_cm_id* peer_listener = nullptr;
-    if (rdma_create_id(ec_, &peer_listener, nullptr, RDMA_PS_TCP))
+    if (rdma_create_id(peer_ec, &peer_listener, nullptr, RDMA_PS_TCP))
         throw std::runtime_error("rdma_create_id failed for peer listener");
 
     sockaddr_in bind_addr{};
@@ -195,30 +199,34 @@ void Client::connect_peers(uint16_t peer_port) {
     for (uint32_t target = 0; target < id_; ++target) {
         const uint16_t target_port = peer_port + target;
 
+        // use a per-connection event channel so we don't mix events
+        rdma_event_channel* conn_ec = rdma_create_event_channel();
+        if (!conn_ec) throw std::runtime_error("create_event_channel failed for peer connect");
+
         rdma_cm_id* cm_id = nullptr;
         bool connected = false;
 
         for (int attempt = 0; attempt < 60; ++attempt) {
             try {
-                if (rdma_create_id(ec_, &cm_id, nullptr, RDMA_PS_TCP))
+                if (rdma_create_id(conn_ec, &cm_id, nullptr, RDMA_PS_TCP))
                     throw std::runtime_error("create_id failed");
 
                 sockaddr_in addr{};
                 addr.sin_family = AF_INET;
                 addr.sin_port = htons(target_port);
-                addr.sin_addr = local_in->sin_addr;  // IB interface, not loopback
+                addr.sin_addr = local_in->sin_addr;
 
                 if (rdma_resolve_addr(cm_id, nullptr,
                                       reinterpret_cast<sockaddr*>(&addr), 2000))
                     throw std::runtime_error("resolve_addr failed");
 
-                auto* ev = wait_for_event(ec_, RDMA_CM_EVENT_ADDR_RESOLVED, "PEER_ADDR");
+                auto* ev = wait_for_event(conn_ec, RDMA_CM_EVENT_ADDR_RESOLVED, "PEER_ADDR");
                 rdma_ack_cm_event(ev);
 
                 if (rdma_resolve_route(cm_id, 2000))
                     throw std::runtime_error("resolve_route failed");
 
-                ev = wait_for_event(ec_, RDMA_CM_EVENT_ROUTE_RESOLVED, "PEER_ROUTE");
+                ev = wait_for_event(conn_ec, RDMA_CM_EVENT_ROUTE_RESOLVED, "PEER_ROUTE");
                 rdma_ack_cm_event(ev);
 
                 ibv_qp_init_attr qp_attr{};
@@ -250,9 +258,9 @@ void Client::connect_peers(uint16_t peer_port) {
                 if (rdma_connect(cm_id, &param))
                     throw std::runtime_error("connect failed");
 
-                auto* ev_conn = wait_for_event(ec_, RDMA_CM_EVENT_ESTABLISHED, "PEER_ESTABLISHED");
+                ev = wait_for_event(conn_ec, RDMA_CM_EVENT_ESTABLISHED, "PEER_ESTABLISHED");
                 auto* remote = static_cast<const ConnPrivateData*>(
-                    ev_conn->param.conn.private_data);
+                    ev->param.conn.private_data);
 
                 peers_[target] = {
                     .id = cm_id,
@@ -260,7 +268,7 @@ void Client::connect_peers(uint16_t peer_port) {
                     .rkey = remote ? remote->rkey : 0,
                 };
 
-                rdma_ack_cm_event(ev_conn);
+                rdma_ack_cm_event(ev);
                 connected = true;
                 break;
             } catch (...) {
@@ -272,6 +280,7 @@ void Client::connect_peers(uint16_t peer_port) {
             }
         }
 
+        // don't destroy conn_ec — the cm_id still references it
         if (!connected)
             throw std::runtime_error("Failed to connect to peer client " + std::to_string(target));
 
@@ -285,7 +294,7 @@ void Client::connect_peers(uint16_t peer_port) {
         rdma_cm_event* event = nullptr;
 
         while (true) {
-            if (rdma_get_cm_event(ec_, &event))
+            if (rdma_get_cm_event(peer_ec, &event))
                 throw std::runtime_error("rdma_get_cm_event failed in peer accept");
             if (event->event == RDMA_CM_EVENT_CONNECT_REQUEST) break;
             rdma_ack_cm_event(event);
@@ -351,6 +360,7 @@ void Client::connect_peers(uint16_t peer_port) {
     }
 
     rdma_destroy_id(peer_listener);
+    rdma_destroy_event_channel(peer_ec);
 
     std::cout << "[Client " << id_ << "] All " << (NUM_CLIENTS - 1) << " peer connections ready\n";
 }
