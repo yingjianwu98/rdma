@@ -100,7 +100,7 @@ namespace {
     }
 }
 
-uint64_t FaaStrategy::acquire(Client& client, int /*op_id*/, uint32_t lock_id) {
+uint64_t FaaStrategy::acquire(Client& client, int op_id, uint32_t lock_id) {
     auto* state = static_cast<LocalState*>(client.buffer());
     auto* cq = client.cq();
     auto* mr = client.mr();
@@ -110,7 +110,7 @@ uint64_t FaaStrategy::acquire(Client& client, int /*op_id*/, uint32_t lock_id) {
         throw std::runtime_error("FaaStrategy: no connections");
     }
 
-    const uint64_t faa_ctx = lock_id;
+    const uint64_t ctx = static_cast<uint32_t>(op_id);
 
     // 1) FAA against leader control word.
     state->metadata = 0xDEAD;
@@ -121,7 +121,7 @@ uint64_t FaaStrategy::acquire(Client& client, int /*op_id*/, uint32_t lock_id) {
     faa_sge.lkey = mr->lkey;
 
     ibv_send_wr faa_wr{}, *bad_faa = nullptr;
-    faa_wr.wr_id = make_wr_id(faa_ctx, FAA_TAG);
+    faa_wr.wr_id = make_wr_id(ctx, FAA_TAG);
     faa_wr.sg_list = &faa_sge;
     faa_wr.num_sge = 1;
     faa_wr.opcode = IBV_WR_ATOMIC_FETCH_AND_ADD;
@@ -134,7 +134,7 @@ uint64_t FaaStrategy::acquire(Client& client, int /*op_id*/, uint32_t lock_id) {
         throw std::runtime_error("FAA post failed: " + std::string(std::strerror(errno)));
     }
 
-    wait_for_exact_completion(cq, faa_ctx, FAA_TAG, "FAA");
+    wait_for_exact_completion(cq, ctx, FAA_TAG, "FAA");
 
     my_ticket_ = state->metadata;
 
@@ -148,7 +148,7 @@ uint64_t FaaStrategy::acquire(Client& client, int /*op_id*/, uint32_t lock_id) {
 
     for (size_t i = 0; i < conns.size(); ++i) {
         ibv_send_wr wr{}, *bad = nullptr;
-        wr.wr_id = make_wr_id(my_ticket_, REPLICATE_TAG, static_cast<uint32_t>(i));
+        wr.wr_id = make_wr_id(ctx, REPLICATE_TAG, static_cast<uint32_t>(i));
         wr.sg_list = &rep_sge;
         wr.num_sge = 1;
         wr.opcode = IBV_WR_RDMA_WRITE;
@@ -163,7 +163,7 @@ uint64_t FaaStrategy::acquire(Client& client, int /*op_id*/, uint32_t lock_id) {
 
     wait_for_n_completions(
         cq,
-        my_ticket_,
+        ctx,
         REPLICATE_TAG,
         static_cast<int>(QUORUM),
         "Replicate quorum");
@@ -179,14 +179,11 @@ uint64_t FaaStrategy::acquire(Client& client, int /*op_id*/, uint32_t lock_id) {
     const uint64_t prev_slot = my_ticket_ - 1;
 
     for (;;) {
-
-        // Fast path: predecessor sent GO directly to my metadata.
         for (int spin = 0; spin < NOTIFY_SPIN_ROUNDS; ++spin) {
             if (*notify_ptr != NOTIFY_CLEAR) {
                 return my_ticket_;
             }
         }
-
 
         {
             for (size_t i = 0; i < conns.size(); ++i) {
@@ -198,7 +195,7 @@ uint64_t FaaStrategy::acquire(Client& client, int /*op_id*/, uint32_t lock_id) {
                 sge.lkey = mr->lkey;
 
                 ibv_send_wr wr{}, *bad = nullptr;
-                wr.wr_id = make_wr_id(my_ticket_, READ_TAG, static_cast<uint32_t>(i));
+                wr.wr_id = make_wr_id(ctx, READ_TAG, static_cast<uint32_t>(i));
                 wr.sg_list = &sge;
                 wr.num_sge = 1;
                 wr.opcode = IBV_WR_RDMA_READ;
@@ -213,7 +210,7 @@ uint64_t FaaStrategy::acquire(Client& client, int /*op_id*/, uint32_t lock_id) {
 
             wait_for_n_completions(
                 cq,
-                my_ticket_,
+                ctx,
                 READ_TAG,
                 static_cast<int>(conns.size()),
                 "Fallback read");
@@ -223,7 +220,7 @@ uint64_t FaaStrategy::acquire(Client& client, int /*op_id*/, uint32_t lock_id) {
                 if (state->learn_results[i] != EMPTY_SLOT &&
                     is_done(state->learn_results[i])) {
                     ++done_count;
-                    }
+                }
             }
 
             if (done_count >= static_cast<int>(QUORUM)) {
@@ -233,12 +230,14 @@ uint64_t FaaStrategy::acquire(Client& client, int /*op_id*/, uint32_t lock_id) {
     }
 }
 
-void FaaStrategy::release(Client& client, int /*op_id*/, uint32_t lock_id) {
+void FaaStrategy::release(Client& client, int op_id, uint32_t lock_id) {
     auto* state = static_cast<LocalState*>(client.buffer());
     auto* cq = client.cq();
     auto* mr = client.mr();
     const auto& conns = client.connections();
     const auto& peers = client.peers();
+
+    const uint64_t ctx = static_cast<uint32_t>(op_id);
 
     // 1) Mark my slot done on all replicas.
     state->next_frontier = encode_slot(client.id(), true);
@@ -251,7 +250,7 @@ void FaaStrategy::release(Client& client, int /*op_id*/, uint32_t lock_id) {
 
         for (size_t i = 0; i < conns.size(); ++i) {
             ibv_send_wr wr{}, *bad = nullptr;
-            wr.wr_id = make_wr_id(my_ticket_, RELEASE_TAG, static_cast<uint32_t>(i));
+            wr.wr_id = make_wr_id(ctx, RELEASE_TAG, static_cast<uint32_t>(i));
             wr.sg_list = &sge;
             wr.num_sge = 1;
             wr.opcode = IBV_WR_RDMA_WRITE;
@@ -266,7 +265,7 @@ void FaaStrategy::release(Client& client, int /*op_id*/, uint32_t lock_id) {
 
         wait_for_n_completions(
             cq,
-            my_ticket_,
+            ctx,
             RELEASE_TAG,
             static_cast<int>(QUORUM),
             "Release quorum");
@@ -284,7 +283,7 @@ void FaaStrategy::release(Client& client, int /*op_id*/, uint32_t lock_id) {
         sge.lkey = mr->lkey;
 
         ibv_send_wr wr{}, *bad = nullptr;
-        wr.wr_id = make_wr_id(my_ticket_, NEXT_READ_TAG, static_cast<uint32_t>(i));
+        wr.wr_id = make_wr_id(ctx, NEXT_READ_TAG, static_cast<uint32_t>(i));
         wr.sg_list = &sge;
         wr.num_sge = 1;
         wr.opcode = IBV_WR_RDMA_READ;
@@ -299,7 +298,7 @@ void FaaStrategy::release(Client& client, int /*op_id*/, uint32_t lock_id) {
 
     wait_for_n_completions(
         cq,
-        my_ticket_,
+        ctx,
         NEXT_READ_TAG,
         static_cast<int>(conns.size()),
         "Next-slot read");
@@ -341,7 +340,7 @@ void FaaStrategy::release(Client& client, int /*op_id*/, uint32_t lock_id) {
             sge.lkey = mr->lkey;
 
             ibv_send_wr wr{}, *bad = nullptr;
-            wr.wr_id = make_wr_id(my_ticket_, NOTIFY_TAG);
+            wr.wr_id = make_wr_id(ctx, NOTIFY_TAG);
             wr.sg_list = &sge;
             wr.num_sge = 1;
             wr.opcode = IBV_WR_RDMA_WRITE;
@@ -353,7 +352,7 @@ void FaaStrategy::release(Client& client, int /*op_id*/, uint32_t lock_id) {
                 throw std::runtime_error("Notify post failed");
             }
 
-            wait_for_exact_completion(cq, my_ticket_, NOTIFY_TAG, "Notify");
+            wait_for_exact_completion(cq, ctx, NOTIFY_TAG, "Notify");
         }
     }
 }
