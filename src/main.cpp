@@ -20,7 +20,7 @@
 #include "rdma/strategies/mu_strategy.h"
 #include "rdma/strategies/tas_strategy.h"
 
-constexpr size_t NUM_LOCKS = 300;
+constexpr size_t NUM_LOCKS = 1000;
 
 int main() {
     try {
@@ -45,10 +45,10 @@ int main() {
                     try {
                         pin_thread_to_cpu(pick_cpu_for_client(i));
 
-                        std::vector<std::unique_ptr<MuStrategy>> strategies;
+                        std::vector<std::unique_ptr<FaaStrategy>> strategies;
                         LockTable table;
                         for (size_t l = 0; l < NUM_LOCKS; ++l) {
-                            strategies.push_back(std::make_unique<MuStrategy>());
+                            strategies.push_back(std::make_unique<FaaStrategy>());
                             table.add(*strategies.back());
                         }
 
@@ -254,15 +254,15 @@ int main() {
         } else {
             pin_thread_to_cpu(1);
             const uint32_t node_id = get_uint_env("NODE_ID");
-            // SynraNode node(node_id);
-            // node.start(RDMA_PORT);
-            if (node_id == 0) {
-                MuLeader leader(node_id);
-                leader.start(RDMA_PORT);
-            } else {
-                MuFollower follower(node_id);
-                follower.start(RDMA_PORT);
-            }
+            SynraNode node(node_id);
+            node.start(RDMA_PORT);
+            // if (node_id == 0) {
+            //     MuLeader leader(node_id);
+            //     leader.start(RDMA_PORT);
+            // } else {
+            //     MuFollower follower(node_id);
+            //     follower.start(RDMA_PORT);
+            // }
         }
     } catch (const std::exception& e) {
         std::cerr << "[error] " << e.what() << "\n";
