@@ -288,6 +288,8 @@ void Server::signal_clients_ready() {
     const uint32_t num_clients = expected_clients();
     if (num_clients == 0) return;
 
+    std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+
     // Post all GO sends at once (don't wait one-by-one)
     for (uint32_t i = 0; i < num_clients; ++i) {
         ibv_send_wr swr{}, *bad_wr = nullptr;
