@@ -22,7 +22,7 @@
 #include "rdma/mu_encoding.h"
 
 // set to "mu", "faa", "cas", or "tas"
-constexpr const char* STRATEGY = "faa";
+constexpr const char* STRATEGY = "cas";
 
 int main() {
     try {
@@ -57,7 +57,7 @@ int main() {
                                     strategies.push_back(std::make_unique<MuStrategy>());
                                 }
                                 else {
-                                    strategies.push_back(std::make_unique<TasStrategy>());
+                                    strategies.push_back(std::make_unique<CasStrategy>());
                                 }
                                 table.add(*strategies.back());
                             }
