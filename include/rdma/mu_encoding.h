@@ -7,7 +7,9 @@ constexpr size_t MU_NUM_INSTANCES = 3;
 constexpr size_t MU_LOCKS_PER_INSTANCE = MAX_LOCKS / MU_NUM_INSTANCES;
 
 static inline size_t mu_instance_for_lock(uint16_t lock_id) {
-    return lock_id / MU_LOCKS_PER_INSTANCE;
+    size_t inst = lock_id / MU_LOCKS_PER_INSTANCE;
+    if (inst >= MU_NUM_INSTANCES) inst = MU_NUM_INSTANCES - 1;
+    return inst;
 }
 
 // ── Lock header (first 8 bytes of each lock region) ──
