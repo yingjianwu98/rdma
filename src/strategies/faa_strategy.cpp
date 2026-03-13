@@ -22,7 +22,7 @@ static inline uint64_t make_wr_id(uint64_t ctx, uint64_t tag, uint32_t idx = 0) 
 static inline uint64_t wr_ctx(uint64_t wr_id) { return wr_id >> 32; }
 static inline uint64_t wr_tag(uint64_t wr_id) { return wr_id & TAG_MASK; }
 
-constexpr int NOTIFY_SPIN_ROUNDS = 1000;
+constexpr int NOTIFY_SPIN_ROUNDS = 100000;
 
 uint64_t FaaStrategy::acquire(Client& client, int /*op_id*/, uint32_t lock_id) {
     auto* state = static_cast<LocalState*>(client.buffer());
@@ -71,8 +71,8 @@ uint64_t FaaStrategy::acquire(Client& client, int /*op_id*/, uint32_t lock_id) {
     std::atomic_thread_fence(std::memory_order_acquire);
     my_ticket_ = state->metadata;
 
-      std::cerr << "[FAA Client " << client.id() << "] lock=" << lock_id
-              << " ticket=" << my_ticket_ << "\n";
+      // std::cerr << "[FAA Client " << client.id() << "] lock=" << lock_id
+      //         << " ticket=" << my_ticket_ << "\n";
 
     state->next_frontier = encode_slot(client.id(), false);
 
@@ -113,8 +113,8 @@ uint64_t FaaStrategy::acquire(Client& client, int /*op_id*/, uint32_t lock_id) {
 
 
     if (my_ticket_ == 0) {
-        std::cerr << "[FAA Client " << client.id() << "] lock=" << lock_id
-                  << " ticket=0, acquired immediately\n";
+        // std::cerr << "[FAA Client " << client.id() << "] lock=" << lock_id
+        //           << " ticket=0, acquired immediately\n";
         return my_ticket_;
     }
 
@@ -124,8 +124,8 @@ uint64_t FaaStrategy::acquire(Client& client, int /*op_id*/, uint32_t lock_id) {
 
     const uint64_t prev_slot = my_ticket_ - 1;
 
-    std::cerr << "[FAA Client " << client.id() << "] lock=" << lock_id
-              << " ticket=" << my_ticket_ << " waiting for predecessor " << (my_ticket_ - 1) << "\n";
+    // std::cerr << "[FAA Client " << client.id() << "] lock=" << lock_id
+    //           << " ticket=" << my_ticket_ << " waiting for predecessor " << (my_ticket_ - 1) << "\n";
 
     while (true) {
         for (int spin = 0; spin < NOTIFY_SPIN_ROUNDS; ++spin) {
@@ -181,14 +181,14 @@ uint64_t FaaStrategy::acquire(Client& client, int /*op_id*/, uint32_t lock_id) {
             return my_ticket_;
         }
 
-        std::cerr << "[FAA Client " << client.id() << "] lock=" << lock_id
-          << " ticket=" << my_ticket_ << " slow-path: done_count=" << done_count
-          << "/" << QUORUM << " vals=[";
-        for (size_t i = 0; i < conns.size(); ++i) {
-            if (i > 0) std::cerr << ", ";
-            std::cerr << "0x" << std::hex << state->learn_results[i] << std::dec;
-        }
-        std::cerr << "]\n";
+        // std::cerr << "[FAA Client " << client.id() << "] lock=" << lock_id
+        //   << " ticket=" << my_ticket_ << " slow-path: done_count=" << done_count
+        //   << "/" << QUORUM << " vals=[";
+        // for (size_t i = 0; i < conns.size(); ++i) {
+        //     if (i > 0) std::cerr << ", ";
+        //     std::cerr << "0x" << std::hex << state->learn_results[i] << std::dec;
+        // }
+        // std::cerr << "]\n";
     }
 }
 
