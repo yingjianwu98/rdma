@@ -1,6 +1,15 @@
 #pragma once
 #include <cstdint>
 
+// ── MU multi-instance config ──
+
+constexpr size_t MU_NUM_INSTANCES = 3;
+constexpr size_t MU_LOCKS_PER_INSTANCE = MAX_LOCKS / MU_NUM_INSTANCES;
+
+static inline size_t mu_instance_for_lock(uint16_t lock_id) {
+    return lock_id / MU_LOCKS_PER_INSTANCE;
+}
+
 // ── Lock header (first 8 bytes of each lock region) ──
 static inline void mu_write_commit_index(uint8_t* lock_base, uint64_t commit_index) {
     *reinterpret_cast<uint64_t*>(lock_base) = commit_index;

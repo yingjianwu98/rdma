@@ -8,7 +8,13 @@
 
 static void mu_send_and_wait(Client& client, uint32_t lock_id, uint32_t op) {
     auto* cq = client.cq();
-    auto& leader = client.connections()[0];
+
+    // route to the leader instance that owns this lock
+    size_t inst = mu_instance_for_lock(static_cast<uint16_t>(lock_id));
+
+    // connections layout: [server0_inst0, server0_inst1, server0_inst2, ...]
+    // but we only connect to leader (node 0), so inst IS the connection index
+    auto& leader = client.connections()[inst];
 
     const uint32_t imm = mu_encode_imm(
         static_cast<uint16_t>(lock_id),
@@ -16,7 +22,6 @@ static void mu_send_and_wait(Client& client, uint32_t lock_id, uint32_t op) {
         op
     );
 
-    // ── pre-post recv for the ack ──
     ibv_recv_wr rr{}, *bad_rr = nullptr;
     rr.wr_id = 0;
     rr.sg_list = nullptr;
@@ -25,8 +30,6 @@ static void mu_send_and_wait(Client& client, uint32_t lock_id, uint32_t op) {
         throw std::runtime_error("MuStrategy: Failed to pre-post recv");
     }
 
-    // ── fire-and-forget SEND_WITH_IMM ──
-    // signal every 1024th to drain the SQ
     thread_local uint32_t send_count = 0;
     send_count++;
 
@@ -45,7 +48,6 @@ static void mu_send_and_wait(Client& client, uint32_t lock_id, uint32_t op) {
         throw std::runtime_error("MuStrategy: Failed to post send to leader");
     }
 
-    // ── wait for ack only ──
     ibv_wc wc{};
     while (true) {
         int n = ibv_poll_cq(cq, 1, &wc);
@@ -57,8 +59,7 @@ static void mu_send_and_wait(Client& client, uint32_t lock_id, uint32_t op) {
                 + " opcode " + std::to_string(wc.opcode));
         }
 
-        if (wc.opcode & IBV_WC_RECV) return;  // got ack
-        // else: periodic signaled send completion — ignore
+        if (wc.opcode & IBV_WC_RECV) return;
     }
 }
 

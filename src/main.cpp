@@ -19,10 +19,15 @@
 #include "rdma/strategies/faa_strategy.h"
 #include "rdma/strategies/mu_strategy.h"
 #include "rdma/strategies/tas_strategy.h"
+#include "rdma/mu_encoding.h"
 
+// set to "mu", "faa", "cas", or "tas"
+constexpr const char* STRATEGY = "mu";
 
 int main() {
     try {
+        const bool is_mu = (std::string(STRATEGY) == "mu");
+
         if (get_uint_env("IS_CLIENT") != 0) {
             const uint32_t machine_id = get_uint_env("MACHINE_ID");
 
@@ -34,33 +39,43 @@ int main() {
                 std::array<std::array<uint64_t, MAX_LOCKS>, TOTAL_CLIENTS>>();
             for (auto& client_counts : *lock_counts) client_counts.fill(0);
 
-            // One client kept alive for post-benchmark reads
             std::atomic<Client*> verify_client{nullptr};
 
             for (uint32_t i = 0; i < NUM_CLIENTS_PER_MACHINE; ++i) {
                 const uint32_t global_id = machine_id * NUM_CLIENTS_PER_MACHINE + i;
 
-                workers.emplace_back([i, global_id, &start_latch, &all_latencies, &lock_counts, &verify_client]() {
+                workers.emplace_back([i, global_id, is_mu, &start_latch, &all_latencies, &lock_counts, &verify_client]() {
                     try {
                         pin_thread_to_cpu(pick_cpu_for_client(i));
 
-                        std::vector<std::unique_ptr<FaaStrategy>> strategies;
+                        std::vector<std::unique_ptr<LockStrategy>> strategies;
                         LockTable table;
                         for (size_t l = 0; l < MAX_LOCKS; ++l) {
-                            strategies.push_back(std::make_unique<FaaStrategy>());
+                            if (is_mu) {
+                                strategies.push_back(std::make_unique<MuStrategy>());
+                            } else {
+                                strategies.push_back(std::make_unique<FaaStrategy>());
+                            }
                             table.add(*strategies.back());
                         }
 
                         auto client = std::make_unique<Client>(global_id);
-                        client->connect(CLUSTER_NODES, RDMA_PORT);
 
-                        std::cout << "[Client " << global_id << "] Connected to "
-                                  << client->connections().size() << " nodes\n";
+                        if (is_mu) {
+                            // connect to each MU leader instance on its own port
+                            // leader is node 0 only
+                            std::vector<std::string> leader_only = { CLUSTER_NODES[0] };
+                            for (size_t inst = 0; inst < MU_NUM_INSTANCES; ++inst) {
+                                client->connect(leader_only,
+                                    RDMA_PORT + static_cast<uint16_t>(inst));
+                            }
+                        } else {
+                            client->connect(CLUSTER_NODES, RDMA_PORT);
+                            client->connect_peers(7000);
+                        }
 
-                        client->connect_peers(7000);
-
-                        std::cout << "[Client " << global_id << "] Peer mesh ready ("
-                                  << (TOTAL_CLIENTS - 1) << " peers)\n";
+                        std::cout << "[Client " << global_id << "] Connected ("
+                                  << client->connections().size() << " conns)\n";
 
                         std::this_thread::sleep_for(std::chrono::milliseconds(500));
                         start_latch.arrive_and_wait();
@@ -82,10 +97,9 @@ int main() {
 
                         std::cout << "[Client " << global_id << "] Done.\n";
 
-                        // First thread to finish donates its client for verification reads
                         Client* expected = nullptr;
                         if (verify_client.compare_exchange_strong(expected, client.get())) {
-                            client.release();  // ownership transferred
+                            client.release();
                         }
                     } catch (const std::exception& e) {
                         std::cerr << "[Client " << global_id << " error] " << e.what() << "\n";
@@ -100,12 +114,12 @@ int main() {
             for (auto& w : workers) w.join();
             auto wall_end = std::chrono::steady_clock::now();
 
-            // ─── Read global lock frontiers from server ───
+            // ─── Verify (skip frontier read for MU — leader tracks it) ───
 
             std::array<uint64_t, MAX_LOCKS> global_frontiers{};
             Client* vc = verify_client.load();
 
-            if (vc) {
+            if (vc && !is_mu) {
                 auto* state = static_cast<LocalState*>(vc->buffer());
                 auto* cq = vc->cq();
                 auto* mr = vc->mr();
@@ -141,11 +155,11 @@ int main() {
 
                     global_frontiers[l] = state->metadata;
                 }
-
-                delete vc;
             }
 
-            // ─── Verify correctness ───
+            if (vc) delete vc;
+
+            // ─── Print verification ───
 
             std::cout << "\n" << std::string(70, '-') << "\n";
             std::cout << " VERIFICATION (Machine " << machine_id << ")\n";
@@ -163,7 +177,6 @@ int main() {
                 }
                 total_committed += lock_total;
 
-                // Frontier is in odd/even steps: divide by 2 to get acquire count
                 const uint64_t global_acquires = global_frontiers[l];
                 total_global += global_acquires;
 
@@ -190,7 +203,7 @@ int main() {
             std::cout << "[VERIFY] Global acquires:  " << total_global
                       << " (from server frontier)\n";
 
-            // ─── Compute stats ───
+            // ─── Stats ───
 
             const size_t local_total_ops = NUM_CLIENTS_PER_MACHINE * NUM_OPS_PER_CLIENT;
 
@@ -231,7 +244,7 @@ int main() {
             std::cout << "\n" << std::string(42, '=') << "\n";
             std::cout << " RDMA BENCHMARK RESULTS\n";
             std::cout << std::string(42, '=') << "\n";
-            std::cout << "Strategy:     " << std::setw(10) << "TAS" << "\n";
+            std::cout << "Strategy:     " << std::setw(10) << STRATEGY << "\n";
             std::cout << "Locks:        " << std::setw(10) << MAX_LOCKS << "\n";
             std::cout << "Clients:      " << std::setw(10) << TOTAL_CLIENTS << " (" << NUM_CLIENTS_PER_MACHINE << " on this machine)\n";
             std::cout << "Ops/Client:   " << std::setw(10) << NUM_OPS_PER_CLIENT << "\n";
@@ -251,17 +264,35 @@ int main() {
             std::cout << std::string(42, '=') << std::endl;
 
         } else {
-            pin_thread_to_cpu(1);
             const uint32_t node_id = get_uint_env("NODE_ID");
-            SynraNode node(node_id);
-            node.start(RDMA_PORT);
-            // if (node_id == 0) {
-            //     MuLeader leader(node_id);
-            //     leader.start(RDMA_PORT);
-            // } else {
-            //     MuFollower follower(node_id);
-            //     follower.start(RDMA_PORT);
-            // }
+
+            if (is_mu) {
+                // MU: spawn N independent server instances on different ports
+                std::vector<std::thread> threads;
+
+                for (size_t inst = 0; inst < MU_NUM_INSTANCES; ++inst) {
+                    threads.emplace_back([node_id, inst]() {
+                        pin_thread_to_cpu(static_cast<int>(inst));
+                        uint16_t port = RDMA_PORT + static_cast<uint16_t>(inst);
+                        uint32_t lock_start = inst * MU_LOCKS_PER_INSTANCE;
+                        uint32_t lock_end = (inst + 1) * MU_LOCKS_PER_INSTANCE;
+
+                        if (node_id == 0) {
+                            MuLeader leader(node_id, lock_start, lock_end);
+                            leader.start(port);
+                        } else {
+                            MuFollower follower(node_id, lock_start, lock_end);
+                            follower.start(port);
+                        }
+                    });
+                }
+
+                for (auto& t : threads) t.join();
+            } else {
+                pin_thread_to_cpu(1);
+                SynraNode node(node_id);
+                node.start(RDMA_PORT);
+            }
         }
     } catch (const std::exception& e) {
         std::cerr << "[error] " << e.what() << "\n";

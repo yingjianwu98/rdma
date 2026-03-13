@@ -21,10 +21,9 @@ struct LockState {
     bool commit_dirty = false;
 };
 
-// track what each follower batch covers
 struct FollowerBatch {
-    uint32_t lock_slots[MAX_LOCKS];  // highest slot sent per lock this batch
-    bool has_entry[MAX_LOCKS];       // did we send anything for this lock?
+    uint32_t lock_slots[MAX_LOCKS];
+    bool has_entry[MAX_LOCKS];
 };
 
 void MuLeader::run() {
@@ -45,26 +44,26 @@ void MuLeader::run() {
         }
 
         swr.imm_data = htonl(imm_data);
-        // no wr.wr.rdma needed — SEND doesn't use remote_addr/rkey
 
         if (ibv_post_send(clients_[client_id].cm_id->qp, &swr, &bad_wr)) {
             throw std::runtime_error("Failed to post client ack");
         }
     };
 
-    std::cout << "[MuLeader " << node_id_ << "] Starting MCS pipelined replication loop\n";
+    std::cout << "[MuLeader " << node_id_ << "] locks ["
+              << lock_start_ << ", " << lock_end_ << ")\n";
 
     auto* local_buf = static_cast<uint8_t*>(buf_);
 
-    static constexpr size_t MAX_REPL_WRS = MAX_LOCKS * MAX_INFLIGHT * (MAX_REPLICAS - 1)
-                                         + MAX_LOCKS * (MAX_REPLICAS - 1);
-    auto* repl_wrs = new ibv_send_wr[MAX_REPL_WRS]();
-    auto* repl_sges = new ibv_sge[MAX_REPL_WRS]();
+    const size_t num_locks = lock_end_ - lock_start_;
+    const size_t max_repl_wrs = num_locks * MAX_INFLIGHT * (MAX_REPLICAS - 1)
+                              + num_locks * (MAX_REPLICAS - 1);
+    auto* repl_wrs = new ibv_send_wr[max_repl_wrs]();
+    auto* repl_sges = new ibv_sge[max_repl_wrs]();
 
     auto* locks = new LockState[MAX_LOCKS]();
     auto* batches = new FollowerBatch[MAX_REPLICAS]();
 
-    // per-follower unsignaled count (need to signal before SQ fills)
     uint32_t follower_unsignaled[MAX_REPLICAS] = {};
 
     for (size_t i = 0; i < TOTAL_CLIENTS; ++i) {
@@ -84,7 +83,6 @@ void MuLeader::run() {
     while (true) {
         const int n = ibv_poll_cq(cq_, 32, wc);
 
-        // ── process all completions ──
         for (int i = 0; i < n; ++i) {
             if (wc[i].status != IBV_WC_SUCCESS) {
                 std::cerr << "[MuLeader] WC error: "
@@ -94,7 +92,6 @@ void MuLeader::run() {
                 throw std::runtime_error("RDMA completion failure");
             }
 
-            // ── client request ──
             if (wc[i].opcode & IBV_WC_RECV) {
                 const uint32_t imm = ntohl(wc[i].imm_data);
                 const uint16_t lock_id = mu_decode_lock_id(imm);
@@ -110,17 +107,14 @@ void MuLeader::run() {
                     throw std::runtime_error("Failed to re-post recv");
                 }
             }
-            // ── replication batch completion ──
             else if (wc[i].opcode == IBV_WC_RDMA_WRITE) {
                 const uint64_t wr_id = wc[i].wr_id;
                 if ((wr_id >> 48) == ACK_TAG) continue;
 
-                // wr_id encodes follower index for batch completions
                 const size_t f = wr_id & 0xFFFF;
                 auto& batch = batches[f];
 
-                // bulk-ack: every slot sent in this batch is now acked by this follower
-                for (uint32_t lid = 0; lid < MAX_LOCKS; ++lid) {
+                for (uint32_t lid = lock_start_; lid < lock_end_; ++lid) {
                     if (!batch.has_entry[lid]) continue;
                     auto& ls = locks[lid];
                     for (uint64_t s = ls.commit_index; s <= batch.lock_slots[lid]; ++s) {
@@ -129,11 +123,9 @@ void MuLeader::run() {
                     batch.has_entry[lid] = false;
                 }
 
-                // reset unsignaled counter
                 follower_unsignaled[f] = 0;
 
-                // ── walk commit for all locks ──
-                for (uint32_t lid = 0; lid < MAX_LOCKS; ++lid) {
+                for (uint32_t lid = lock_start_; lid < lock_end_; ++lid) {
                     auto& ls = locks[lid];
                     const uint64_t old_commit = ls.commit_index;
 
@@ -176,17 +168,15 @@ void MuLeader::run() {
             }
         }
 
-        // ── drain pending → replicate, chained per follower ──
+        // drain pending → replicate
         ibv_send_wr* follower_head[MAX_REPLICAS] = {};
         ibv_send_wr* follower_tail[MAX_REPLICAS] = {};
         size_t repl_count = 0;
 
-        for (uint32_t lock_id = 0; lock_id < MAX_LOCKS; ++lock_id) {
+        for (uint32_t lock_id = lock_start_; lock_id < lock_end_; ++lock_id) {
             auto& ls = locks[lock_id];
 
-            // ── commit notification (unsignaled, no data) ──
             if (ls.commit_dirty) {
-                // write commit index into local buffer header too
                 auto* lock_base = mu_lock_base(local_buf, lock_id);
                 mu_write_commit_index(lock_base, ls.commit_index);
 
@@ -194,19 +184,19 @@ void MuLeader::run() {
                     if (peers_[f].id == node_id_ || !peers_[f].id) continue;
 
                     auto& sge = repl_sges[repl_count];
-                    sge.addr = reinterpret_cast<uintptr_t>(lock_base);  // the 8-byte header
+                    sge.addr = reinterpret_cast<uintptr_t>(lock_base);
                     sge.length = LOCK_HEADER_SIZE;
                     sge.lkey = mr_->lkey;
 
                     auto& wr = repl_wrs[repl_count];
                     wr = {};
                     wr.wr_id = (ACK_TAG << 48);
-                    wr.opcode = IBV_WR_RDMA_WRITE;  // plain write, no IMM
+                    wr.opcode = IBV_WR_RDMA_WRITE;
                     wr.sg_list = &sge;
                     wr.num_sge = 1;
                     wr.send_flags = IBV_SEND_INLINE;
                     wr.wr.rdma.remote_addr = peers_[f].remote_addr
-                        + lock_id * LOCK_REGION_SIZE;  // write to lock header
+                        + lock_id * LOCK_REGION_SIZE;
                     wr.wr.rdma.rkey = peers_[f].rkey;
                     wr.next = nullptr;
 
@@ -222,7 +212,6 @@ void MuLeader::run() {
                 ls.commit_dirty = false;
             }
 
-            // ── drain pending entries ──
             if (ls.inflight >= MAX_INFLIGHT || ls.pending.size() == 0) continue;
 
             const size_t to_drain = std::min(ls.pending.size(), MAX_INFLIGHT - ls.inflight);
@@ -246,11 +235,11 @@ void MuLeader::run() {
 
                     auto& wr = repl_wrs[repl_count];
                     wr = {};
-                    wr.wr_id = f;  // just follower index — batch tracking handles the rest
-                    wr.opcode = IBV_WR_RDMA_WRITE;  // plain WRITE, no IMM needed
+                    wr.wr_id = f;
+                    wr.opcode = IBV_WR_RDMA_WRITE;
                     wr.sg_list = &sge;
                     wr.num_sge = 1;
-                    wr.send_flags = IBV_SEND_INLINE;  // unsignaled by default
+                    wr.send_flags = IBV_SEND_INLINE;
                     wr.wr.rdma.remote_addr = peers_[f].remote_addr
                         + lock_id * LOCK_REGION_SIZE
                         + LOCK_HEADER_SIZE
@@ -258,7 +247,6 @@ void MuLeader::run() {
                     wr.wr.rdma.rkey = peers_[f].rkey;
                     wr.next = nullptr;
 
-                    // track highest slot for batch ack
                     batches[f].lock_slots[lock_id] = slot;
                     batches[f].has_entry[lock_id] = true;
 
@@ -277,13 +265,11 @@ void MuLeader::run() {
             }
         }
 
-        // ── ring doorbell once per follower, signal only the tail ──
         for (size_t f = 0; f < peers_.size(); ++f) {
             if (!follower_head[f]) continue;
 
-            // signal the tail WR so we get exactly 1 CQE per follower per batch
             follower_tail[f]->send_flags |= IBV_SEND_SIGNALED;
-            follower_tail[f]->wr_id = f;  // ensure the signaled WR has follower index
+            follower_tail[f]->wr_id = f;
 
             ibv_send_wr* bad_wr = nullptr;
             if (ibv_post_send(peers_[f].cm_id->qp, follower_head[f], &bad_wr)) {
