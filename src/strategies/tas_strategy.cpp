@@ -179,7 +179,8 @@ static bool learn_majority(
 static void advance_frontier(
     LocalState* state, const uint64_t old_val, const uint64_t new_val,
     uint32_t lock_id,
-    const std::vector<RemoteNode>& conns, const ibv_mr* mr
+    const std::vector<RemoteNode>& conns, const ibv_mr* mr,
+    ibv_cq* cq
 ) {
     for (size_t i = 0; i < conns.size(); ++i) {
         ibv_sge sge{
@@ -202,6 +203,17 @@ static void advance_frontier(
             throw std::runtime_error("advance_frontier post failed");
         }
     }
+
+    // Drain ALL completions (ours + any stale ones) so CQ doesn't overflow
+    int ours = 0;
+    ibv_wc wcs[32];
+    while (ours < static_cast<int>(conns.size())) {
+        int n = ibv_poll_cq(cq, 32, wcs);
+        for (int i = 0; i < n; ++i) {
+            if ((wcs[i].wr_id & OP_MASK) == ADVANCE_FRONTIER_ID)
+                ++ours;
+        }
+    }
 }
 
 // ─── acquire: discover → CAS slot → CAS frontier (even → odd) ───
@@ -219,26 +231,25 @@ uint64_t TasStrategy::acquire(Client& client, const int op_id, uint32_t lock_id)
         const uint64_t next_slot = max_val + 1;
 
         if (commit_cas(state, op_id, next_slot, client.id(), lock_id, conns, cq, mr) >= static_cast<int>(QUORUM)) {
-            advance_frontier(state, max_val, next_slot, lock_id, conns, mr);
+            advance_frontier(state, max_val, next_slot, lock_id, conns, mr, cq);
             return next_slot;
         }
 
         if (learn_majority(state, op_id, next_slot, client.id(), lock_id, conns, cq, mr)) {
-            advance_frontier(state, max_val, next_slot, lock_id, conns, mr);
+            advance_frontier(state, max_val, next_slot, lock_id, conns, mr, cq);
             return next_slot;
         }
     }
 }
 
-// ─── release: no-op (cleanup does the work) ───
-
 void TasStrategy::release(Client& client, int op_id, uint32_t lock_id) {
     auto* state = static_cast<LocalState*>(client.buffer());
     const auto* mr = client.mr();
+    auto* cq = client.cq();
     const auto& conns = client.connections();
 
     const uint64_t held_slot = state->metadata;
-    advance_frontier(state, held_slot, held_slot + 1, lock_id, conns, mr);
+    advance_frontier(state, held_slot, held_slot + 1, lock_id, conns, mr, cq);
 }
 
 // ─── cleanup: CAS frontier from held_slot → held_slot+1 (odd → even, 1 RTT) ───
