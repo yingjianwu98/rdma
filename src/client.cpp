@@ -49,7 +49,7 @@ Client::~Client() {
     if (mr_) ibv_dereg_mr(mr_);
     if (cq_) ibv_destroy_cq(cq_);
     if (pd_) ibv_dealloc_pd(pd_);
-    if (buf_) munmap(buf_, ALIGNED_SIZE);
+    if (buf_) free(buf_);
     if (ec_) rdma_destroy_event_channel(ec_);
 }
 
@@ -57,7 +57,7 @@ void Client::connect(const std::vector<std::string>& node_ips, const uint16_t po
     ec_ = rdma_create_event_channel();
     if (!ec_) throw std::runtime_error("rdma_create_event_channel failed");
 
-    buf_ = allocate_rdma_buffer();
+    buf_ = allocate_client_buffer();
 
     for (size_t i = 0; i < node_ips.size(); ++i) {
         std::cout << "[Client " << id_ << "] Connecting to " << node_ips[i] << "...\n";
@@ -105,7 +105,7 @@ void Client::connect(const std::vector<std::string>& node_ips, const uint16_t po
             if (!cq_) throw std::runtime_error("ibv_create_cq failed");
 
             mr_ = ibv_reg_mr(
-                pd_, buf_, ALIGNED_SIZE,
+                pd_, buf_, CLIENT_ALIGNED_SIZE,
                 IBV_ACCESS_LOCAL_WRITE |
                     IBV_ACCESS_REMOTE_WRITE |
                     IBV_ACCESS_REMOTE_READ |

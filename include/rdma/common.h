@@ -10,7 +10,6 @@
 #include <vector>
 
 #include <pthread.h>
-#include <sys/mman.h>
 #include <rdma/rdma_cma.h>
 #include <infiniband/verbs.h>
 
@@ -37,7 +36,6 @@ constexpr size_t QP_DEPTH = 2048;
 constexpr size_t MAX_INLINE_DEPTH = 64;
 constexpr size_t CLIENT_SLOT_SIZE = 1024;
 constexpr size_t MAX_REPLICAS = 10;
-constexpr size_t HUGE_PAGE_SIZE = 2 * 1024 * 1024;
 
 // ─── Benchmark constants ───
 
@@ -49,9 +47,6 @@ constexpr size_t NUM_OPS_PER_CLIENT = NUM_OPS / TOTAL_CLIENTS;
 constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * TOTAL_CLIENTS;
 
 // ─── Lock table layout ───
-//
-// Each lock region: [8-byte control word] [log of MAX_LOG_PER_LOCK × ENTRY_SIZE]
-// All locks laid out contiguously in the RDMA buffer.
 
 constexpr size_t MAX_LOCKS = 100;
 constexpr size_t MAX_LOG_PER_LOCK = NUM_OPS * 2;
@@ -61,22 +56,24 @@ constexpr size_t LOCK_REGION_SIZE = LOCK_HEADER_SIZE + LOCK_LOG_SIZE;
 constexpr size_t LOCK_TABLE_SIZE = LOCK_REGION_SIZE * MAX_LOCKS;
 
 // ─── Client staging area ───
-//
-// Each client gets a fixed region in the server buffer where it RDMA WRITEs
-// its request payload. The leader reads from here after receiving the IMM.
-// For now each staging slot is one ENTRY_SIZE. Increase if payloads grow.
 
 constexpr size_t CLIENT_STAGING_SIZE = CLIENT_SLOT_SIZE;
 constexpr size_t CLIENT_STAGING_OFFSET = LOCK_TABLE_SIZE;
 constexpr size_t CLIENT_STAGING_TOTAL = CLIENT_STAGING_SIZE * TOTAL_CLIENTS;
 
-// ─── Buffer sizing — derived from lock table + staging ───
+// ─── Buffer sizing ───
 
 constexpr size_t METADATA_SIZE = 4096;
-constexpr size_t FINAL_POOL_SIZE = LOCK_TABLE_SIZE + CLIENT_STAGING_TOTAL + METADATA_SIZE;
-constexpr size_t ALIGNED_SIZE = ((FINAL_POOL_SIZE + HUGE_PAGE_SIZE - 1) / HUGE_PAGE_SIZE) * HUGE_PAGE_SIZE;
 
-static_assert(LOCK_TABLE_SIZE <= ALIGNED_SIZE, "Lock table exceeds RDMA buffer size");
+// Server: full lock table + staging + metadata
+constexpr size_t SERVER_POOL_SIZE = LOCK_TABLE_SIZE + CLIENT_STAGING_TOTAL + METADATA_SIZE;
+constexpr size_t SERVER_ALIGNED_SIZE = ((SERVER_POOL_SIZE + 4095) / 4096) * 4096;
+
+// Client: just LocalState + padding (a few KB)
+constexpr size_t CLIENT_POOL_SIZE = 4096 * 2;  // 8KB — plenty for LocalState
+constexpr size_t CLIENT_ALIGNED_SIZE = ((CLIENT_POOL_SIZE + 4095) / 4096) * 4096;
+
+static_assert(LOCK_TABLE_SIZE <= SERVER_ALIGNED_SIZE, "Lock table exceeds server buffer size");
 
 // ─── Per-lock offset helpers ───
 
@@ -97,8 +94,6 @@ inline constexpr size_t lock_log_slot_offset(const uint32_t lock_id, const uint6
 inline constexpr size_t client_staging_offset(const uint32_t client_id) {
     return CLIENT_STAGING_OFFSET + (client_id * CLIENT_STAGING_SIZE);
 }
-
-// ─── Mu protocol IMM encoding ───
 
 // ─── Sentinel values ───
 
@@ -173,18 +168,17 @@ inline unsigned int get_uint_env(const std::string& name) {
     return static_cast<unsigned int>(std::stoul(val));
 }
 
-inline void* allocate_rdma_buffer() {
-    void* ptr = mmap(nullptr, ALIGNED_SIZE,
-                     PROT_READ | PROT_WRITE,
-                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB,
-                     -1, 0);
-    if (ptr == MAP_FAILED) {
-        std::cerr << "[memory] HugePage alloc failed, falling back to aligned_alloc\n";
-        ptr = aligned_alloc(4096, ALIGNED_SIZE);
-        if (!ptr) throw std::runtime_error("Could not allocate RDMA buffer");
-    }
-    std::fill_n(static_cast<uint64_t*>(ptr), ALIGNED_SIZE / sizeof(uint64_t),
-                EMPTY_SLOT);
+inline void* allocate_server_buffer() {
+    void* ptr = aligned_alloc(4096, SERVER_ALIGNED_SIZE);
+    if (!ptr) throw std::runtime_error("Could not allocate server RDMA buffer");
+    std::memset(ptr, 0xFF, SERVER_ALIGNED_SIZE);
+    return ptr;
+}
+
+inline void* allocate_client_buffer() {
+    void* ptr = aligned_alloc(4096, CLIENT_ALIGNED_SIZE);
+    if (!ptr) throw std::runtime_error("Could not allocate client RDMA buffer");
+    std::memset(ptr, 0xFF, CLIENT_ALIGNED_SIZE);
     return ptr;
 }
 
