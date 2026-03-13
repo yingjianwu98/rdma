@@ -20,7 +20,7 @@
 #include "rdma/strategies/mu_strategy.h"
 #include "rdma/strategies/tas_strategy.h"
 
-constexpr size_t NUM_LOCKS = 30;
+constexpr size_t NUM_LOCKS = 300;
 
 int main() {
     try {
