@@ -149,7 +149,7 @@ void CasStrategy::release(Client& client, int /*op_id*/, uint32_t lock_id) {
     const auto* mr = client.mr();
     auto* cq = client.cq();
 
-    advance_frontier(state, target_slot_, target_slot_ + 1, lock_id, conns, mr, cq, unsignaled_counts_);
+    advance_frontier(state, target_slot_, target_slot_ + 1, lock_id, conns, mr);
     target_slot_ += 2;
 }
 
