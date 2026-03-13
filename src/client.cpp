@@ -10,6 +10,8 @@
 #include <chrono>
 #include <sys/mman.h>
 
+#include "rdma/mu_encoding.h"
+
 static rdma_cm_event* wait_for_event(
     rdma_event_channel* ec,
     const rdma_cm_event_type expected,
@@ -104,7 +106,7 @@ void Client::connect(const std::vector<std::string>& node_ips, const uint16_t po
 
             cq_ = ibv_create_cq(
                 cm_id->verbs,
-                QP_DEPTH * static_cast<int>(node_ips.size() + TOTAL_CLIENTS),
+                QP_DEPTH * static_cast<int>(MU_NUM_INSTANCES + TOTAL_CLIENTS),
                 nullptr, nullptr, 0);
             if (!cq_) throw std::runtime_error("ibv_create_cq failed");
 
