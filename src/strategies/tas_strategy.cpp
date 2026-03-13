@@ -211,12 +211,11 @@ static void synra_reset(
     if (current_idx % 2 == 0) return; // already clean
 
     uint64_t next_slot = current_idx + 1;
-    uint64_t* write_val = static_cast<uint64_t*>(mr->addr) + 40;
-    *write_val = static_cast<uint64_t>(client_id);
+    state->metadata = static_cast<uint64_t>(client_id);
 
     for (size_t i = 0; i < conns.size(); ++i) {
         ibv_sge sge{
-            .addr = reinterpret_cast<uintptr_t>(write_val),
+            .addr = reinterpret_cast<uintptr_t>(&state->metadata),
             .length = 8,
             .lkey = mr->lkey
         };
