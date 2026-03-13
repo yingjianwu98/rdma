@@ -176,7 +176,16 @@ inline unsigned int get_uint_env(const std::string& name) {
 inline void* allocate_server_buffer() {
     void* ptr = aligned_alloc(4096, SERVER_ALIGNED_SIZE);
     if (!ptr) throw std::runtime_error("Could not allocate server RDMA buffer");
-    std::memset(ptr, 0xFF, SERVER_ALIGNED_SIZE);
+
+    std::memset(ptr, 0, SERVER_ALIGNED_SIZE);
+
+    auto* base = static_cast<char*>(ptr);
+    for (size_t l = 0; l < MAX_LOCKS; ++l) {
+        auto* log_start = reinterpret_cast<uint64_t*>(
+            base + lock_base_offset(l) + LOCK_HEADER_SIZE);
+        std::fill_n(log_start, MAX_LOG_PER_LOCK, EMPTY_SLOT);
+    }
+
     return ptr;
 }
 
