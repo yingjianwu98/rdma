@@ -15,6 +15,8 @@ sudo apt install -y ibverbs-providers libibverbs1 ibutils ibverbs-utils \
 
 sudo bash -c "$(wget -O - https://apt.llvm.org/llvm.sh)"
 
+ulimit -n 65536
+
 # 3. Load Kernel Modules
 sudo modprobe ib_uverbs ib_ipoib rdma_ucm
 sudo modprobe -r ib_ipoib && sudo modprobe ib_ipoib
