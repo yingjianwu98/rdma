@@ -161,7 +161,7 @@ uint64_t CasStrategy::acquire(Client& client, int op_id, uint32_t lock_id) {
         // ── Step 3: Did we win? ──
 
         if (result == expected) {
-            std::cout << "We got the next lock: " << result << '\n';
+            std::cout << "We got the next lock: " << result << " lockid=" << lock_id << '\n';
             // We won — replicate our client_id to this lock's log on all nodes
             state->next_frontier = static_cast<uint64_t>(client.id());
 
@@ -246,7 +246,7 @@ void CasStrategy::release(Client& client, int op_id, uint32_t lock_id) {
         }
     }
 
-    std::cout << "Advanced next to: " << new_val << '\n';
+    std::cout << "Advanced next to: " << new_val << " lockid=" << lock_id << '\n';
 
     target_slot_ += 2;
 }
