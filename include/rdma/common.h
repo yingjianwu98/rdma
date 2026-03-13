@@ -23,7 +23,7 @@ inline const std::vector<std::string> CLUSTER_NODES = {
 
 inline const std::vector<std::string> CLIENT_NODES = {
     "192.168.1.4",
-    "192.168.1.5",
+    // "192.168.1.5",
     // "192.168.1.6",
     // "192.168.1.7",
     // "192.168.1.8",
