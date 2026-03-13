@@ -89,31 +89,36 @@ int main() {
 
             // ─── Verify correctness ───
 
+            // ─── Verify correctness ───
+
             std::cout << "\n" << std::string(42, '-') << "\n";
             std::cout << " VERIFICATION\n";
             std::cout << std::string(42, '-') << "\n";
 
             uint64_t total_committed = 0;
+            const size_t local_ops_expected = NUM_CLIENTS_PER_MACHINE * NUM_OPS_PER_CLIENT;
 
             for (size_t l = 0; l < NUM_LOCKS; ++l) {
                 uint64_t lock_total = 0;
-                for (size_t c = 0; c < TOTAL_CLIENTS; ++c) {
-                    lock_total += (*lock_counts)[c][l];
+                for (size_t i = 0; i < NUM_CLIENTS_PER_MACHINE; ++i) {
+                    const uint32_t gid = machine_id * NUM_CLIENTS_PER_MACHINE + i;
+                    lock_total += (*lock_counts)[gid][l];
                 }
                 total_committed += lock_total;
 
                 std::cout << "[VERIFY] Lock " << l << " | ops=" << lock_total << " | per-client: [";
-                for (size_t c = 0; c < TOTAL_CLIENTS; ++c) {
-                    if (c > 0) std::cout << ", ";
-                    std::cout << (*lock_counts)[c][l];
+                for (size_t i = 0; i < NUM_CLIENTS_PER_MACHINE; ++i) {
+                    const uint32_t gid = machine_id * NUM_CLIENTS_PER_MACHINE + i;
+                    if (i > 0) std::cout << ", ";
+                    std::cout << (*lock_counts)[gid][l];
                 }
                 std::cout << "]\n";
             }
 
             std::cout << "[VERIFY] Total committed: " << total_committed
-                      << " / " << NUM_TOTAL_OPS;
+                      << " / " << local_ops_expected;
 
-            if (total_committed == NUM_TOTAL_OPS) {
+            if (total_committed == local_ops_expected) {
                 std::cout << " ✓ PASS\n";
             } else {
                 std::cout << " ✗ FAIL\n";
