@@ -45,6 +45,7 @@ uint64_t CasStrategy::acquire(Client& client, int op_id, uint32_t lock_id) {
     const auto& conns = client.connections();
 
      const size_t node = lock_id % conns.size();
+    std::cout << "Reaching out to node: " << node << std::endl;
 
     while (true) {
         const uint64_t expected = target_slot_ - 1;
