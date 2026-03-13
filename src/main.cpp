@@ -20,7 +20,6 @@
 #include "rdma/strategies/mu_strategy.h"
 #include "rdma/strategies/tas_strategy.h"
 
-constexpr size_t NUM_LOCKS = 25000;
 
 int main() {
     try {
@@ -32,7 +31,7 @@ int main() {
             std::vector<std::thread> workers;
 
             auto lock_counts = std::make_unique<
-                std::array<std::array<uint64_t, NUM_LOCKS>, TOTAL_CLIENTS>>();
+                std::array<std::array<uint64_t, MAX_LOCKS>, TOTAL_CLIENTS>>();
             for (auto& client_counts : *lock_counts) client_counts.fill(0);
 
             // One client kept alive for post-benchmark reads
@@ -47,7 +46,7 @@ int main() {
 
                         std::vector<std::unique_ptr<FaaStrategy>> strategies;
                         LockTable table;
-                        for (size_t l = 0; l < NUM_LOCKS; ++l) {
+                        for (size_t l = 0; l < MAX_LOCKS; ++l) {
                             strategies.push_back(std::make_unique<FaaStrategy>());
                             table.add(*strategies.back());
                         }
@@ -103,7 +102,7 @@ int main() {
 
             // ─── Read global lock frontiers from server ───
 
-            std::array<uint64_t, NUM_LOCKS> global_frontiers{};
+            std::array<uint64_t, MAX_LOCKS> global_frontiers{};
             Client* vc = verify_client.load();
 
             if (vc) {
@@ -112,7 +111,7 @@ int main() {
                 auto* mr = vc->mr();
                 const auto& conns = vc->connections();
 
-                for (size_t l = 0; l < NUM_LOCKS; ++l) {
+                for (size_t l = 0; l < MAX_LOCKS; ++l) {
                     state->metadata = 0xDEAD;
 
                     ibv_sge sge{
@@ -156,7 +155,7 @@ int main() {
             uint64_t total_global = 0;
             const size_t local_ops_expected = NUM_CLIENTS_PER_MACHINE * NUM_OPS_PER_CLIENT;
 
-            for (size_t l = 0; l < NUM_LOCKS; ++l) {
+            for (size_t l = 0; l < MAX_LOCKS; ++l) {
                 uint64_t lock_total = 0;
                 for (size_t i = 0; i < NUM_CLIENTS_PER_MACHINE; ++i) {
                     const uint32_t gid = machine_id * NUM_CLIENTS_PER_MACHINE + i;
@@ -233,7 +232,7 @@ int main() {
             std::cout << " RDMA BENCHMARK RESULTS\n";
             std::cout << std::string(42, '=') << "\n";
             std::cout << "Strategy:     " << std::setw(10) << "TAS" << "\n";
-            std::cout << "Locks:        " << std::setw(10) << NUM_LOCKS << "\n";
+            std::cout << "Locks:        " << std::setw(10) << MAX_LOCKS << "\n";
             std::cout << "Clients:      " << std::setw(10) << TOTAL_CLIENTS << " (" << NUM_CLIENTS_PER_MACHINE << " on this machine)\n";
             std::cout << "Ops/Client:   " << std::setw(10) << NUM_OPS_PER_CLIENT << "\n";
             std::cout << "Total Ops:    " << std::setw(10) << NUM_TOTAL_OPS << "\n";
