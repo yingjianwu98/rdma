@@ -343,6 +343,8 @@ void FaaStrategy::release(Client& client, int op_id, uint32_t lock_id) {
             }
             if (next_client_id_ != UINT32_MAX) break;
         }
+    } else {
+        std::cout << "We were able to fast path unlock!" << std::endl;
     }
 
     // 3. notify next waiter via peer RDMA write
