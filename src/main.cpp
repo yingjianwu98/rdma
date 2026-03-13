@@ -100,7 +100,6 @@ int main() {
 
                             start_latch.arrive_and_wait();
 
-                            std::cout << "starting benchmark..." << std::endl;
                             uint64_t* latencies = &((*all_latencies)[i * NUM_OPS_PER_CLIENT]);
 
                             for (size_t op = 0; op < NUM_OPS_PER_CLIENT; ++op) {
@@ -135,7 +134,7 @@ int main() {
             for (auto& w : workers) w.join();
             auto wall_end = std::chrono::steady_clock::now();
 
-            // ─── Everything below is post-benchmark, not on the hot path ───
+            // ─── Post-benchmark stats ───
 
             const size_t local_total_ops = NUM_CLIENTS_PER_MACHINE * NUM_OPS_PER_CLIENT;
             const double wall_s = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -164,6 +163,8 @@ int main() {
 
             if (verify_client.load()) delete verify_client.load();
 
+            // ─── Human-readable output ───
+
             std::cout << "\n" << std::string(50, '=') << "\n";
             std::cout << " RDMA LOCK BENCHMARK RESULTS\n";
             std::cout << std::string(50, '=') << "\n";
@@ -188,7 +189,28 @@ int main() {
             std::cout << "P99:            " << std::setw(14) << get_p(0.99) << "\n";
             std::cout << "P99.9:          " << std::setw(14) << get_p(0.999) << "\n";
             std::cout << "P100 (Max):     " << std::setw(14) << get_p(1.0) << "\n";
-            std::cout << std::string(50, '=') << std::endl;
+            std::cout << std::string(50, '=') << "\n";
+
+            // ─── CSV row for spreadsheets ───
+            // Paste this line into a cell, then use "Split text to columns" with comma delimiter
+            std::cout << "\nCSV: "
+                      << STRATEGY
+                      << "," << TOTAL_CLIENTS
+                      << "," << MAX_LOCKS
+                      << "," << local_total_ops
+                      << "," << std::fixed << std::setprecision(3) << wall_s
+                      << "," << std::setprecision(0) << goodput
+                      << "," << std::setprecision(2) << mean
+                      << "," << std::setprecision(2) << get_p(0.5)
+                      << "," << std::setprecision(2) << get_p(0.9)
+                      << "," << std::setprecision(2) << get_p(0.99)
+                      << "," << std::setprecision(2) << get_p(0.999)
+                      << "," << std::setprecision(2) << get_p(1.0)
+                      << std::endl;
+
+            // Header reminder (print once for reference)
+            std::cout << "HDR: strategy,clients,locks,total_ops,wall_s,goodput,mean_us,p50_us,p90_us,p99_us,p99.9_us,max_us"
+                      << std::endl;
 
         } else {
             const uint32_t node_id = get_uint_env("NODE_ID");
