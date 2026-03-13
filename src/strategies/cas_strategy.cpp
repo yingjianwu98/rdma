@@ -8,26 +8,29 @@
 #include <stdexcept>
 #include <string>
 
+// ─── advance_frontier: CAS frontier from old_val → new_val, fire-and-forget ───
+
 static void advance_frontier(
-    LocalState* state, const uint64_t slot, uint32_t lock_id,
+    LocalState* state, const uint64_t old_val, const uint64_t new_val,
+    uint32_t lock_id,
     const std::vector<RemoteNode>& conns, const ibv_mr* mr
 ) {
-    state->next_frontier = slot;
-
     for (size_t i = 0; i < conns.size(); ++i) {
         ibv_sge sge{
-            .addr = reinterpret_cast<uintptr_t>(&state->next_frontier),
+            .addr = reinterpret_cast<uintptr_t>(&state->cas_results[i]),
             .length = 8,
             .lkey = mr->lkey
         };
         ibv_send_wr wr{}, *bad;
         wr.wr_id = 0x111000 | i;
-        wr.opcode = IBV_WR_RDMA_WRITE;
+        wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
         wr.send_flags = IBV_SEND_SIGNALED;
         wr.sg_list = &sge;
         wr.num_sge = 1;
         wr.wr.rdma.remote_addr = conns[i].addr + lock_control_offset(lock_id);
-        wr.wr.rdma.rkey = conns[i].rkey;
+        wr.wr.atomic.rkey = conns[i].rkey;
+        wr.wr.atomic.compare_add = old_val;
+        wr.wr.atomic.swap = new_val;
 
         if (ibv_post_send(conns[i].id->qp, &wr, &bad)) {
             throw std::runtime_error("advance_frontier post failed");
@@ -146,7 +149,7 @@ void CasStrategy::release(Client& client, int /*op_id*/, uint32_t lock_id) {
     const auto& conns = client.connections();
     const auto* mr = client.mr();
 
-    advance_frontier(state, target_slot_ + 1, lock_id, conns, mr);
+    advance_frontier(state, target_slot_, target_slot_ + 1, lock_id, conns, mr);
     target_slot_ += 2;
 }
 
