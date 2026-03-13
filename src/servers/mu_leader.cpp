@@ -80,8 +80,53 @@ void MuLeader::run() {
 
     ibv_wc wc[32];
 
+    // ── DEBUG COUNTERS ──
+    uint64_t poll_iter = 0;
+    uint64_t total_recvs = 0;
+    uint64_t total_writes = 0;
+    uint64_t total_drained = 0;
+    uint64_t total_committed = 0;
+    uint64_t total_acks_sent = 0;
+    uint64_t total_posts_to_followers = 0;
+    uint64_t total_send_completions = 0;
+    uint64_t total_other_completions = 0;
+
     while (true) {
         const int n = ibv_poll_cq(cq_, 32, wc);
+
+        poll_iter++;
+        if (poll_iter % 5000000 == 0) {
+            // also dump first few locks' state
+            std::cerr << "[MuLeader " << node_id_
+                      << " locks " << lock_start_ << "-" << lock_end_
+                      << "] iter=" << poll_iter
+                      << " recvs=" << total_recvs
+                      << " writes=" << total_writes
+                      << " sends=" << total_send_completions
+                      << " other=" << total_other_completions
+                      << " drained=" << total_drained
+                      << " committed=" << total_committed
+                      << " acks_sent=" << total_acks_sent
+                      << " follower_posts=" << total_posts_to_followers
+                      << "\n";
+
+            // dump state of first 3 active locks
+            int dumped = 0;
+            for (uint32_t lid = lock_start_; lid < lock_end_ && dumped < 3; ++lid) {
+                auto& ls = locks[lid];
+                if (ls.current_index == 0 && ls.pending.size() == 0) continue;
+                std::cerr << "  lock[" << lid
+                          << "] pending=" << ls.pending.size()
+                          << " inflight=" << ls.inflight
+                          << " current=" << ls.current_index
+                          << " commit=" << ls.commit_index
+                          << " holder=" << ls.holder_slot
+                          << " locked=" << ls.locked
+                          << " acks[commit]=" << (ls.commit_index < MAX_LOG_PER_LOCK ? (int)ls.acks[ls.commit_index] : -1)
+                          << "\n";
+                dumped++;
+            }
+        }
 
         for (int i = 0; i < n; ++i) {
             if (wc[i].status != IBV_WC_SUCCESS) {
@@ -93,9 +138,21 @@ void MuLeader::run() {
             }
 
             if (wc[i].opcode & IBV_WC_RECV) {
+                total_recvs++;
                 const uint32_t imm = ntohl(wc[i].imm_data);
                 const uint16_t lock_id = mu_decode_lock_id(imm);
                 const uint16_t client_id = mu_decode_client_id(imm);
+                const uint32_t op = mu_decode_op(imm);
+
+                // first recv: print what we got
+                if (total_recvs <= 3) {
+                    std::cerr << "[MuLeader] recv #" << total_recvs
+                              << " lock=" << lock_id
+                              << " client=" << client_id
+                              << " op=" << (op == MU_OP_CLIENT_LOCK ? "LOCK" : "UNLOCK")
+                              << "\n";
+                }
+
                 auto& lock_state = locks[lock_id];
                 lock_state.pending.push(imm);
 
@@ -108,6 +165,7 @@ void MuLeader::run() {
                 }
             }
             else if (wc[i].opcode == IBV_WC_RDMA_WRITE) {
+                total_writes++;
                 const uint64_t wr_id = wc[i].wr_id;
                 if ((wr_id >> 48) == ACK_TAG) continue;
 
@@ -141,6 +199,7 @@ void MuLeader::run() {
                         if (op == MU_OP_CLIENT_UNLOCK) {
                             ls.locked = false;
                             post_client_ack(client_id, mu_encode_ack(lid, ls.commit_index, false));
+                            total_acks_sent++;
                         }
 
                         while (!ls.locked && ls.holder_slot <= ls.commit_index) {
@@ -153,18 +212,28 @@ void MuLeader::run() {
                                 ls.locked = true;
                                 post_client_ack(next_client_id,
                                     mu_encode_ack(lid, ls.holder_slot, true));
+                                total_acks_sent++;
                             }
                             ls.holder_slot++;
                         }
 
                         ls.commit_index++;
                         ls.inflight--;
+                        total_committed++;
                     }
 
                     if (ls.commit_index != old_commit) {
                         ls.commit_dirty = true;
                     }
                 }
+            }
+            else if (wc[i].opcode == IBV_WC_SEND) {
+                total_send_completions++;
+            }
+            else {
+                total_other_completions++;
+                std::cerr << "[MuLeader] unexpected opcode=" << wc[i].opcode
+                          << " wr_id=" << wc[i].wr_id << "\n";
             }
         }
 
@@ -220,6 +289,8 @@ void MuLeader::run() {
                 uint32_t imm;
                 if (!ls.pending.pop(imm)) break;
 
+                total_drained++;
+
                 const uint32_t slot = ls.current_index;
                 auto* lock_base = mu_lock_base(local_buf, lock_id);
                 auto* entry = mu_entry_ptr(lock_base, slot);
@@ -267,6 +338,8 @@ void MuLeader::run() {
 
         for (size_t f = 0; f < peers_.size(); ++f) {
             if (!follower_head[f]) continue;
+
+            total_posts_to_followers++;
 
             follower_tail[f]->send_flags |= IBV_SEND_SIGNALED;
             follower_tail[f]->wr_id = f;
