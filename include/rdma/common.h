@@ -24,6 +24,7 @@ inline const std::vector<std::string> CLUSTER_NODES = {
 
 inline const std::vector<std::string> CLIENT_NODES = {
     "192.168.1.4",
+    "192.168.1.5",
 };
 
 inline const size_t QUORUM = (CLUSTER_NODES.size() / 2) + 1;
@@ -42,7 +43,7 @@ constexpr size_t HUGE_PAGE_SIZE = 2 * 1024 * 1024;
 
 constexpr size_t NUM_OPS = 1000000;
 constexpr size_t NUM_CLIENTS_PER_MACHINE = 2;
-constexpr size_t TOTAL_MACHINES = 1;
+constexpr size_t TOTAL_MACHINES = 2;
 constexpr size_t TOTAL_CLIENTS = NUM_CLIENTS_PER_MACHINE * TOTAL_MACHINES;
 
 constexpr size_t NUM_OPS_PER_CLIENT = NUM_OPS / TOTAL_CLIENTS;
