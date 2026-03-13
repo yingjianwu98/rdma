@@ -166,6 +166,14 @@ void Client::connect(const std::vector<std::string>& node_ips, const uint16_t po
             .rkey = remote->rkey,
         });
 
+        ibv_recv_wr rr{}, *bad_rr = nullptr;
+        rr.wr_id = 0xBEEF0000 | (connections_.size() - 1);
+        rr.sg_list = nullptr;
+        rr.num_sge = 0;
+        if (ibv_post_recv(cm_id->qp, &rr, &bad_rr)) {
+            throw std::runtime_error("Failed to pre-post GO recv");
+        }
+
         rdma_ack_cm_event(ev_conn);
 
         std::cout << "[Client " << id_ << "] Connected to node " << i << "\n";

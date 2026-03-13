@@ -81,17 +81,6 @@ int main() {
                             {
                                 const size_t num_go = is_mu ? MU_NUM_INSTANCES : CLUSTER_NODES.size();
                                 auto* cq = client->cq();
-                                const auto& conns = client->connections();
-
-                                // post one recv per server QP
-                                for (size_t s = 0; s < num_go; ++s) {
-                                    ibv_recv_wr rr{}, *bad_rr = nullptr;
-                                    rr.wr_id = 0xBEEF0000 | s;
-                                    rr.sg_list = nullptr;
-                                    rr.num_sge = 0;
-                                    if (ibv_post_recv(conns[s].id->qp, &rr, &bad_rr))
-                                        throw std::runtime_error("Failed to post GO recv");
-                                }
 
                                 size_t got = 0;
                                 while (got < num_go) {
