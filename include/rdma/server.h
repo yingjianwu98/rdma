@@ -23,6 +23,8 @@ protected:
     [[nodiscard]] virtual uint32_t expected_clients() const = 0;
     virtual void run() = 0;
 
+    void signal_clients_ready();
+
     uint32_t node_id_;
 
     rdma_event_channel* ec_ = nullptr;

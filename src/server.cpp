@@ -279,5 +279,34 @@ void Server::start(uint16_t port) {
     std::cout << "[Server " << node_id_ << "] Ready — "
               << (num_nodes - 1) << " peers + "
               << clients_connected << " clients\n";
+
+    signal_clients_ready();
     run();
+}
+
+void Server::signal_clients_ready() {
+    const uint32_t num_clients = expected_clients();
+    if (num_clients == 0) return;
+
+    for (uint32_t i = 0; i < num_clients; ++i) {
+        ibv_send_wr swr{}, *bad_wr = nullptr;
+        swr.wr_id = 0xBEEF0000 | i;
+        swr.opcode = IBV_WR_SEND_WITH_IMM;
+        swr.num_sge = 0;
+        swr.sg_list = nullptr;
+        swr.send_flags = IBV_SEND_INLINE | IBV_SEND_SIGNALED;
+        swr.imm_data = htonl(0x60606060);
+
+        if (ibv_post_send(clients_[i].cm_id->qp, &swr, &bad_wr)) {
+            throw std::runtime_error("Failed to send GO signal to client " + std::to_string(i));
+        }
+
+        ibv_wc wc{};
+        while (true) {
+            int n = ibv_poll_cq(cq_, 1, &wc);
+            if (n > 0) break;
+        }
+    }
+
+    std::cout << "[Server " << node_id_ << "] GO sent to " << num_clients << " clients\n";
 }

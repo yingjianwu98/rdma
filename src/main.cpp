@@ -44,68 +44,101 @@ int main() {
             for (uint32_t i = 0; i < NUM_CLIENTS_PER_MACHINE; ++i) {
                 const uint32_t global_id = machine_id * NUM_CLIENTS_PER_MACHINE + i;
 
-                workers.emplace_back([i, global_id, is_mu, &start_latch, &all_latencies, &lock_counts, &verify_client]() {
-                    try {
-                        pin_thread_to_cpu(pick_cpu_for_client(i));
+                workers.emplace_back(
+                    [i, global_id, is_mu, &start_latch, &all_latencies, &lock_counts, &verify_client]() {
+                        try {
+                            pin_thread_to_cpu(pick_cpu_for_client(i));
 
-                        std::vector<std::unique_ptr<LockStrategy>> strategies;
-                        LockTable table;
+                            std::vector<std::unique_ptr<LockStrategy>> strategies;
+                            LockTable table;
 
-                        for (size_t l = 0; l < MAX_LOCKS; ++l) {
+                            for (size_t l = 0; l < MAX_LOCKS; ++l) {
+                                if (is_mu) {
+                                    strategies.push_back(std::make_unique<MuStrategy>());
+                                }
+                                else {
+                                    strategies.push_back(std::make_unique<FaaStrategy>());
+                                }
+                                table.add(*strategies.back());
+                            }
+
+                            auto client = std::make_unique<Client>(global_id);
+
                             if (is_mu) {
-                                strategies.push_back(std::make_unique<MuStrategy>());
-                            } else {
-                                strategies.push_back(std::make_unique<FaaStrategy>());
+                                // connect to each MU leader instance on its own port
+                                // leader is node 0 only
+                                std::vector<std::string> leader_only = {CLUSTER_NODES[0]};
+                                for (size_t inst = 0; inst < MU_NUM_INSTANCES; ++inst) {
+                                    client->connect(leader_only,
+                                                    RDMA_PORT + static_cast<uint16_t>(inst));
+                                }
                             }
-                            table.add(*strategies.back());
-                        }
-
-                        auto client = std::make_unique<Client>(global_id);
-
-                        if (is_mu) {
-                            // connect to each MU leader instance on its own port
-                            // leader is node 0 only
-                            std::vector<std::string> leader_only = { CLUSTER_NODES[0] };
-                            for (size_t inst = 0; inst < MU_NUM_INSTANCES; ++inst) {
-                                client->connect(leader_only,
-                                    RDMA_PORT + static_cast<uint16_t>(inst));
+                            else {
+                                client->connect(CLUSTER_NODES, RDMA_PORT);
+                                client->connect_peers(7000);
                             }
-                        } else {
-                            client->connect(CLUSTER_NODES, RDMA_PORT);
-                            client->connect_peers(7000);
+
+                            {
+                                const size_t num_go = is_mu ? MU_NUM_INSTANCES : CLUSTER_NODES.size();
+                                auto* cq = client->cq();
+                                const auto& conns = client->connections();
+
+                                // post one recv per server QP
+                                for (size_t s = 0; s < num_go; ++s) {
+                                    ibv_recv_wr rr{}, *bad_rr = nullptr;
+                                    rr.wr_id = 0xBEEF0000 | s;
+                                    rr.sg_list = nullptr;
+                                    rr.num_sge = 0;
+                                    if (ibv_post_recv(conns[s].id->qp, &rr, &bad_rr))
+                                        throw std::runtime_error("Failed to post GO recv");
+                                }
+
+                                size_t got = 0;
+                                while (got < num_go) {
+                                    ibv_wc wc{};
+                                    int n = ibv_poll_cq(cq, 1, &wc);
+                                    if (n > 0 && wc.status == IBV_WC_SUCCESS
+                                        && (wc.opcode & IBV_WC_RECV)) {
+                                        got++;
+                                    }
+                                }
+
+                                std::cout << "[Client " << global_id
+                                    << "] GO from all " << num_go << " server instances\n";
+                            }
+
+                            // std::cout << "[Client " << global_id << "] Connected ("
+                            //     << client->connections().size() << " conns)\n";
+
+
+                            start_latch.arrive_and_wait();
+
+                            uint64_t* latencies = &((*all_latencies)[i * NUM_OPS_PER_CLIENT]);
+
+                            for (size_t op = 0; op < NUM_OPS_PER_CLIENT; ++op) {
+                                auto t0 = std::chrono::steady_clock::now();
+
+                                auto [lock_id, lock] = table.random(*client);
+                                lock.lock();
+                                auto t1 = std::chrono::steady_clock::now();
+                                lock.unlock();
+                                lock.cleanup();
+
+                                latencies[op] = std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
+                                (*lock_counts)[global_id][lock_id]++;
+                            }
+
+                            std::cout << "[Client " << global_id << "] Done.\n";
+
+                            Client* expected = nullptr;
+                            if (verify_client.compare_exchange_strong(expected, client.get())) {
+                                client.release();
+                            }
                         }
-
-                        std::cout << "[Client " << global_id << "] Connected ("
-                                  << client->connections().size() << " conns)\n";
-
-                        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-                        start_latch.arrive_and_wait();
-
-                        uint64_t* latencies = &((*all_latencies)[i * NUM_OPS_PER_CLIENT]);
-
-                        for (size_t op = 0; op < NUM_OPS_PER_CLIENT; ++op) {
-                            auto t0 = std::chrono::steady_clock::now();
-
-                            auto [lock_id, lock] = table.random(*client);
-                            lock.lock();
-                            auto t1 = std::chrono::steady_clock::now();
-                            lock.unlock();
-                            lock.cleanup();
-
-                            latencies[op] = std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
-                            (*lock_counts)[global_id][lock_id]++;
+                        catch (const std::exception& e) {
+                            std::cerr << "[Client " << global_id << " error] " << e.what() << "\n";
                         }
-
-                        std::cout << "[Client " << global_id << "] Done.\n";
-
-                        Client* expected = nullptr;
-                        if (verify_client.compare_exchange_strong(expected, client.get())) {
-                            client.release();
-                        }
-                    } catch (const std::exception& e) {
-                        std::cerr << "[Client " << global_id << " error] " << e.what() << "\n";
-                    }
-                });
+                    });
             }
 
             start_latch.arrive_and_wait();
@@ -182,9 +215,9 @@ int main() {
                 total_global += global_acquires;
 
                 std::cout << "[VERIFY] Lock " << std::setw(2) << l
-                          << " | local=" << std::setw(6) << lock_total
-                          << " | global=" << std::setw(7) << global_acquires
-                          << " | per-client: [";
+                    << " | local=" << std::setw(6) << lock_total
+                    << " | global=" << std::setw(7) << global_acquires
+                    << " | per-client: [";
                 for (size_t i = 0; i < NUM_CLIENTS_PER_MACHINE; ++i) {
                     const uint32_t gid = machine_id * NUM_CLIENTS_PER_MACHINE + i;
                     if (i > 0) std::cout << ", ";
@@ -194,15 +227,16 @@ int main() {
             }
 
             std::cout << "[VERIFY] Local committed:  " << total_committed
-                      << " / " << local_ops_expected;
+                << " / " << local_ops_expected;
             if (total_committed == local_ops_expected) {
                 std::cout << " ✓ PASS\n";
-            } else {
+            }
+            else {
                 std::cout << " ✗ FAIL\n";
             }
 
             std::cout << "[VERIFY] Global acquires:  " << total_global
-                      << " (from server frontier)\n";
+                << " (from server frontier)\n";
 
             // ─── Stats ───
 
@@ -247,11 +281,14 @@ int main() {
             std::cout << std::string(42, '=') << "\n";
             std::cout << "Strategy:     " << std::setw(10) << STRATEGY << "\n";
             std::cout << "Locks:        " << std::setw(10) << MAX_LOCKS << "\n";
-            std::cout << "Clients:      " << std::setw(10) << TOTAL_CLIENTS << " (" << NUM_CLIENTS_PER_MACHINE << " on this machine)\n";
+            std::cout << "Clients:      " << std::setw(10) << TOTAL_CLIENTS << " (" << NUM_CLIENTS_PER_MACHINE <<
+                " on this machine)\n";
             std::cout << "Ops/Client:   " << std::setw(10) << NUM_OPS_PER_CLIENT << "\n";
             std::cout << "Total Ops:    " << std::setw(10) << NUM_TOTAL_OPS << "\n";
-            std::cout << "Wall Clock:   " << std::setw(10) << std::fixed << std::setprecision(3) << (wall_ms.count() / 1000.0) << " s\n";
-            std::cout << "Throughput:   " << std::setw(10) << std::fixed << std::setprecision(0) << total_throughput << " ops/s\n";
+            std::cout << "Wall Clock:   " << std::setw(10) << std::fixed << std::setprecision(3) << (wall_ms.count() /
+                1000.0) << " s\n";
+            std::cout << "Throughput:   " << std::setw(10) << std::fixed << std::setprecision(0) << total_throughput <<
+                " ops/s\n";
             std::cout << std::string(42, '-') << "\n";
             std::cout << "LATENCY (Microseconds)\n";
             std::cout << "Mean:         " << std::setw(10) << std::setprecision(2) << mean << " us\n";
@@ -263,8 +300,8 @@ int main() {
             std::cout << "P99.9:        " << std::setw(10) << get_p(0.999) << " us\n";
             std::cout << "P100 (Max):   " << std::setw(10) << get_p(1.0) << " us\n";
             std::cout << std::string(42, '=') << std::endl;
-
-        } else {
+        }
+        else {
             const uint32_t node_id = get_uint_env("NODE_ID");
 
             if (is_mu) {
@@ -276,14 +313,15 @@ int main() {
                         pin_thread_to_cpu(static_cast<int>(inst));
                         uint16_t port = RDMA_PORT + static_cast<uint16_t>(inst);
                         uint32_t lock_start = inst * MU_LOCKS_PER_INSTANCE;
-           uint32_t lock_end = (inst == MU_NUM_INSTANCES - 1)
-               ? MAX_LOCKS
-               : (inst + 1) * MU_LOCKS_PER_INSTANCE;
+                        uint32_t lock_end = (inst == MU_NUM_INSTANCES - 1)
+                                                ? MAX_LOCKS
+                                                : (inst + 1) * MU_LOCKS_PER_INSTANCE;
 
                         if (node_id == 0) {
                             MuLeader leader(node_id, lock_start, lock_end);
                             leader.start(port);
-                        } else {
+                        }
+                        else {
                             MuFollower follower(node_id, lock_start, lock_end);
                             follower.start(port);
                         }
@@ -291,13 +329,15 @@ int main() {
                 }
 
                 for (auto& t : threads) t.join();
-            } else {
+            }
+            else {
                 pin_thread_to_cpu(1);
                 SynraNode node(node_id);
                 node.start(RDMA_PORT);
             }
         }
-    } catch (const std::exception& e) {
+    }
+    catch (const std::exception& e) {
         std::cerr << "[error] " << e.what() << "\n";
         return 1;
     }
