@@ -8,7 +8,7 @@ public:
 
 protected:
     [[nodiscard]] uint32_t expected_clients() const override {
-        return NUM_CLIENTS;
+        return TOTAL_CLIENTS;
     }
     void run() override;
 };

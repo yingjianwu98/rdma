@@ -11,7 +11,7 @@
 Server::Server(const uint32_t node_id)
     : node_id_(node_id)
     , peers_(CLUSTER_NODES.size())
-    , clients_(NUM_CLIENTS)
+    , clients_(TOTAL_CLIENTS)
 {
     server_creds_.node_id = node_id;
     server_creds_.type    = ConnType::FOLLOWER;  // node-to-node type
@@ -65,7 +65,7 @@ RemoteConnection Server::connect_to_node(const std::string& ip, uint16_t port) {
         if (!pd_) throw std::runtime_error("ibv_alloc_pd failed");
 
         cq_ = ibv_create_cq(cm_id->verbs,
-                             QP_DEPTH * (NUM_CLIENTS + CLUSTER_NODES.size()),
+                             QP_DEPTH * (TOTAL_CLIENTS + CLUSTER_NODES.size()),
                              nullptr, nullptr, 0);
         if (!cq_) throw std::runtime_error("ibv_create_cq failed");
 
@@ -212,7 +212,7 @@ void Server::start(uint16_t port) {
             if (!pd_) throw std::runtime_error("ibv_alloc_pd failed");
 
             cq_ = ibv_create_cq(new_id->verbs,
-                                 QP_DEPTH * (NUM_CLIENTS + num_nodes),
+                                 QP_DEPTH * (TOTAL_CLIENTS + num_nodes),
                                  nullptr, nullptr, 0);
             if (!cq_) throw std::runtime_error("ibv_create_cq failed");
 

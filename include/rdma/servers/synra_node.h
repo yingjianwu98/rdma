@@ -8,6 +8,6 @@ public:
     }
 
 protected:
-    [[nodiscard]] uint32_t expected_clients() const override { return NUM_CLIENTS; }
+    [[nodiscard]] uint32_t expected_clients() const override { return TOTAL_CLIENTS; }
     void run() override;
 };

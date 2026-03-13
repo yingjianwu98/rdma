@@ -2,9 +2,10 @@
 #include "rdma/server.h"
 #include "rdma/servers/mu_leader.h"
 #include "rdma/servers/mu_follower.h"
+#include "rdma/servers/synra_node.h"
 #include "rdma/client.h"
 #include "rdma/lock_table.h"
-#include "rdma/strategies/mu_strategy.h"
+#include "rdma/strategies/cas_strategy.h"
 
 #include <chrono>
 #include <cmath>
@@ -14,45 +15,45 @@
 #include <memory>
 #include <thread>
 
-#include "rdma/servers/synra_node.h"
-#include "rdma/strategies/cas_strategy.h"
-#include "rdma/strategies/tas_strategy.h"
-
-constexpr size_t NUM_LOCKS = 16;
+constexpr size_t NUM_LOCKS = 1;
 
 int main() {
     try {
         if (get_uint_env("IS_CLIENT") != 0) {
+            const uint32_t machine_id = get_uint_env("MACHINE_ID");
 
             auto all_latencies = std::make_unique<std::array<uint64_t, NUM_TOTAL_OPS>>();
-            std::latch start_latch(NUM_CLIENTS + 1);
+            std::latch start_latch(NUM_CLIENTS_PER_MACHINE + 1);
             std::vector<std::thread> workers;
 
-            auto lock_counts = std::make_unique<std::array<std::array<uint64_t, NUM_LOCKS>, NUM_CLIENTS>>();
+            auto lock_counts = std::make_unique<
+                std::array<std::array<uint64_t, NUM_LOCKS>, TOTAL_CLIENTS>>();
             for (auto& client_counts : *lock_counts) client_counts.fill(0);
 
-            for (uint32_t i = 0; i < NUM_CLIENTS; ++i) {
-                workers.emplace_back([i, &start_latch, &all_latencies, &lock_counts]() {
+            for (uint32_t i = 0; i < NUM_CLIENTS_PER_MACHINE; ++i) {
+                const uint32_t global_id = machine_id * NUM_CLIENTS_PER_MACHINE + i;
+
+                workers.emplace_back([i, global_id, &start_latch, &all_latencies, &lock_counts]() {
                     try {
                         pin_thread_to_cpu(pick_cpu_for_client(i));
 
-                        std::vector<std::unique_ptr<MuStrategy>> strategies;
+                        std::vector<std::unique_ptr<CasStrategy>> strategies;
                         LockTable table;
                         for (size_t l = 0; l < NUM_LOCKS; ++l) {
-                            strategies.push_back(std::make_unique<MuStrategy>());
+                            strategies.push_back(std::make_unique<CasStrategy>());
                             table.add(*strategies.back());
                         }
 
-                        Client client(i);
+                        Client client(global_id);
                         client.connect(CLUSTER_NODES, RDMA_PORT);
 
-                        std::cout << "[Client " << i << "] Connected to "
+                        std::cout << "[Client " << global_id << "] Connected to "
                                   << client.connections().size() << " nodes\n";
 
                         client.connect_peers(7000);
 
-                        std::cout << "[Client " << i << "] Peer mesh ready ("
-                                  << (NUM_CLIENTS - 1) << " peers)\n";
+                        std::cout << "[Client " << global_id << "] Peer mesh ready ("
+                                  << (TOTAL_CLIENTS - 1) << " peers)\n";
 
                         std::this_thread::sleep_for(std::chrono::milliseconds(500));
                         start_latch.arrive_and_wait();
@@ -69,12 +70,12 @@ int main() {
                             lock.cleanup();
 
                             latencies[op] = std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
-                            (*lock_counts)[i][lock_id]++;
+                            (*lock_counts)[global_id][lock_id]++;
                         }
 
-                        std::cout << "[Client " << i << "] Done.\n";
+                        std::cout << "[Client " << global_id << "] Done.\n";
                     } catch (const std::exception& e) {
-                        std::cerr << "[Client " << i << " error] " << e.what() << "\n";
+                        std::cerr << "[Client " << global_id << " error] " << e.what() << "\n";
                     }
                 });
             }
@@ -96,13 +97,13 @@ int main() {
 
             for (size_t l = 0; l < NUM_LOCKS; ++l) {
                 uint64_t lock_total = 0;
-                for (size_t c = 0; c < NUM_CLIENTS; ++c) {
+                for (size_t c = 0; c < TOTAL_CLIENTS; ++c) {
                     lock_total += (*lock_counts)[c][l];
                 }
                 total_committed += lock_total;
 
                 std::cout << "[VERIFY] Lock " << l << " | ops=" << lock_total << " | per-client: [";
-                for (size_t c = 0; c < NUM_CLIENTS; ++c) {
+                for (size_t c = 0; c < TOTAL_CLIENTS; ++c) {
                     if (c > 0) std::cout << ", ";
                     std::cout << (*lock_counts)[c][l];
                 }
@@ -120,10 +121,13 @@ int main() {
 
             // ─── Compute stats ───
 
-            std::sort(all_latencies->begin(), all_latencies->end());
+            // Only this machine's latencies are in slots [0 .. NUM_CLIENTS_PER_MACHINE * NUM_OPS_PER_CLIENT)
+            const size_t local_total_ops = NUM_CLIENTS_PER_MACHINE * NUM_OPS_PER_CLIENT;
 
-            std::vector<double> client_durations_s(NUM_CLIENTS, 0.0);
-            for (size_t i = 0; i < NUM_CLIENTS; ++i) {
+            std::sort(all_latencies->begin(), all_latencies->begin() + local_total_ops);
+
+            std::vector<double> client_durations_s(NUM_CLIENTS_PER_MACHINE, 0.0);
+            for (size_t i = 0; i < NUM_CLIENTS_PER_MACHINE; ++i) {
                 uint64_t sum_ns = 0;
                 for (size_t op = 0; op < NUM_OPS_PER_CLIENT; ++op) {
                     sum_ns += (*all_latencies)[i * NUM_OPS_PER_CLIENT + op];
@@ -132,34 +136,34 @@ int main() {
             }
 
             double total_throughput = 0;
-            for (size_t i = 0; i < NUM_CLIENTS; ++i) {
+            for (size_t i = 0; i < NUM_CLIENTS_PER_MACHINE; ++i) {
                 total_throughput += (NUM_OPS_PER_CLIENT / client_durations_s[i]);
             }
 
             auto get_p = [&](double p) {
-                size_t idx = static_cast<size_t>(p * (NUM_TOTAL_OPS - 1));
+                size_t idx = static_cast<size_t>(p * (local_total_ops - 1));
                 return (*all_latencies)[idx] / 1000.0;
             };
 
             double sum = 0;
-            for (const auto& lat : *all_latencies) sum += (lat / 1000.0);
-            double mean = sum / NUM_TOTAL_OPS;
+            for (size_t i = 0; i < local_total_ops; ++i) sum += ((*all_latencies)[i] / 1000.0);
+            double mean = sum / local_total_ops;
 
             double sq_sum = 0;
-            for (const auto& lat : *all_latencies) {
-                double diff = (lat / 1000.0) - mean;
+            for (size_t i = 0; i < local_total_ops; ++i) {
+                double diff = ((*all_latencies)[i] / 1000.0) - mean;
                 sq_sum += diff * diff;
             }
-            double std_dev = std::sqrt(sq_sum / NUM_TOTAL_OPS);
+            double std_dev = std::sqrt(sq_sum / local_total_ops);
 
             const auto wall_ms = std::chrono::duration_cast<std::chrono::milliseconds>(wall_end - wall_start);
 
             std::cout << "\n" << std::string(42, '=') << "\n";
             std::cout << " RDMA BENCHMARK RESULTS\n";
             std::cout << std::string(42, '=') << "\n";
-            std::cout << "Strategy:     " << std::setw(10) << "Mu" << "\n";
+            std::cout << "Strategy:     " << std::setw(10) << "CAS" << "\n";
             std::cout << "Locks:        " << std::setw(10) << NUM_LOCKS << "\n";
-            std::cout << "Clients:      " << std::setw(10) << NUM_CLIENTS << "\n";
+            std::cout << "Clients:      " << std::setw(10) << TOTAL_CLIENTS << " (" << NUM_CLIENTS_PER_MACHINE << " on this machine)\n";
             std::cout << "Ops/Client:   " << std::setw(10) << NUM_OPS_PER_CLIENT << "\n";
             std::cout << "Total Ops:    " << std::setw(10) << NUM_TOTAL_OPS << "\n";
             std::cout << "Wall Clock:   " << std::setw(10) << std::fixed << std::setprecision(3) << (wall_ms.count() / 1000.0) << " s\n";
@@ -179,16 +183,9 @@ int main() {
         } else {
             pin_thread_to_cpu(1);
             const uint32_t node_id = get_uint_env("NODE_ID");
-            // SynraNode node(node_id);
-            // node.start(RDMA_PORT);
-            //
-            if (node_id == 0) {
-                MuLeader leader(node_id);
-                leader.start(RDMA_PORT);
-            } else {
-                MuFollower follower(node_id);
-                follower.start(RDMA_PORT);
-            }
+
+            SynraNode node(node_id);
+            node.start(RDMA_PORT);
         }
     } catch (const std::exception& e) {
         std::cerr << "[error] " << e.what() << "\n";

@@ -100,7 +100,7 @@ void Client::connect(const std::vector<std::string>& node_ips, const uint16_t po
 
             cq_ = ibv_create_cq(
                 cm_id->verbs,
-                QP_DEPTH * static_cast<int>(node_ips.size() + NUM_CLIENTS),
+                QP_DEPTH * static_cast<int>(node_ips.size() + TOTAL_CLIENTS),
                 nullptr, nullptr, 0);
             if (!cq_) throw std::runtime_error("ibv_create_cq failed");
 
@@ -169,7 +169,7 @@ void Client::connect(const std::vector<std::string>& node_ips, const uint16_t po
 }
 
 void Client::connect_peers(uint16_t peer_port) {
-    peers_.resize(NUM_CLIENTS);
+    peers_.resize(TOTAL_CLIENTS);
 
     const sockaddr* local_addr = rdma_get_local_addr(connections_[0].id);
     const auto* local_in = reinterpret_cast<const sockaddr_in*>(local_addr);
@@ -200,6 +200,10 @@ void Client::connect_peers(uint16_t peer_port) {
     for (uint32_t target = 0; target < id_; ++target) {
         const uint16_t target_port = peer_port + target;
 
+        // Resolve which machine the target client lives on
+        const uint32_t target_machine = target / NUM_CLIENTS_PER_MACHINE;
+        const std::string& target_ip = CLIENT_NODES[target_machine];
+
         rdma_event_channel* conn_ec = rdma_create_event_channel();
         if (!conn_ec) throw std::runtime_error("create_event_channel failed for peer connect");
 
@@ -220,7 +224,7 @@ void Client::connect_peers(uint16_t peer_port) {
                 sockaddr_in dst_addr{};
                 dst_addr.sin_family = AF_INET;
                 dst_addr.sin_port = htons(target_port);
-                dst_addr.sin_addr = local_in->sin_addr;
+                inet_pton(AF_INET, target_ip.c_str(), &dst_addr.sin_addr);
 
                 if (rdma_resolve_addr(cm_id,
                                       reinterpret_cast<sockaddr*>(&src_addr),
@@ -302,7 +306,7 @@ void Client::connect_peers(uint16_t peer_port) {
     }
 
     // ── Phase 2: Accept from all higher-id clients ──
-    const uint32_t expect_higher = NUM_CLIENTS - 1 - id_;
+    const uint32_t expect_higher = TOTAL_CLIENTS - 1 - id_;
 
     for (uint32_t i = 0; i < expect_higher; ++i) {
         rdma_cm_event* event = nullptr;
@@ -375,5 +379,5 @@ void Client::connect_peers(uint16_t peer_port) {
         std::cout << "[Client " << id_ << "] Peer " << remote_id << " accepted\n";
     }
 
-    std::cout << "[Client " << id_ << "] All " << (NUM_CLIENTS - 1) << " peer connections ready\n";
+    std::cout << "[Client " << id_ << "] All " << (TOTAL_CLIENTS - 1) << " peer connections ready\n";
 }
