@@ -15,7 +15,7 @@
 #include <memory>
 #include <thread>
 
-constexpr size_t NUM_LOCKS = 1;
+constexpr size_t NUM_LOCKS = 50;
 
 int main() {
     try {

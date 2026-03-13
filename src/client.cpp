@@ -211,7 +211,7 @@ void Client::connect_peers(uint16_t peer_port) {
         bool connected = false;
         std::string last_error;
 
-        for (int attempt = 0; attempt < 60; ++attempt) {
+        for (int attempt = 0; ; ++attempt) {
             try {
                 if (rdma_create_id(conn_ec, &cm_id, nullptr, RDMA_PS_TCP))
                     throw std::runtime_error("create_id failed");
@@ -285,9 +285,10 @@ void Client::connect_peers(uint16_t peer_port) {
                 break;
             } catch (const std::exception& e) {
                 last_error = e.what();
-                if (attempt % 10 == 0) {
-                    std::cerr << "[Client " << id_ << "] Peer " << target
-                              << " attempt " << attempt << ": " << last_error << "\n";
+                if (attempt % 50 == 0) {
+                    std::cerr << "[Client " << id_ << "] Waiting for peer " << target
+                              << " on " << target_ip << ":" << target_port
+                              << " (attempt " << attempt << ")\n";
                 }
                 if (cm_id) {
                     rdma_destroy_id(cm_id);
@@ -295,11 +296,6 @@ void Client::connect_peers(uint16_t peer_port) {
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
-        }
-
-        if (!connected) {
-            rdma_destroy_event_channel(conn_ec);
-            throw std::runtime_error("Failed to connect to peer client " + std::to_string(target) + ": " + last_error);
         }
 
         std::cout << "[Client " << id_ << "] Peer " << target << " connected\n";
