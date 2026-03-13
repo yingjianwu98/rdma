@@ -14,6 +14,7 @@ public:
 
 private:
     uint64_t my_ticket_ = 0;
+    uint32_t next_client_id_ = UINT32_MAX;
 
     static constexpr uint64_t DONE_BIT = 1ULL << 63;
     // Notification signal value — written into the waiter's local buffer

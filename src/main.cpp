@@ -57,7 +57,7 @@ int main() {
                                     strategies.push_back(std::make_unique<MuStrategy>());
                                 }
                                 else {
-                                    strategies.push_back(std::make_unique<CasStrategy>());
+                                    strategies.push_back(std::make_unique<FaaStrategy>());
                                 }
                                 table.add(*strategies.back());
                             }
