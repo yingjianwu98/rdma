@@ -202,6 +202,9 @@ uint64_t CasStrategy::acquire(Client& client, int op_id, uint32_t lock_id) {
             return target_slot_;
         }
 
+        std::cout << "We failed to get the next lock: " << result << " lockid=" << lock_id << '\n';
+
+
         // ── Lost — adjust target_slot based on what we read back ──
         if (result % 2 != 0) {
             target_slot_ = result + 2; // odd = in-progress, skip past it
