@@ -219,10 +219,6 @@ uint64_t FaaStrategy::acquire(Client& client, int /*op_id*/, uint32_t lock_id) {
         return done_count >= static_cast<int>(QUORUM);
     };
 
-    if (predecessor_done()) {
-        return my_ticket_;
-    }
-
     for (;;) {
         for (int spin = 0; spin < NOTIFY_SPIN_ROUNDS; ++spin) {
             if (*notify_ptr != NOTIFY_CLEAR) {
