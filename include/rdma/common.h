@@ -23,7 +23,11 @@ inline const std::vector<std::string> CLUSTER_NODES = {
 
 inline const std::vector<std::string> CLIENT_NODES = {
     "192.168.1.4",
-    "192.168.1.5",
+    "192.168.1.6",
+    "192.168.1.7",
+    "192.168.1.8",
+    "192.168.1.9",
+    "192.168.1.10",
 };
 
 inline const size_t QUORUM = (CLUSTER_NODES.size() / 2) + 1;
@@ -41,10 +45,10 @@ constexpr size_t MAX_REPLICAS = 10;
 
 constexpr size_t NUM_OPS = 5000000;
 constexpr size_t NUM_CLIENTS_PER_MACHINE = 16;
-constexpr size_t TOTAL_MACHINES = 2;
-constexpr size_t TOTAL_CLIENTS = NUM_CLIENTS_PER_MACHINE * TOTAL_MACHINES;
-constexpr size_t NUM_OPS_PER_CLIENT = NUM_OPS / TOTAL_CLIENTS;
-constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * TOTAL_CLIENTS;
+inline const size_t TOTAL_MACHINES = CLIENT_NODES.size();
+inline const size_t TOTAL_CLIENTS = NUM_CLIENTS_PER_MACHINE * TOTAL_MACHINES;
+inline const size_t NUM_OPS_PER_CLIENT = NUM_OPS / TOTAL_CLIENTS;
+inline const size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * TOTAL_CLIENTS;
 
 // ─── Lock table layout ───
 
