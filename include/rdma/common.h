@@ -44,9 +44,9 @@ constexpr size_t MAX_REPLICAS = 10;
 
 // ─── Benchmark constants ───
 
-constexpr size_t NUM_OPS = 100000;
-constexpr size_t NUM_CLIENTS_PER_MACHINE = 8;
-constexpr size_t TOTAL_MACHINES = 2;
+constexpr size_t NUM_OPS = 2000000;
+constexpr size_t NUM_CLIENTS_PER_MACHINE = 16;
+constexpr size_t TOTAL_MACHINES = 3;
 constexpr size_t TOTAL_CLIENTS = NUM_CLIENTS_PER_MACHINE * TOTAL_MACHINES;
 constexpr size_t NUM_OPS_PER_CLIENT = NUM_OPS / TOTAL_CLIENTS;
 constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * TOTAL_CLIENTS;
