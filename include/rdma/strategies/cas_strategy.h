@@ -14,4 +14,5 @@ public:
 
 private:
     uint64_t target_slot_ = 1;
+    uint64_t signal_count_ = 0;
 };
