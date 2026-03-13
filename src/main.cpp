@@ -100,6 +100,7 @@ int main() {
 
                             start_latch.arrive_and_wait();
 
+                            std::cout << "starting benchmark..." << std::endl;
                             uint64_t* latencies = &((*all_latencies)[i * NUM_OPS_PER_CLIENT]);
 
                             for (size_t op = 0; op < NUM_OPS_PER_CLIENT; ++op) {
