@@ -95,6 +95,7 @@ uint64_t CasStrategy::acquire(Client& client, int op_id, uint32_t lock_id) {
     ibv_wc wcs[16];
 
     while (true) {
+        std::cout << "Trying to get next lock: " << op_id << " lockid=" << lock_id << '\n';
         const uint64_t expected = target_slot_ - 1;
 
         state->cas_results[0] = 0xFEFEFEFEFEFEFEFE;
@@ -129,6 +130,7 @@ uint64_t CasStrategy::acquire(Client& client, int op_id, uint32_t lock_id) {
 
         bool got_acquire = false;
         while (!got_acquire) {
+            std::cout << "Trying to get completion for lock: " << op_id << " lockid=" << lock_id << '\n';
             const int n = ibv_poll_cq(cq, 16, wcs);
             if (n < 0) throw std::runtime_error("Poll CQ failed");
             if (n == 0) continue;
