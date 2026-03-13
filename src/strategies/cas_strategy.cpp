@@ -10,13 +10,10 @@
 
 // ─── advance_frontier: CAS frontier from old_val → new_val, fire-and-forget ───
 
-static constexpr uint32_t SIGNAL_INTERVAL = QP_DEPTH / 2;
-
 static void advance_frontier(
     LocalState* state, const uint64_t old_val, const uint64_t new_val,
     uint32_t lock_id,
-    const std::vector<RemoteNode>& conns, const ibv_mr* mr,
-    ibv_cq* cq, uint32_t* unsignaled_counts
+    const std::vector<RemoteNode>& conns, const ibv_mr* mr
 ) {
     const size_t node = lock_id % conns.size();
 
@@ -28,6 +25,7 @@ static void advance_frontier(
     ibv_send_wr wr{}, *bad;
     wr.wr_id = 0x111000 | node;
     wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
+    wr.send_flags = 0;  // always unsignaled
     wr.sg_list = &sge;
     wr.num_sge = 1;
     wr.wr.rdma.remote_addr = conns[node].addr + lock_control_offset(lock_id);
@@ -35,25 +33,8 @@ static void advance_frontier(
     wr.wr.atomic.compare_add = old_val;
     wr.wr.atomic.swap = new_val;
 
-    unsignaled_counts[node]++;
-
-    if (unsignaled_counts[node] >= SIGNAL_INTERVAL) {
-        // Time to drain — post signaled and wait
-        wr.send_flags = IBV_SEND_SIGNALED;
-        if (ibv_post_send(conns[node].id->qp, &wr, &bad))
-            throw std::runtime_error("advance_frontier post failed");
-
-        ibv_wc wc{};
-        while (true) {
-            int n = ibv_poll_cq(cq, 1, &wc);
-            if (n > 0 && (wc.wr_id & 0xFFF000) == 0x111000) break;
-        }
-        unsignaled_counts[node] = 0;
-    } else {
-        // Normal unsignaled — zero overhead
-        wr.send_flags = 0;
-        if (ibv_post_send(conns[node].id->qp, &wr, &bad))
-            throw std::runtime_error("advance_frontier post failed");
+    if (ibv_post_send(conns[node].id->qp, &wr, &bad)) {
+        throw std::runtime_error("advance_frontier post failed");
     }
 }
 
