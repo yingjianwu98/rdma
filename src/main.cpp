@@ -21,7 +21,7 @@
 #include <thread>
 
 // ─── Configuration ───
-constexpr const char* STRATEGY = "tas";      // "mu", "faa", "cas", or "tas"
+constexpr const char* STRATEGY = "cas";      // "mu", "faa", "cas", or "tas"
 
 int main() {
     try {

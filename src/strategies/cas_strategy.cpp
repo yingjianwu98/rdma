@@ -99,37 +99,37 @@ uint64_t CasStrategy::acquire(Client& client, int op_id, uint32_t lock_id) {
             // We won — replicate our client_id to this lock's log on all nodes
             state->next_frontier = static_cast<uint64_t>(client.id());
 
-            ibv_sge replication_sge{
-                .addr = reinterpret_cast<uintptr_t>(&state->next_frontier),
-                .length = 8,
-                .lkey = mr->lkey
-            };
-
-            for (size_t i = 0; i < conns.size(); ++i) {
-                ibv_send_wr rep_wr{}, *bad = nullptr;
-                rep_wr.wr_id = (target_slot_ << 32) | static_cast<uint32_t>(i);
-                rep_wr.sg_list = &replication_sge;
-                rep_wr.num_sge = 1;
-                rep_wr.opcode = IBV_WR_RDMA_WRITE;
-                rep_wr.send_flags = IBV_SEND_SIGNALED;
-                rep_wr.wr.rdma.remote_addr = conns[i].addr + lock_log_slot_offset(lock_id, target_slot_);
-                rep_wr.wr.rdma.rkey = conns[i].rkey;
-
-                if (ibv_post_send(conns[i].id->qp, &rep_wr, &bad)) {
-                    throw std::runtime_error("Replication post failed");
-                }
-            }
-
-            // Wait for quorum acks on replication
-            int acks = 0;
-            ibv_wc wc_batch[32];
-            while (acks < static_cast<int>(QUORUM)) {
-                int pulled = ibv_poll_cq(cq, 32, wc_batch);
-                for (int j = 0; j < pulled; ++j) {
-                    if (wc_batch[j].status != IBV_WC_SUCCESS) continue;
-                    if ((wc_batch[j].wr_id >> 32) == target_slot_) acks++;
-                }
-            }
+            // ibv_sge replication_sge{
+            //     .addr = reinterpret_cast<uintptr_t>(&state->next_frontier),
+            //     .length = 8,
+            //     .lkey = mr->lkey
+            // };
+            //
+            // for (size_t i = 0; i < conns.size(); ++i) {
+            //     ibv_send_wr rep_wr{}, *bad = nullptr;
+            //     rep_wr.wr_id = (target_slot_ << 32) | static_cast<uint32_t>(i);
+            //     rep_wr.sg_list = &replication_sge;
+            //     rep_wr.num_sge = 1;
+            //     rep_wr.opcode = IBV_WR_RDMA_WRITE;
+            //     rep_wr.send_flags = IBV_SEND_SIGNALED;
+            //     rep_wr.wr.rdma.remote_addr = conns[i].addr + lock_log_slot_offset(lock_id, target_slot_);
+            //     rep_wr.wr.rdma.rkey = conns[i].rkey;
+            //
+            //     if (ibv_post_send(conns[i].id->qp, &rep_wr, &bad)) {
+            //         throw std::runtime_error("Replication post failed");
+            //     }
+            // }
+            //
+            // // Wait for quorum acks on replication
+            // int acks = 0;
+            // ibv_wc wc_batch[32];
+            // while (acks < static_cast<int>(QUORUM)) {
+            //     int pulled = ibv_poll_cq(cq, 32, wc_batch);
+            //     for (int j = 0; j < pulled; ++j) {
+            //         if (wc_batch[j].status != IBV_WC_SUCCESS) continue;
+            //         if ((wc_batch[j].wr_id >> 32) == target_slot_) acks++;
+            //     }
+            // }
 
             return target_slot_;
         }
