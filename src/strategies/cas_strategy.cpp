@@ -13,7 +13,8 @@
 static void advance_frontier(
     LocalState* state, const uint64_t old_val, const uint64_t new_val,
     uint32_t lock_id,
-    const std::vector<RemoteNode>& conns, const ibv_mr* mr
+    const std::vector<RemoteNode>& conns, const ibv_mr* mr,
+    ibv_cq* cq
 ) {
     const size_t node = lock_id % conns.size();
 
@@ -25,7 +26,7 @@ static void advance_frontier(
     ibv_send_wr wr{}, *bad;
     wr.wr_id = 0x111000 | node;
     wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
-    wr.send_flags = IBV_SEND_SIGNALED;  // always unsignaled
+    wr.send_flags = IBV_SEND_SIGNALED;
     wr.sg_list = &sge;
     wr.num_sge = 1;
     wr.wr.rdma.remote_addr = conns[node].addr + lock_control_offset(lock_id);
@@ -36,6 +37,10 @@ static void advance_frontier(
     if (ibv_post_send(conns[node].id->qp, &wr, &bad)) {
         throw std::runtime_error("advance_frontier post failed");
     }
+
+    // Drain — just wait for ANY one completion
+    ibv_wc wc{};
+    while (ibv_poll_cq(cq, 1, &wc) < 1) {}
 }
 
 uint64_t CasStrategy::acquire(Client& client, int op_id, uint32_t lock_id) {
