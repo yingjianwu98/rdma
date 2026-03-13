@@ -49,36 +49,15 @@ RemoteConnection Server::connect_to_node(const std::string& ip, uint16_t port) {
     if (rdma_resolve_addr(cm_id, nullptr, reinterpret_cast<sockaddr*>(&addr), 2000))
         throw std::runtime_error("resolve_addr failed for " + ip);
 
-    // Wait for ADDR_RESOLVED, stash any CONNECT_REQUESTs for later
     rdma_cm_event* ev = nullptr;
-    while (true) {
-        rdma_get_cm_event(ec_, &ev);
-        if (ev->event == RDMA_CM_EVENT_ADDR_RESOLVED && ev->id == cm_id) {
-            rdma_ack_cm_event(ev);
-            break;
-        }
-        // Stash connect requests — they'll be re-delivered when we listen again
-        // For now, just reject and let the remote retry
-        if (ev->event == RDMA_CM_EVENT_CONNECT_REQUEST) {
-            rdma_reject(ev->id, nullptr, 0);
-        }
-        rdma_ack_cm_event(ev);
-    }
+    rdma_get_cm_event(ec_, &ev);
+    rdma_ack_cm_event(ev);
 
     if (rdma_resolve_route(cm_id, 2000))
         throw std::runtime_error("resolve_route failed for " + ip);
 
-    while (true) {
-        rdma_get_cm_event(ec_, &ev);
-        if (ev->event == RDMA_CM_EVENT_ROUTE_RESOLVED && ev->id == cm_id) {
-            rdma_ack_cm_event(ev);
-            break;
-        }
-        if (ev->event == RDMA_CM_EVENT_CONNECT_REQUEST) {
-            rdma_reject(ev->id, nullptr, 0);
-        }
-        rdma_ack_cm_event(ev);
-    }
+    rdma_get_cm_event(ec_, &ev);
+    rdma_ack_cm_event(ev);
 
     // init RDMA resources on first connection
     if (!pd_) {
@@ -127,24 +106,21 @@ RemoteConnection Server::connect_to_node(const std::string& ip, uint16_t port) {
     if (rdma_connect(cm_id, &param))
         throw std::runtime_error("rdma_connect failed for " + ip);
 
-    while (true) {
-        rdma_get_cm_event(ec_, &ev);
-        if (ev->event == RDMA_CM_EVENT_ESTABLISHED && ev->id == cm_id) {
-            RemoteConnection conn{};
-            if (ev->param.conn.private_data &&
-                ev->param.conn.private_data_len >= sizeof(ConnPrivateData)) {
-                auto* remote = static_cast<const ConnPrivateData*>(
-                    ev->param.conn.private_data);
-                conn = {remote->node_id, cm_id, remote->addr, remote->rkey, remote->type};
-            }
-            rdma_ack_cm_event(ev);
-            return conn;
-        }
-        if (ev->event == RDMA_CM_EVENT_CONNECT_REQUEST) {
-            rdma_reject(ev->id, nullptr, 0);
-        }
+    rdma_get_cm_event(ec_, &ev);
+    if (ev->event != RDMA_CM_EVENT_ESTABLISHED) {
         rdma_ack_cm_event(ev);
+        throw std::runtime_error("connect to node failed for " + ip);
     }
+
+    RemoteConnection conn{};
+    if (ev->param.conn.private_data &&
+        ev->param.conn.private_data_len >= sizeof(ConnPrivateData)) {
+        auto* remote = static_cast<const ConnPrivateData*>(
+            ev->param.conn.private_data);
+        conn = {remote->node_id, cm_id, remote->addr, remote->rkey, remote->type};
+    }
+    rdma_ack_cm_event(ev);
+    return conn;
 }
 
 // ─── Main startup: mesh nodes + accept clients ───
