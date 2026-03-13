@@ -10,76 +10,89 @@
 
 // ─── advance_frontier: CAS frontier from old_val → new_val, fire-and-forget ───
 
+#pragma once
+
+#include <cstdint>
+#include <stdexcept>
+
 namespace wrid {
     // Layout (64 bits total):
     //
-    // [ gen:16 ][ op:32 ][ type:8 ][ index:8 ]
+    // [ seq:32 ][ conn_idx:8 ][ op_type:8 ][ lock_id:16 ]
     //
-    // - gen   : optional generation / epoch / client-local rollover tag
-    // - op    : your operation id
-    // - type  : acquire / advance / replication / etc.
-    // - index : connection index or small sub-id
+    // lock_id  : up to 65535 locks
+    // op_type  : up to 255 op kinds
+    // conn_idx : up to 255 connections
+    // seq      : 32-bit sequence number
 
-    constexpr uint64_t INDEX_BITS = 8;
-    constexpr uint64_t TYPE_BITS  = 8;
-    constexpr uint64_t OP_BITS    = 32;
-    constexpr uint64_t GEN_BITS   = 16;
+    constexpr uint64_t LOCK_BITS = 16;
+    constexpr uint64_t OP_BITS   = 8;
+    constexpr uint64_t CONN_BITS = 8;
+    constexpr uint64_t SEQ_BITS  = 32;
 
-    static_assert(INDEX_BITS + TYPE_BITS + OP_BITS + GEN_BITS == 64);
+    static_assert(LOCK_BITS + OP_BITS + CONN_BITS + SEQ_BITS == 64);
 
-    constexpr uint64_t INDEX_SHIFT = 0;
-    constexpr uint64_t TYPE_SHIFT  = INDEX_SHIFT + INDEX_BITS;
-    constexpr uint64_t OP_SHIFT    = TYPE_SHIFT  + TYPE_BITS;
-    constexpr uint64_t GEN_SHIFT   = OP_SHIFT    + OP_BITS;
+    constexpr uint64_t LOCK_SHIFT = 0;
+    constexpr uint64_t OP_SHIFT   = LOCK_SHIFT + LOCK_BITS;
+    constexpr uint64_t CONN_SHIFT = OP_SHIFT + OP_BITS;
+    constexpr uint64_t SEQ_SHIFT  = CONN_SHIFT + CONN_BITS;
 
-    constexpr uint64_t bitmask(uint64_t bits) {
-        return (1ull << bits) - 1;
-    }
+    constexpr uint64_t LOCK_MASK = (1ULL << LOCK_BITS) - 1;
+    constexpr uint64_t OP_MASK   = (1ULL << OP_BITS) - 1;
+    constexpr uint64_t CONN_MASK = (1ULL << CONN_BITS) - 1;
+    constexpr uint64_t SEQ_MASK  = (1ULL << SEQ_BITS) - 1;
 
-    constexpr uint64_t INDEX_MASK = bitmask(INDEX_BITS) << INDEX_SHIFT;
-    constexpr uint64_t TYPE_MASK  = bitmask(TYPE_BITS)  << TYPE_SHIFT;
-    constexpr uint64_t OP_MASK    = bitmask(OP_BITS)    << OP_SHIFT;
-    constexpr uint64_t GEN_MASK   = bitmask(GEN_BITS)   << GEN_SHIFT;
-
-    enum class Type : uint8_t {
-        AcquireCas      = 1,
-        AdvanceFrontier = 2,
-        Replication     = 3,
-        Release         = 4,
+    enum class OpType : uint8_t {
+        Acquire = 1,
+        Release = 2,
+        Advance = 3,
+        Read    = 4,
+        Write   = 5,
+        Cas     = 6,
+        Faa     = 7
     };
 
-    constexpr uint64_t make(uint16_t gen, uint32_t op, Type type, uint8_t index) {
-        return (static_cast<uint64_t>(gen)   << GEN_SHIFT)  |
-               (static_cast<uint64_t>(op)    << OP_SHIFT)   |
-               (static_cast<uint64_t>(type)  << TYPE_SHIFT) |
-               (static_cast<uint64_t>(index) << INDEX_SHIFT);
+    struct Decoded {
+        uint16_t lock_id;
+        uint8_t  op_type;
+        uint8_t  conn_idx;
+        uint32_t seq;
+    };
+
+    inline uint64_t pack(uint16_t lock_id, uint8_t op_type, uint32_t seq, uint8_t conn_idx) {
+        return (static_cast<uint64_t>(lock_id)  << LOCK_SHIFT) |
+               (static_cast<uint64_t>(op_type)  << OP_SHIFT)   |
+               (static_cast<uint64_t>(conn_idx) << CONN_SHIFT) |
+               (static_cast<uint64_t>(seq)      << SEQ_SHIFT);
     }
 
-    constexpr uint16_t gen(uint64_t wr_id) {
-        return static_cast<uint16_t>((wr_id & GEN_MASK) >> GEN_SHIFT);
+    inline uint64_t pack(uint16_t lock_id, OpType op_type, uint32_t seq, uint8_t conn_idx) {
+        return pack(lock_id, static_cast<uint8_t>(op_type), seq, conn_idx);
     }
 
-    constexpr uint32_t op(uint64_t wr_id) {
-        return static_cast<uint32_t>((wr_id & OP_MASK) >> OP_SHIFT);
+    inline uint16_t lock_id(uint64_t wr_id) {
+        return static_cast<uint16_t>((wr_id >> LOCK_SHIFT) & LOCK_MASK);
     }
 
-    constexpr Type type(uint64_t wr_id) {
-        return static_cast<Type>((wr_id & TYPE_MASK) >> TYPE_SHIFT);
+    inline uint8_t op_type(uint64_t wr_id) {
+        return static_cast<uint8_t>((wr_id >> OP_SHIFT) & OP_MASK);
     }
 
-    constexpr uint8_t index(uint64_t wr_id) {
-        return static_cast<uint8_t>((wr_id & INDEX_MASK) >> INDEX_SHIFT);
+    inline uint8_t conn_idx(uint64_t wr_id) {
+        return static_cast<uint8_t>((wr_id >> CONN_SHIFT) & CONN_MASK);
     }
 
-    constexpr bool matches(uint64_t wr_id, uint16_t expected_gen, uint32_t expected_op, Type expected_type) {
-        return gen(wr_id) == expected_gen &&
-               op(wr_id) == expected_op &&
-               type(wr_id) == expected_type;
+    inline uint32_t seq(uint64_t wr_id) {
+        return static_cast<uint32_t>((wr_id >> SEQ_SHIFT) & SEQ_MASK);
     }
 
-    constexpr bool matches(uint64_t wr_id, uint32_t expected_op, Type expected_type) {
-        return op(wr_id) == expected_op &&
-               type(wr_id) == expected_type;
+    inline Decoded decode(uint64_t wr_id) {
+        return Decoded{
+            .lock_id = lock_id(wr_id),
+            .op_type = op_type(wr_id),
+            .conn_idx = conn_idx(wr_id),
+            .seq = seq(wr_id)
+        };
     }
 }
 
@@ -107,10 +120,10 @@ uint64_t CasStrategy::acquire(Client& client, int op_id, uint32_t lock_id) {
         };
 
         ibv_send_wr wr{}, *bad_wr;
-        wr.wr_id = wrid::make(
-            0,
+        wr.wr_id = wrid::pack(
+            static_cast<uint16_t>(lock_id),
+            static_cast<uint8_t>(wrid::OpType::Acquire),
             static_cast<uint32_t>(op_id),
-            wrid::Type::AcquireCas,
             static_cast<uint8_t>(node)
         );
         wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
@@ -128,33 +141,51 @@ uint64_t CasStrategy::acquire(Client& client, int op_id, uint32_t lock_id) {
         }
 
 
+
         bool got_acquire = false;
         while (!got_acquire) {
-            std::cout << "Trying to get completion for lock: " << op_id << " lockid=" << lock_id << '\n';
+            std::cout << "Trying to get completion for lock: " << op_id
+                      << " lockid=" << lock_id << '\n';
+
             const int n = ibv_poll_cq(cq, 16, wcs);
             if (n < 0) throw std::runtime_error("Poll CQ failed");
             if (n == 0) continue;
+
             for (int i = 0; i < n; ++i) {
                 const ibv_wc& c = wcs[i];
+
                 if (c.status != IBV_WC_SUCCESS) {
-                    std::cerr << "CQE error: wr_id=0x" << std::hex << c.wr_id << std::dec << " status=" << c.status << '\n';
+                    std::cerr << "CQE error: wr_id=0x" << std::hex << c.wr_id
+                              << std::dec << " status=" << c.status << '\n';
                     continue;
                 }
 
-                if (wrid::matches(c.wr_id, static_cast<uint32_t>(op_id), wrid::Type::AcquireCas)) {
+                auto d = wrid::decode(c.wr_id);
+
+                std::cout << "CQE: lock=" << d.lock_id
+                          << " seq=" << d.seq
+                          << " op=" << static_cast<int>(d.op_type)
+                          << " conn=" << static_cast<int>(d.conn_idx)
+                          << '\n';
+
+                if (d.lock_id == static_cast<uint16_t>(lock_id) &&
+                    d.seq == static_cast<uint32_t>(op_id) &&
+                    d.op_type == static_cast<uint8_t>(wrid::OpType::Acquire)) {
                     got_acquire = true;
                     break;
+                    }
+
+                if (d.op_type == static_cast<uint8_t>(wrid::OpType::Advance)) {
+                    continue;
                 }
 
-                if (wrid::type(c.wr_id) == wrid::Type::AdvanceFrontier) continue;
-
                 std::cerr << "Unexpected CQE: wr_id=0x" << std::hex << c.wr_id
-                  << std::dec
-                  << " gen=" << wrid::gen(c.wr_id)
-                  << " op=" << wrid::op(c.wr_id)
-                  << " type=" << static_cast<int>(wrid::type(c.wr_id))
-                  << " index=" << static_cast<int>(wrid::index(c.wr_id))
-                  << '\n';
+                          << std::dec
+                          << " lock=" << d.lock_id
+                          << " seq=" << d.seq
+                          << " op=" << static_cast<int>(d.op_type)
+                          << " conn=" << static_cast<int>(d.conn_idx)
+                          << '\n';
             }
         }
 
@@ -231,12 +262,12 @@ void CasStrategy::release(Client& client, int op_id, uint32_t lock_id) {
             .lkey = mr->lkey
         };
         ibv_send_wr wr{}, *bad;
-        wr.wr_id = wrid::make(
-           0,
-           static_cast<uint32_t>(op_id),
-           wrid::Type::AdvanceFrontier,
-           static_cast<uint8_t>(i)
-       );
+        wr.wr_id = wrid::pack(
+            static_cast<uint16_t>(lock_id),
+            static_cast<uint8_t>(wrid::OpType::Advance),
+            static_cast<uint32_t>(op_id),
+            static_cast<uint8_t>(i)
+        );
         wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
         wr.send_flags = ++signal_count_ % 100 == 0 ? IBV_SEND_SIGNALED : 0;
         wr.sg_list = &sge;
