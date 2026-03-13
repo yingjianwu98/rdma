@@ -177,7 +177,6 @@ uint64_t FaaStrategy::acquire(Client& client, int op_id, uint32_t lock_id) {
     //    This keeps metadata free for FAA scratch use.
     auto* notify_ptr = reinterpret_cast<volatile uint64_t*>(&state->notify_signal);
     *notify_ptr = NOTIFY_CLEAR;
-    std::atomic_thread_fence(std::memory_order_seq_cst);
 
     const uint64_t prev_slot = my_ticket_ - 1;
 
