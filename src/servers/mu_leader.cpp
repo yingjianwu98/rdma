@@ -67,7 +67,7 @@ void MuLeader::run() {
     // per-follower unsignaled count (need to signal before SQ fills)
     uint32_t follower_unsignaled[MAX_REPLICAS] = {};
 
-    for (size_t i = 0; i < NUM_CLIENTS; ++i) {
+    for (size_t i = 0; i < TOTAL_CLIENTS; ++i) {
         for (size_t r = 0; r < 16; ++r) {
             ibv_recv_wr wr{}, *bad = nullptr;
             wr.wr_id = i;
