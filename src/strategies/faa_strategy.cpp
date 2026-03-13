@@ -30,7 +30,7 @@ static inline uint64_t wr_tag(uint64_t wr_id) {
     return wr_id & TAG_MASK;
 }
 
-constexpr int NOTIFY_SPIN_ROUNDS = 500000;
+constexpr int NOTIFY_SPIN_ROUNDS = 100000;
 
 namespace {
     [[noreturn]] void throw_wc_error(const char* where, const ibv_wc& wc) {
@@ -179,6 +179,50 @@ uint64_t FaaStrategy::acquire(Client& client, int /*op_id*/, uint32_t lock_id) {
     const uint64_t prev_slot = my_ticket_ - 1;
 
     for (;;) {
+
+        {
+            for (size_t i = 0; i < conns.size(); ++i) {
+                state->learn_results[i] = EMPTY_SLOT;
+
+                ibv_sge sge{};
+                sge.addr = reinterpret_cast<uintptr_t>(&state->learn_results[i]);
+                sge.length = 8;
+                sge.lkey = mr->lkey;
+
+                ibv_send_wr wr{}, *bad = nullptr;
+                wr.wr_id = make_wr_id(my_ticket_, READ_TAG, static_cast<uint32_t>(i));
+                wr.sg_list = &sge;
+                wr.num_sge = 1;
+                wr.opcode = IBV_WR_RDMA_READ;
+                wr.send_flags = IBV_SEND_SIGNALED;
+                wr.wr.rdma.remote_addr = conns[i].addr + lock_log_slot_offset(lock_id, prev_slot);
+                wr.wr.rdma.rkey = conns[i].rkey;
+
+                if (ibv_post_send(conns[i].id->qp, &wr, &bad)) {
+                    throw std::runtime_error("Fallback read post failed");
+                }
+            }
+
+            wait_for_n_completions(
+                cq,
+                my_ticket_,
+                READ_TAG,
+                static_cast<int>(conns.size()),
+                "Fallback read");
+
+            int done_count = 0;
+            for (size_t i = 0; i < conns.size(); ++i) {
+                if (state->learn_results[i] != EMPTY_SLOT &&
+                    is_done(state->learn_results[i])) {
+                    ++done_count;
+                    }
+            }
+
+            if (done_count >= static_cast<int>(QUORUM)) {
+                return my_ticket_;
+            }
+        }
+
         // Fast path: predecessor sent GO directly to my metadata.
         for (int spin = 0; spin < NOTIFY_SPIN_ROUNDS; ++spin) {
             if (*notify_ptr != NOTIFY_CLEAR) {
@@ -187,46 +231,46 @@ uint64_t FaaStrategy::acquire(Client& client, int /*op_id*/, uint32_t lock_id) {
         }
 
         // Slow path: read predecessor slot from all replicas and see if a quorum says "done".
-        for (size_t i = 0; i < conns.size(); ++i) {
-            state->learn_results[i] = EMPTY_SLOT;
-
-            ibv_sge sge{};
-            sge.addr = reinterpret_cast<uintptr_t>(&state->learn_results[i]);
-            sge.length = 8;
-            sge.lkey = mr->lkey;
-
-            ibv_send_wr wr{}, *bad = nullptr;
-            wr.wr_id = make_wr_id(my_ticket_, READ_TAG, static_cast<uint32_t>(i));
-            wr.sg_list = &sge;
-            wr.num_sge = 1;
-            wr.opcode = IBV_WR_RDMA_READ;
-            wr.send_flags = IBV_SEND_SIGNALED;
-            wr.wr.rdma.remote_addr = conns[i].addr + lock_log_slot_offset(lock_id, prev_slot);
-            wr.wr.rdma.rkey = conns[i].rkey;
-
-            if (ibv_post_send(conns[i].id->qp, &wr, &bad)) {
-                throw std::runtime_error("Fallback read post failed");
-            }
-        }
-
-        wait_for_n_completions(
-            cq,
-            my_ticket_,
-            READ_TAG,
-            static_cast<int>(conns.size()),
-            "Fallback read");
-
-        int done_count = 0;
-        for (size_t i = 0; i < conns.size(); ++i) {
-            if (state->learn_results[i] != EMPTY_SLOT &&
-                is_done(state->learn_results[i])) {
-                ++done_count;
-            }
-        }
-
-        if (done_count >= static_cast<int>(QUORUM)) {
-            return my_ticket_;
-        }
+        // for (size_t i = 0; i < conns.size(); ++i) {
+        //     state->learn_results[i] = EMPTY_SLOT;
+        //
+        //     ibv_sge sge{};
+        //     sge.addr = reinterpret_cast<uintptr_t>(&state->learn_results[i]);
+        //     sge.length = 8;
+        //     sge.lkey = mr->lkey;
+        //
+        //     ibv_send_wr wr{}, *bad = nullptr;
+        //     wr.wr_id = make_wr_id(my_ticket_, READ_TAG, static_cast<uint32_t>(i));
+        //     wr.sg_list = &sge;
+        //     wr.num_sge = 1;
+        //     wr.opcode = IBV_WR_RDMA_READ;
+        //     wr.send_flags = IBV_SEND_SIGNALED;
+        //     wr.wr.rdma.remote_addr = conns[i].addr + lock_log_slot_offset(lock_id, prev_slot);
+        //     wr.wr.rdma.rkey = conns[i].rkey;
+        //
+        //     if (ibv_post_send(conns[i].id->qp, &wr, &bad)) {
+        //         throw std::runtime_error("Fallback read post failed");
+        //     }
+        // }
+        //
+        // wait_for_n_completions(
+        //     cq,
+        //     my_ticket_,
+        //     READ_TAG,
+        //     static_cast<int>(conns.size()),
+        //     "Fallback read");
+        //
+        // int done_count = 0;
+        // for (size_t i = 0; i < conns.size(); ++i) {
+        //     if (state->learn_results[i] != EMPTY_SLOT &&
+        //         is_done(state->learn_results[i])) {
+        //         ++done_count;
+        //     }
+        // }
+        //
+        // if (done_count >= static_cast<int>(QUORUM)) {
+        //     return my_ticket_;
+        // }
     }
 }
 
