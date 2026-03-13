@@ -119,7 +119,10 @@ uint64_t FaaStrategy::acquire(Client& client, int /*op_id*/, uint32_t lock_id) {
 
     while (true) {
         for (int spin = 0; spin < NOTIFY_SPIN_ROUNDS; ++spin) {
-            if (*notify_ptr != NOTIFY_CLEAR) return my_ticket_;
+            if (*notify_ptr != NOTIFY_CLEAR) {
+                std::cout << "We fast pathed!" << std::endl;
+                return my_ticket_;
+            }
         }
 
         ibv_wc wc_batch[32];

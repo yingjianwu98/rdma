@@ -164,7 +164,7 @@ int main() {
                 total_committed += lock_total;
 
                 // Frontier is in odd/even steps: divide by 2 to get acquire count
-                const uint64_t global_acquires = global_frontiers[l] / 2;
+                const uint64_t global_acquires = global_frontiers[l];
                 total_global += global_acquires;
 
                 std::cout << "[VERIFY] Lock " << std::setw(2) << l
