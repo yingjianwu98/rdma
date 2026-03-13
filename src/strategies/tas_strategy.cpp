@@ -175,6 +175,7 @@ static bool learn_majority(
 }
 
 // ─── advance_frontier: CAS the frontier from old_val → new_val (1 RTT) ───
+
 static void advance_frontier(
     LocalState* state, const uint64_t old_val, const uint64_t new_val,
     uint32_t lock_id,
@@ -187,9 +188,9 @@ static void advance_frontier(
             .lkey = mr->lkey
         };
         ibv_send_wr wr{}, *bad;
-        wr.wr_id = 0x111000 | i;
+        wr.wr_id = ADVANCE_FRONTIER_ID | i;
         wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
-        wr.send_flags = 0;  // NOT signaled — fire and forget
+        wr.send_flags = IBV_SEND_SIGNALED;
         wr.sg_list = &sge;
         wr.num_sge = 1;
         wr.wr.rdma.remote_addr = conns[i].addr + lock_control_offset(lock_id);
