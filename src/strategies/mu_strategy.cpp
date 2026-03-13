@@ -11,9 +11,6 @@ static void mu_send_and_wait(Client& client, uint32_t lock_id, uint32_t op) {
 
     // route to the leader instance that owns this lock
     size_t inst = mu_instance_for_lock(static_cast<uint16_t>(lock_id));
-
-    // connections layout: [server0_inst0, server0_inst1, server0_inst2, ...]
-    // but we only connect to leader (node 0), so inst IS the connection index
     auto& leader = client.connections()[inst];
 
     const uint32_t imm = mu_encode_imm(
@@ -30,14 +27,15 @@ static void mu_send_and_wait(Client& client, uint32_t lock_id, uint32_t op) {
         throw std::runtime_error("MuStrategy: Failed to pre-post recv");
     }
 
-    thread_local uint32_t send_count = 0;
-    send_count++;
+    // track unsignaled sends PER QP, not globally
+    thread_local uint32_t send_counts[16] = {};  // up to 16 instances
+    send_counts[inst]++;
 
     ibv_send_wr wr{}, *bad = nullptr;
     wr.wr_id = 0;
     wr.opcode = IBV_WR_SEND_WITH_IMM;
     wr.send_flags = IBV_SEND_INLINE;
-    if ((send_count & 1023) == 0) {
+    if ((send_counts[inst] & 1023) == 0) {
         wr.send_flags |= IBV_SEND_SIGNALED;
     }
     wr.num_sge = 0;
