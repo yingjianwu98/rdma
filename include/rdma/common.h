@@ -54,7 +54,7 @@ constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * TOTAL_CLIENTS;
 // ─── Lock table layout ───
 
 constexpr size_t MAX_LOCKS = 500;
-constexpr size_t MAX_LOG_PER_LOCK = NUM_OPS * 2;
+constexpr size_t MAX_LOG_PER_LOCK = 500000;
 constexpr size_t LOCK_HEADER_SIZE = 8;
 constexpr size_t LOCK_LOG_SIZE = MAX_LOG_PER_LOCK * ENTRY_SIZE;
 constexpr size_t LOCK_REGION_SIZE = LOCK_HEADER_SIZE + LOCK_LOG_SIZE;
@@ -173,19 +173,15 @@ inline unsigned int get_uint_env(const std::string& name) {
     return static_cast<unsigned int>(std::stoul(val));
 }
 
-inline void* allocate_server_buffer() {
+inline void* allocate_server_buffer(size_t num_locks = MAX_LOCKS) {
     void* ptr = aligned_alloc(4096, SERVER_ALIGNED_SIZE);
     if (!ptr) throw std::runtime_error("Could not allocate server RDMA buffer");
+    std::memset(ptr, 0xFF, SERVER_ALIGNED_SIZE);
 
-    // Zero everything first (lock headers/counters start at 0)
-    std::memset(ptr, 0, SERVER_ALIGNED_SIZE);
-
-    // Fill only the log slots with EMPTY_SLOT sentinel
+    // zero lock headers (FAA counters)
     auto* base = static_cast<char*>(ptr);
-    for (size_t l = 0; l < MAX_LOCKS; ++l) {
-        auto* log_start = reinterpret_cast<uint64_t*>(
-            base + lock_base_offset(l) + LOCK_HEADER_SIZE);
-        std::fill_n(log_start, MAX_LOG_PER_LOCK, EMPTY_SLOT);
+    for (size_t l = 0; l < num_locks; ++l) {
+        *reinterpret_cast<uint64_t*>(base + lock_control_offset(l)) = 0;
     }
 
     return ptr;
