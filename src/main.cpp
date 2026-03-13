@@ -57,7 +57,7 @@ int main() {
                                     strategies.push_back(std::make_unique<MuStrategy>());
                                 }
                                 else {
-                                    strategies.push_back(std::make_unique<FaaStrategy>());
+                                    strategies.push_back(std::make_unique<TasStrategy>());
                                 }
                                 table.add(*strategies.back());
                             }
@@ -75,7 +75,7 @@ int main() {
                             }
                             else {
                                 client->connect(CLUSTER_NODES, RDMA_PORT);
-                                client->connect_peers(7000);
+                                // client->connect_peers(7000);
                             }
 
                             {

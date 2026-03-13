@@ -15,7 +15,6 @@ static constexpr uint64_t ADVANCE_FRONTIER_ID = 0x111000;
 static constexpr uint64_t COMMIT_ID = 0xDEF000;
 static constexpr uint64_t OP_MASK = 0xFFF000;
 static constexpr uint64_t LEARN_ID = 0x999000;
-static constexpr uint64_t RESET_ID = 0x777000;
 static constexpr uint64_t SENTINEL = 0xFEFEFEFEFEFEFEFE;
 
 static uint64_t discover_frontier(
@@ -175,26 +174,29 @@ static bool learn_majority(
     return false;
 }
 
+// ─── advance_frontier: CAS the frontier from old_val → new_val (1 RTT) ───
+
 static void advance_frontier(
-    LocalState* state, const uint64_t slot, uint32_t lock_id,
+    LocalState* state, const uint64_t old_val, const uint64_t new_val,
+    uint32_t lock_id,
     const std::vector<RemoteNode>& conns, const ibv_mr* mr
 ) {
-    state->next_frontier = slot;
-
     for (size_t i = 0; i < conns.size(); ++i) {
         ibv_sge sge{
-            .addr = reinterpret_cast<uintptr_t>(&state->next_frontier),
+            .addr = reinterpret_cast<uintptr_t>(&state->cas_results[i]),
             .length = 8,
             .lkey = mr->lkey
         };
         ibv_send_wr wr{}, *bad;
         wr.wr_id = ADVANCE_FRONTIER_ID | i;
-        wr.opcode = IBV_WR_RDMA_WRITE;
+        wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
         wr.send_flags = IBV_SEND_SIGNALED;
         wr.sg_list = &sge;
         wr.num_sge = 1;
         wr.wr.rdma.remote_addr = conns[i].addr + lock_control_offset(lock_id);
-        wr.wr.rdma.rkey = conns[i].rkey;
+        wr.wr.atomic.rkey = conns[i].rkey;
+        wr.wr.atomic.compare_add = old_val;
+        wr.wr.atomic.swap = new_val;
 
         if (ibv_post_send(conns[i].id->qp, &wr, &bad)) {
             throw std::runtime_error("advance_frontier post failed");
@@ -202,47 +204,7 @@ static void advance_frontier(
     }
 }
 
-static void synra_reset(
-    LocalState* state, const uint32_t client_id, uint32_t lock_id,
-    const std::vector<RemoteNode>& conns, ibv_cq* cq, const ibv_mr* mr
-) {
-    uint64_t current_idx = discover_frontier(state, 0, lock_id, conns, cq, mr);
-
-    if (current_idx % 2 == 0) return; // already clean
-
-    uint64_t next_slot = current_idx + 1;
-    state->metadata = static_cast<uint64_t>(client_id);
-
-    for (size_t i = 0; i < conns.size(); ++i) {
-        ibv_sge sge{
-            .addr = reinterpret_cast<uintptr_t>(&state->metadata),
-            .length = 8,
-            .lkey = mr->lkey
-        };
-        ibv_send_wr wr{}, *bad;
-        wr.wr_id = RESET_ID | i;
-        wr.opcode = IBV_WR_RDMA_WRITE;
-        wr.send_flags = IBV_SEND_SIGNALED;
-        wr.sg_list = &sge;
-        wr.num_sge = 1;
-        wr.wr.rdma.remote_addr = conns[i].addr + lock_log_slot_offset(lock_id, next_slot);
-        wr.wr.rdma.rkey = conns[i].rkey;
-
-        if (ibv_post_send(conns[i].id->qp, &wr, &bad)) {
-            throw std::runtime_error("synra_reset post failed");
-        }
-    }
-
-    int responses = 0;
-    ibv_wc wc{};
-    while (responses < static_cast<int>(conns.size())) {
-        if (ibv_poll_cq(cq, 1, &wc) > 0) {
-            if ((wc.wr_id & OP_MASK) == RESET_ID) responses++;
-        }
-    }
-
-    advance_frontier(state, next_slot, lock_id, conns, mr);
-}
+// ─── acquire: discover → CAS slot → CAS frontier (even → odd) ───
 
 uint64_t TasStrategy::acquire(Client& client, const int op_id, uint32_t lock_id) {
     auto* state = static_cast<LocalState*>(client.buffer());
@@ -257,33 +219,29 @@ uint64_t TasStrategy::acquire(Client& client, const int op_id, uint32_t lock_id)
         const uint64_t next_slot = max_val + 1;
 
         if (commit_cas(state, op_id, next_slot, client.id(), lock_id, conns, cq, mr) >= static_cast<int>(QUORUM)) {
-            advance_frontier(state, next_slot, lock_id, conns, mr);
+            advance_frontier(state, max_val, next_slot, lock_id, conns, mr);
             return next_slot;
         }
 
         if (learn_majority(state, op_id, next_slot, client.id(), lock_id, conns, cq, mr)) {
-            advance_frontier(state, next_slot, lock_id, conns, mr);
+            advance_frontier(state, max_val, next_slot, lock_id, conns, mr);
             return next_slot;
         }
     }
 }
 
-void TasStrategy::release(Client& client, int /*op_id*/, uint32_t lock_id) {
-    // synra_reset(
-    //         static_cast<LocalState*>(client.buffer()),
-    //         client.id(), lock_id,
-    //         client.connections(),
-    //         client.cq(),
-    //         client.mr()
-    //     );
+// ─── release: no-op (cleanup does the work) ───
+
+void TasStrategy::release(Client& client, int op_id, uint32_t lock_id) {
+    auto* state = static_cast<LocalState*>(client.buffer());
+    const auto* mr = client.mr();
+    const auto& conns = client.connections();
+
+    const uint64_t held_slot = state->metadata;
+    advance_frontier(state, held_slot, held_slot + 1, lock_id, conns, mr);
 }
 
-void TasStrategy::cleanup(Client& client, int /*op_id*/, uint32_t lock_id) {
-    synra_reset(
-        static_cast<LocalState*>(client.buffer()),
-        client.id(), lock_id,
-        client.connections(),
-        client.cq(),
-        client.mr()
-    );
+// ─── cleanup: CAS frontier from held_slot → held_slot+1 (odd → even, 1 RTT) ───
+
+void TasStrategy::cleanup(Client& client, int op_id, uint32_t lock_id) {
 }
