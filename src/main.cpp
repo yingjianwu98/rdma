@@ -50,6 +50,7 @@ int main() {
 
                         std::vector<std::unique_ptr<LockStrategy>> strategies;
                         LockTable table;
+
                         for (size_t l = 0; l < MAX_LOCKS; ++l) {
                             if (is_mu) {
                                 strategies.push_back(std::make_unique<MuStrategy>());
@@ -275,7 +276,9 @@ int main() {
                         pin_thread_to_cpu(static_cast<int>(inst));
                         uint16_t port = RDMA_PORT + static_cast<uint16_t>(inst);
                         uint32_t lock_start = inst * MU_LOCKS_PER_INSTANCE;
-                        uint32_t lock_end = (inst + 1) * MU_LOCKS_PER_INSTANCE;
+           uint32_t lock_end = (inst == MU_NUM_INSTANCES - 1)
+               ? MAX_LOCKS
+               : (inst + 1) * MU_LOCKS_PER_INSTANCE;
 
                         if (node_id == 0) {
                             MuLeader leader(node_id, lock_start, lock_end);
