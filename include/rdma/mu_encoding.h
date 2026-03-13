@@ -3,7 +3,7 @@
 
 // ── MU multi-instance config ──
 
-constexpr size_t MU_NUM_INSTANCES = 2;
+constexpr size_t MU_NUM_INSTANCES = 4;
 constexpr size_t MU_LOCKS_PER_INSTANCE = MAX_LOCKS / MU_NUM_INSTANCES;
 
 static inline size_t mu_instance_for_lock(uint16_t lock_id) {
