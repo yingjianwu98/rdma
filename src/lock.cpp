@@ -24,7 +24,9 @@ Lock::~Lock() {
 
 void Lock::lock() {
     if (locked_) throw std::runtime_error("Lock already held");
-    strategy_->acquire(*client_, op_id_, lock_id_);
+    const uint64_t held = strategy_->acquire(*client_, op_id_, lock_id_);
+    auto* state = static_cast<LocalState*>(client_->buffer());
+    state->metadata = held;
     locked_ = true;
 }
 
