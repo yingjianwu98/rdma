@@ -71,6 +71,9 @@ uint64_t FaaStrategy::acquire(Client& client, int /*op_id*/, uint32_t lock_id) {
     std::atomic_thread_fence(std::memory_order_acquire);
     my_ticket_ = state->metadata;
 
+      std::cerr << "[FAA Client " << client.id() << "] lock=" << lock_id
+              << " ticket=" << my_ticket_ << "\n";
+
     state->next_frontier = encode_slot(client.id(), false);
 
     ibv_sge rep_sge{
@@ -109,13 +112,20 @@ uint64_t FaaStrategy::acquire(Client& client, int /*op_id*/, uint32_t lock_id) {
     }
 
 
-    if (my_ticket_ == 0) return my_ticket_;
+    if (my_ticket_ == 0) {
+        std::cerr << "[FAA Client " << client.id() << "] lock=" << lock_id
+                  << " ticket=0, acquired immediately\n";
+        return my_ticket_;
+    }
 
     auto* notify_ptr = reinterpret_cast<volatile uint64_t*>(&state->metadata);
     *notify_ptr = NOTIFY_CLEAR;
     std::atomic_thread_fence(std::memory_order_seq_cst);
 
     const uint64_t prev_slot = my_ticket_ - 1;
+
+    std::cerr << "[FAA Client " << client.id() << "] lock=" << lock_id
+              << " ticket=" << my_ticket_ << " waiting for predecessor " << (my_ticket_ - 1) << "\n";
 
     while (true) {
         for (int spin = 0; spin < NOTIFY_SPIN_ROUNDS; ++spin) {
@@ -170,6 +180,15 @@ uint64_t FaaStrategy::acquire(Client& client, int /*op_id*/, uint32_t lock_id) {
         if (done_count >= static_cast<int>(QUORUM)) {
             return my_ticket_;
         }
+
+        std::cerr << "[FAA Client " << client.id() << "] lock=" << lock_id
+          << " ticket=" << my_ticket_ << " slow-path: done_count=" << done_count
+          << "/" << QUORUM << " vals=[";
+        for (size_t i = 0; i < conns.size(); ++i) {
+            if (i > 0) std::cerr << ", ";
+            std::cerr << "0x" << std::hex << state->learn_results[i] << std::dec;
+        }
+        std::cerr << "]\n";
     }
 }
 

@@ -177,8 +177,10 @@ inline void* allocate_server_buffer() {
     void* ptr = aligned_alloc(4096, SERVER_ALIGNED_SIZE);
     if (!ptr) throw std::runtime_error("Could not allocate server RDMA buffer");
 
+    // Zero everything first (lock headers/counters start at 0)
     std::memset(ptr, 0, SERVER_ALIGNED_SIZE);
 
+    // Fill only the log slots with EMPTY_SLOT sentinel
     auto* base = static_cast<char*>(ptr);
     for (size_t l = 0; l < MAX_LOCKS; ++l) {
         auto* log_start = reinterpret_cast<uint64_t*>(
