@@ -75,7 +75,7 @@ int main() {
                             }
                             else {
                                 client->connect(CLUSTER_NODES, RDMA_PORT);
-                                // client->connect_peers(7000);
+                                client->connect_peers(7000);
                             }
 
                             {
