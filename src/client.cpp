@@ -286,9 +286,9 @@ void Client::connect_peers(uint16_t peer_port) {
             } catch (const std::exception& e) {
                 last_error = e.what();
                 if (attempt % 50 == 0) {
-                    std::cerr << "[Client " << id_ << "] Waiting for peer " << target
-                              << " on " << target_ip << ":" << target_port
-                              << " (attempt " << attempt << ")\n";
+                    // std::cerr << "[Client " << id_ << "] Waiting for peer " << target
+                    //           << " on " << target_ip << ":" << target_port
+                    //           << " (attempt " << attempt << ")\n";
                 }
                 if (cm_id) {
                     rdma_destroy_id(cm_id);
