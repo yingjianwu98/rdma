@@ -225,6 +225,7 @@ uint64_t FaaStrategy::acquire(Client& client, int /*op_id*/, uint32_t lock_id) {
         }
 
         if (done_count >= static_cast<int>(QUORUM)) {
+            std::cout << "Ended up slow pathing" << std::endl;
             return my_ticket_;
         }
     }
