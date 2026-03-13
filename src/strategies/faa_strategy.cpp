@@ -130,7 +130,7 @@ uint64_t FaaStrategy::acquire(Client& client, int /*op_id*/, uint32_t lock_id) {
     while (true) {
         for (int spin = 0; spin < NOTIFY_SPIN_ROUNDS; ++spin) {
             if (*notify_ptr != NOTIFY_CLEAR) {
-                std::cout << "We fast pathed!" << std::endl;
+                // std::cout << "We fast pathed!" << std::endl;
                 return my_ticket_;
             }
         }
