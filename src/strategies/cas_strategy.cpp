@@ -25,7 +25,7 @@ static void advance_frontier(
     ibv_send_wr wr{}, *bad;
     wr.wr_id = 0x111000 | node;
     wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
-    wr.send_flags = 0;  // always unsignaled
+    wr.send_flags = IBV_SEND_SIGNALED;  // always unsignaled
     wr.sg_list = &sge;
     wr.num_sge = 1;
     wr.wr.rdma.remote_addr = conns[node].addr + lock_control_offset(lock_id);
