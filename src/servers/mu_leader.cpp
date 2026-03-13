@@ -28,7 +28,7 @@ struct FollowerBatch {
 };
 
 void MuLeader::run() {
-    uint32_t client_unsignaled[NUM_CLIENTS] = {};
+    uint32_t client_unsignaled[TOTAL_CLIENTS] = {};
 
     auto post_client_ack = [&](uint16_t client_id, uint32_t imm_data) {
         ibv_send_wr swr{}, *bad_wr = nullptr;
