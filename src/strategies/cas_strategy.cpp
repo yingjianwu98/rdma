@@ -31,7 +31,7 @@ static void advance_frontier(
         wr.num_sge = 1;
         wr.wr.rdma.remote_addr = conns[i].addr + lock_control_offset(lock_id);
         wr.wr.atomic.rkey = conns[i].rkey;
-        wr.wr.atomic.compare_add = i == node ? old_val : std::min(old_val, old_val-1);
+        wr.wr.atomic.compare_add = (i == node) ? old_val : old_val - 1;
         wr.wr.atomic.swap = new_val;
 
         if (ibv_post_send(conns[i].id->qp, &wr, &bad)) {
@@ -39,9 +39,11 @@ static void advance_frontier(
         }
     }
 
+    // Wait for ALL completions, not just quorum
     int done = 0;
+    const int total = static_cast<int>(conns.size());
     ibv_wc wcs[16];
-    while (done < static_cast<int>(QUORUM)) {
+    while (done < total) {
         int n = ibv_poll_cq(cq, 16, wcs);
         for (int i = 0; i < n; ++i) {
             bool is_ours = (wcs[i].wr_id >> 32) == static_cast<uint64_t>(op_id);
