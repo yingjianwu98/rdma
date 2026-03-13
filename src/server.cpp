@@ -288,6 +288,7 @@ void Server::signal_clients_ready() {
     const uint32_t num_clients = expected_clients();
     if (num_clients == 0) return;
 
+    // Post all GO sends at once (don't wait one-by-one)
     for (uint32_t i = 0; i < num_clients; ++i) {
         ibv_send_wr swr{}, *bad_wr = nullptr;
         swr.wr_id = 0xBEEF0000 | i;
@@ -300,11 +301,20 @@ void Server::signal_clients_ready() {
         if (ibv_post_send(clients_[i].cm_id->qp, &swr, &bad_wr)) {
             throw std::runtime_error("Failed to send GO signal to client " + std::to_string(i));
         }
+    }
 
+    // Wait for all completions
+    uint32_t done = 0;
+    while (done < num_clients) {
         ibv_wc wc{};
-        while (true) {
-            int n = ibv_poll_cq(cq_, 1, &wc);
-            if (n > 0) break;
+        int n = ibv_poll_cq(cq_, 1, &wc);
+        if (n > 0) {
+            if (wc.status != IBV_WC_SUCCESS) {
+                throw std::runtime_error(
+                    "GO signal failed for wr_id " + std::to_string(wc.wr_id)
+                    + " status " + std::to_string(wc.status));
+            }
+            done++;
         }
     }
 
