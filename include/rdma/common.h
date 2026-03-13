@@ -25,8 +25,8 @@ inline const std::vector<std::string> CLIENT_NODES = {
     "192.168.1.4",
     "192.168.1.5",
     "192.168.1.6",
-    // "192.168.1.7",
-    // "192.168.1.8",
+    "192.168.1.7",
+    "192.168.1.8",
     // "192.168.1.9",
     // "192.168.1.10",
 };
@@ -44,9 +44,9 @@ constexpr size_t MAX_REPLICAS = 10;
 
 // ─── Benchmark constants ───
 
-constexpr size_t NUM_OPS = 3000000;
-constexpr size_t NUM_CLIENTS_PER_MACHINE = 24;
-constexpr size_t TOTAL_MACHINES = 3;
+constexpr size_t NUM_OPS = 2000000;
+constexpr size_t NUM_CLIENTS_PER_MACHINE = 16;
+constexpr size_t TOTAL_MACHINES = 5;
 constexpr size_t TOTAL_CLIENTS = NUM_CLIENTS_PER_MACHINE * TOTAL_MACHINES;
 constexpr size_t NUM_OPS_PER_CLIENT = NUM_OPS / TOTAL_CLIENTS;
 constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * TOTAL_CLIENTS;
