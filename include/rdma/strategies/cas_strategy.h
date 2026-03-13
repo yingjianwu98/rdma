@@ -3,6 +3,8 @@
 #include "rdma/lock_strategy.h"
 #include <cstdint>
 
+#include "rdma/common.h"
+
 class Client;
 
 class CasStrategy final : public LockStrategy {
@@ -14,4 +16,5 @@ public:
 
 private:
     uint64_t target_slot_ = 1;
+    uint32_t unsignaled_counts_[MAX_REPLICAS] = {};
 };
