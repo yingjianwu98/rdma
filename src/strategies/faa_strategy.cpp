@@ -33,71 +33,71 @@ static inline uint64_t wr_tag(uint64_t wr_id) {
 constexpr int NOTIFY_SPIN_ROUNDS = 100000;
 
 namespace {
-    [[noreturn]] void throw_wc_error(const char* where, const ibv_wc& wc) {
-        throw std::runtime_error(
-            std::string(where) + " failed: status=" + std::to_string(wc.status) +
-            " vendor_err=" + std::to_string(wc.vendor_err));
+[[noreturn]] void throw_wc_error(const char* where, const ibv_wc& wc) {
+    throw std::runtime_error(
+        std::string(where) + " failed: status=" + std::to_string(wc.status) +
+        " vendor_err=" + std::to_string(wc.vendor_err));
+}
+
+void wait_for_exact_completion(ibv_cq* cq, uint64_t want_ctx, uint64_t want_tag, const char* where) {
+    ibv_wc wc_batch[32];
+
+    for (;;) {
+        const int pulled = ibv_poll_cq(cq, 32, wc_batch);
+        if (pulled < 0) {
+            throw std::runtime_error(std::string(where) + ": ibv_poll_cq failed");
+        }
+        if (pulled == 0) {
+            continue;
+        }
+
+        for (int i = 0; i < pulled; ++i) {
+            const ibv_wc& wc = wc_batch[i];
+
+            if (wc.status != IBV_WC_SUCCESS) {
+                throw_wc_error(where, wc);
+            }
+
+            if (wr_ctx(wc.wr_id) == want_ctx && wr_tag(wc.wr_id) == want_tag) {
+                return;
+            }
+        }
     }
+}
 
-    void wait_for_exact_completion(ibv_cq* cq, uint64_t want_ctx, uint64_t want_tag, const char* where) {
-        ibv_wc wc_batch[32];
+void wait_for_n_completions(ibv_cq* cq,
+                            uint64_t want_ctx,
+                            uint64_t want_tag,
+                            int want_count,
+                            const char* where) {
+    ibv_wc wc_batch[32];
+    int seen = 0;
 
-        for (;;) {
-            const int pulled = ibv_poll_cq(cq, 32, wc_batch);
-            if (pulled < 0) {
-                throw std::runtime_error(std::string(where) + ": ibv_poll_cq failed");
+    while (seen < want_count) {
+        const int pulled = ibv_poll_cq(cq, 32, wc_batch);
+        if (pulled < 0) {
+            throw std::runtime_error(std::string(where) + ": ibv_poll_cq failed");
+        }
+        if (pulled == 0) {
+            continue;
+        }
+
+        for (int i = 0; i < pulled; ++i) {
+            const ibv_wc& wc = wc_batch[i];
+
+            if (wc.status != IBV_WC_SUCCESS) {
+                throw_wc_error(where, wc);
             }
-            if (pulled == 0) {
-                continue;
-            }
 
-            for (int i = 0; i < pulled; ++i) {
-                const ibv_wc& wc = wc_batch[i];
-
-                if (wc.status != IBV_WC_SUCCESS) {
-                    throw_wc_error(where, wc);
-                }
-
-                if (wr_ctx(wc.wr_id) == want_ctx && wr_tag(wc.wr_id) == want_tag) {
+            if (wr_ctx(wc.wr_id) == want_ctx && wr_tag(wc.wr_id) == want_tag) {
+                ++seen;
+                if (seen >= want_count) {
                     return;
                 }
             }
         }
     }
-
-    void wait_for_n_completions(ibv_cq* cq,
-                                uint64_t want_ctx,
-                                uint64_t want_tag,
-                                int want_count,
-                                const char* where) {
-        ibv_wc wc_batch[32];
-        int seen = 0;
-
-        while (seen < want_count) {
-            const int pulled = ibv_poll_cq(cq, 32, wc_batch);
-            if (pulled < 0) {
-                throw std::runtime_error(std::string(where) + ": ibv_poll_cq failed");
-            }
-            if (pulled == 0) {
-                continue;
-            }
-
-            for (int i = 0; i < pulled; ++i) {
-                const ibv_wc& wc = wc_batch[i];
-
-                if (wc.status != IBV_WC_SUCCESS) {
-                    throw_wc_error(where, wc);
-                }
-
-                if (wr_ctx(wc.wr_id) == want_ctx && wr_tag(wc.wr_id) == want_tag) {
-                    ++seen;
-                    if (seen >= want_count) {
-                        return;
-                    }
-                }
-            }
-        }
-    }
+}
 }
 
 uint64_t FaaStrategy::acquire(Client& client, int /*op_id*/, uint32_t lock_id) {
@@ -178,15 +178,7 @@ uint64_t FaaStrategy::acquire(Client& client, int /*op_id*/, uint32_t lock_id) {
 
     const uint64_t prev_slot = my_ticket_ - 1;
 
-    for (;;) {
-        // Fast path: predecessor sent GO directly to my metadata.
-        for (int spin = 0; spin < NOTIFY_SPIN_ROUNDS; ++spin) {
-            if (*notify_ptr != NOTIFY_CLEAR) {
-                return my_ticket_;
-            }
-        }
-
-        // Slow path: read predecessor slot from all replicas and see if a quorum says "done".
+    auto predecessor_done = [&]() -> bool {
         for (size_t i = 0; i < conns.size(); ++i) {
             state->learn_results[i] = EMPTY_SLOT;
 
@@ -224,7 +216,21 @@ uint64_t FaaStrategy::acquire(Client& client, int /*op_id*/, uint32_t lock_id) {
             }
         }
 
-        if (done_count >= static_cast<int>(QUORUM)) {
+        return done_count >= static_cast<int>(QUORUM);
+    };
+
+    if (predecessor_done()) {
+        return my_ticket_;
+    }
+
+    for (;;) {
+        for (int spin = 0; spin < NOTIFY_SPIN_ROUNDS; ++spin) {
+            if (*notify_ptr != NOTIFY_CLEAR) {
+                return my_ticket_;
+            }
+        }
+
+        if (predecessor_done()) {
             return my_ticket_;
         }
     }
