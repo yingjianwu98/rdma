@@ -30,7 +30,7 @@ static inline uint64_t wr_tag(uint64_t wr_id) {
     return wr_id & TAG_MASK;
 }
 
-constexpr int NOTIFY_SPIN_ROUNDS = 100000;
+constexpr int NOTIFY_SPIN_ROUNDS = 500000;
 
 namespace {
     [[noreturn]] void throw_wc_error(const char* where, const ibv_wc& wc) {
@@ -225,7 +225,6 @@ uint64_t FaaStrategy::acquire(Client& client, int /*op_id*/, uint32_t lock_id) {
         }
 
         if (done_count >= static_cast<int>(QUORUM)) {
-            std::cout << "Ended up slow pathing" << std::endl;
             return my_ticket_;
         }
     }
