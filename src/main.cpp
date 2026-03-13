@@ -18,6 +18,7 @@
 
 #include "rdma/strategies/faa_strategy.h"
 #include "rdma/strategies/mu_strategy.h"
+#include "rdma/strategies/tas_strategy.h"
 
 constexpr size_t NUM_LOCKS = 30;
 
@@ -44,10 +45,10 @@ int main() {
                     try {
                         pin_thread_to_cpu(pick_cpu_for_client(i));
 
-                        std::vector<std::unique_ptr<FaaStrategy>> strategies;
+                        std::vector<std::unique_ptr<TasStrategy>> strategies;
                         LockTable table;
                         for (size_t l = 0; l < NUM_LOCKS; ++l) {
-                            strategies.push_back(std::make_unique<FaaStrategy>());
+                            strategies.push_back(std::make_unique<TasStrategy>());
                             table.add(*strategies.back());
                         }
 
@@ -231,7 +232,7 @@ int main() {
             std::cout << "\n" << std::string(42, '=') << "\n";
             std::cout << " RDMA BENCHMARK RESULTS\n";
             std::cout << std::string(42, '=') << "\n";
-            std::cout << "Strategy:     " << std::setw(10) << "FAA" << "\n";
+            std::cout << "Strategy:     " << std::setw(10) << "TAS" << "\n";
             std::cout << "Locks:        " << std::setw(10) << NUM_LOCKS << "\n";
             std::cout << "Clients:      " << std::setw(10) << TOTAL_CLIENTS << " (" << NUM_CLIENTS_PER_MACHINE << " on this machine)\n";
             std::cout << "Ops/Client:   " << std::setw(10) << NUM_OPS_PER_CLIENT << "\n";
