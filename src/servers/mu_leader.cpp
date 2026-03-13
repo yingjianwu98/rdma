@@ -145,13 +145,13 @@ void MuLeader::run() {
                 const uint32_t op = mu_decode_op(imm);
 
                 // first recv: print what we got
-                if (total_recvs <= 3) {
-                    std::cerr << "[MuLeader] recv #" << total_recvs
-                              << " lock=" << lock_id
-                              << " client=" << client_id
-                              << " op=" << (op == MU_OP_CLIENT_LOCK ? "LOCK" : "UNLOCK")
-                              << "\n";
-                }
+                // if (total_recvs <= 3) {
+                //     std::cerr << "[MuLeader] recv #" << total_recvs
+                //               << " lock=" << lock_id
+                //               << " client=" << client_id
+                //               << " op=" << (op == MU_OP_CLIENT_LOCK ? "LOCK" : "UNLOCK")
+                //               << "\n";
+                // }
 
                 auto& lock_state = locks[lock_id];
                 lock_state.pending.push(imm);
