@@ -173,18 +173,23 @@ uint64_t FaaStrategy::acquire(Client& client, int op_id, uint32_t lock_id) {
     }
 
     // 3) Wait for predecessor to release.
-    auto* notify_ptr = reinterpret_cast<volatile uint64_t*>(&state->metadata);
+    //    Spin on notify_signal — a dedicated field that only the predecessor writes to.
+    //    This keeps metadata free for FAA scratch use.
+    auto* notify_ptr = reinterpret_cast<volatile uint64_t*>(&state->notify_signal);
     *notify_ptr = NOTIFY_CLEAR;
+    std::atomic_thread_fence(std::memory_order_seq_cst);
 
     const uint64_t prev_slot = my_ticket_ - 1;
 
     for (;;) {
+        // Fast path: spin on local memory
         for (int spin = 0; spin < NOTIFY_SPIN_ROUNDS; ++spin) {
             if (*notify_ptr != NOTIFY_CLEAR) {
                 return my_ticket_;
             }
         }
 
+        // Slow path: RDMA READ predecessor's slot from all servers
         {
             for (size_t i = 0; i < conns.size(); ++i) {
                 state->learn_results[i] = EMPTY_SLOT;
@@ -328,6 +333,7 @@ void FaaStrategy::release(Client& client, int op_id, uint32_t lock_id) {
     }
 
     // 3) Notify the next waiter directly, if we could identify one.
+    //    Write GO_SIGNAL into the peer's notify_signal field (not metadata).
     if (next_client_id != UINT32_MAX && next_client_id < peers.size()) {
         const auto& peer = peers[next_client_id];
 
@@ -345,7 +351,7 @@ void FaaStrategy::release(Client& client, int op_id, uint32_t lock_id) {
             wr.num_sge = 1;
             wr.opcode = IBV_WR_RDMA_WRITE;
             wr.send_flags = IBV_SEND_SIGNALED;
-            wr.wr.rdma.remote_addr = peer.addr + offsetof(LocalState, metadata);
+            wr.wr.rdma.remote_addr = peer.addr + offsetof(LocalState, notify_signal);
             wr.wr.rdma.rkey = peer.rkey;
 
             if (ibv_post_send(peer.id->qp, &wr, &bad)) {

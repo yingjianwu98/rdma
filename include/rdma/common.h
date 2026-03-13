@@ -135,8 +135,8 @@ struct alignas(64) LocalState {
     uint64_t learn_results[MAX_REPLICAS];
     uint64_t next_frontier;
     uint64_t metadata;
+    uint64_t notify_signal;
 };
-
 template <typename T, size_t Size>
 class Queue {
     std::array<T, Size> buffer{};
