@@ -30,7 +30,7 @@ uint64_t FaaStrategy::acquire(Client& client, int /*op_id*/, uint32_t /*lock_id*
     faa_wr.num_sge              = 1;
     faa_wr.opcode               = IBV_WR_ATOMIC_FETCH_AND_ADD;
     faa_wr.send_flags           = IBV_SEND_SIGNALED;
-    faa_wr.wr.atomic.remote_addr = sequencer.addr + (ALIGNED_SIZE - 8);
+    faa_wr.wr.atomic.remote_addr = sequencer.addr + (SERVER_ALIGNED_SIZE - 8);
     faa_wr.wr.atomic.rkey       = sequencer.rkey;
     faa_wr.wr.atomic.compare_add = 1;
 
