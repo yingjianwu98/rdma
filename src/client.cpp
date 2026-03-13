@@ -54,10 +54,14 @@ Client::~Client() {
 }
 
 void Client::connect(const std::vector<std::string>& node_ips, const uint16_t port) {
-    ec_ = rdma_create_event_channel();
-    if (!ec_) throw std::runtime_error("rdma_create_event_channel failed");
+    if (!ec_) {
+        ec_ = rdma_create_event_channel();
+        if (!ec_) throw std::runtime_error("rdma_create_event_channel failed");
+    }
 
-    buf_ = allocate_client_buffer();
+    if (!buf_) {
+        buf_ = allocate_client_buffer();
+    }
 
     for (size_t i = 0; i < node_ips.size(); ++i) {
         std::cout << "[Client " << id_ << "] Connecting to " << node_ips[i] << "...\n";
