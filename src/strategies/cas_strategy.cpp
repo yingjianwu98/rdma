@@ -16,6 +16,7 @@ static void advance_frontier(
     const std::vector<RemoteNode>& conns, const ibv_mr* mr,
     ibv_cq* cq
 ) {
+    const size_t node = lock_id % conns.size();
     for (size_t i = 0; i < conns.size(); ++i) {
         ibv_sge sge{
             .addr = reinterpret_cast<uintptr_t>(&state->cas_results[i]),
@@ -30,7 +31,7 @@ static void advance_frontier(
         wr.num_sge = 1;
         wr.wr.rdma.remote_addr = conns[i].addr + lock_control_offset(lock_id);
         wr.wr.atomic.rkey = conns[i].rkey;
-        wr.wr.atomic.compare_add = old_val;
+        wr.wr.atomic.compare_add = i == node ? old_val : old_val-1;
         wr.wr.atomic.swap = new_val;
 
         if (ibv_post_send(conns[i].id->qp, &wr, &bad)) {
