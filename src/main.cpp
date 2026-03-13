@@ -22,7 +22,7 @@
 #include "rdma/mu_encoding.h"
 
 // set to "mu", "faa", "cas", or "tas"
-constexpr const char* STRATEGY = "mu";
+constexpr const char* STRATEGY = "faa";
 
 int main() {
     try {
