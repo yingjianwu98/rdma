@@ -24,7 +24,7 @@ static void advance_frontier(
         ibv_send_wr wr{}, *bad;
         wr.wr_id = 0x111000 | i;
         wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
-        wr.send_flags = IBV_SEND_SIGNALED;
+        wr.send_flags = 0;  // NOT signaled — no CQ entry
         wr.sg_list = &sge;
         wr.num_sge = 1;
         wr.wr.rdma.remote_addr = conns[i].addr + lock_control_offset(lock_id);
