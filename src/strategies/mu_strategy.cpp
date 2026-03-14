@@ -97,6 +97,7 @@ static void mu_send_and_wait(Client& client, uint32_t lock_id, uint32_t op) {
     auto t0 = clock::now();
     auto* cq = client.cq();
     size_t inst = mu_instance_for_lock(static_cast<uint16_t>(lock_id));
+    std::cout << "Taking lock on lock_id=" << lock_id << " instance=" << inst << std::endl;
     auto& leader = client.connections()[inst];
 
     const uint32_t imm = mu_encode_imm(
