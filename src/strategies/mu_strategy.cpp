@@ -11,20 +11,56 @@
 // ── Per-thread timing stats ──
 struct MuClientStats {
     uint64_t count = 0;
+    uint64_t total_acquires = 0;
 
-    uint64_t t_route_ns = 0;       // instance lookup + imm encoding
-    uint64_t t_post_recv_ns = 0;   // ibv_post_recv
-    uint64_t t_post_send_ns = 0;   // ibv_post_send
-    uint64_t t_poll_ns = 0;        // polling CQ until recv arrives
-    uint64_t t_total_ns = 0;       // entire send_and_wait
+    uint64_t t_route_ns = 0;
+    uint64_t t_post_recv_ns = 0;
+    uint64_t t_post_send_ns = 0;
+    uint64_t t_poll_ns = 0;
+    uint64_t t_total_ns = 0;
 
-    uint64_t poll_spins = 0;       // total empty polls (n <= 0)
-    uint64_t poll_send_wc = 0;     // send completions seen while waiting for recv
+    uint64_t poll_spins = 0;
+    uint64_t poll_send_wc = 0;
+
+    std::chrono::steady_clock::time_point thread_start{};
+    bool started = false;
+
+    void mark_start() {
+        if (!started) {
+            thread_start = std::chrono::steady_clock::now();
+            started = true;
+        }
+    }
+
+    void mark_end(uint32_t client_id) {
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - thread_start).count();
+        auto elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(
+            now - thread_start).count();
+
+        fprintf(stderr,
+            "\n[MuClient %u] ── THREAD FINISHED ──\n"
+            "  total_acquires: %lu\n"
+            "  wall_time:      %ld ms (%.3f s)\n"
+            "  avg_per_acq:    %ld us\n"
+            "  throughput:     %.0f acq/s\n",
+            client_id,
+            total_acquires,
+            elapsed_ms, elapsed_ms / 1000.0,
+            total_acquires > 0 ? elapsed_us / (long)total_acquires : 0,
+            total_acquires > 0 ? (double)total_acquires / (elapsed_ms / 1000.0) : 0.0
+        );
+    }
 
     void dump_and_reset(uint32_t client_id) {
         if (count == 0) return;
+        auto now = std::chrono::steady_clock::now();
+        auto since_start_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - thread_start).count();
+
         fprintf(stderr,
-            "\n[MuClient %u] ── TIMING DUMP (%lu ops) ──\n"
+            "\n[MuClient %u] ── TIMING DUMP (%lu ops, %lu acquires, %.1fs since start) ──\n"
             "  t_route:       %7.2f ms (%5.2f%%)  avg %lu ns\n"
             "  t_post_recv:   %7.2f ms (%5.2f%%)  avg %lu ns\n"
             "  t_post_send:   %7.2f ms (%5.2f%%)  avg %lu ns\n"
@@ -32,7 +68,7 @@ struct MuClientStats {
             "  t_total:       %7.2f ms            avg %lu ns\n"
             "  poll_spins:    %lu (avg %lu per op)\n"
             "  poll_send_wc:  %lu (avg %lu per op)\n",
-            client_id, count,
+            client_id, count, total_acquires, since_start_ms / 1000.0,
             t_route_ns / 1e6,     100.0 * t_route_ns / t_total_ns,     t_route_ns / count,
             t_post_recv_ns / 1e6, 100.0 * t_post_recv_ns / t_total_ns, t_post_recv_ns / count,
             t_post_send_ns / 1e6, 100.0 * t_post_send_ns / t_total_ns, t_post_send_ns / count,
@@ -52,6 +88,8 @@ static thread_local MuClientStats stats;
 static void mu_send_and_wait(Client& client, uint32_t lock_id, uint32_t op) {
     using clock = std::chrono::steady_clock;
     using ns = std::chrono::nanoseconds;
+
+    stats.mark_start();
 
     auto t_start = clock::now();
 
@@ -127,20 +165,25 @@ static void mu_send_and_wait(Client& client, uint32_t lock_id, uint32_t op) {
             stats.t_total_ns += std::chrono::duration_cast<ns>(t_end - t_start).count();
             stats.count++;
 
-            // Dump every 50k ops
             if (stats.count % 50000 == 0) {
                 stats.dump_and_reset(client.id());
             }
             return;
         }
 
-        // Got a send completion instead of recv — discard and keep polling
         stats.poll_send_wc++;
     }
 }
 
 uint64_t MuStrategy::acquire(Client& client, int /*op_id*/, uint32_t lock_id) {
     mu_send_and_wait(client, lock_id, MU_OP_CLIENT_LOCK);
+    stats.total_acquires++;
+
+    // Print when this thread finishes all its ops
+    if (stats.total_acquires >= NUM_OPS_PER_CLIENT) {
+        stats.mark_end(client.id());
+    }
+
     return 0;
 }
 

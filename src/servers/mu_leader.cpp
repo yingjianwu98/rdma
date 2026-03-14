@@ -204,7 +204,7 @@ void MuLeader::run() {
                     const uint64_t old_commit = ls.commit_index;
 
                     while (ls.commit_index < ls.current_index) {
-                        if (ls.acks[ls.commit_index] < QUORUM) break;
+                        if (ls.acks[ls.commit_index] < QUORUM-1) break;
 
                         auto* lock_base = mu_lock_base(local_buf, lid);
                         const auto* entry = mu_entry_ptr(lock_base, ls.commit_index);
