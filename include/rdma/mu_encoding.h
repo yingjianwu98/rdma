@@ -3,7 +3,7 @@
 
 // ── MU multi-instance config ──
 
-constexpr size_t MU_NUM_INSTANCES = 12;
+constexpr size_t MU_NUM_INSTANCES = 8;
 constexpr size_t MU_LOCKS_PER_INSTANCE = MAX_LOCKS / MU_NUM_INSTANCES;
 
 static inline size_t mu_instance_for_lock(uint16_t lock_id) {
@@ -29,7 +29,7 @@ static inline uint8_t* mu_entry_ptr(uint8_t* lock_base, uint64_t slot) {
     return lock_base + LOCK_HEADER_SIZE + slot * ENTRY_SIZE;
 }
 
-static constexpr size_t MAX_INFLIGHT = 20;
+static constexpr size_t MAX_INFLIGHT = 200;
 
 // ── Client IMM encoding (32 bits) ──
 static constexpr uint32_t MU_OP_CLIENT_LOCK   = 0;
