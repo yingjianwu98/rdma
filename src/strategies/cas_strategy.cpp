@@ -10,8 +10,6 @@
 
 // ─── advance_frontier: CAS frontier from old_val → new_val, fire-and-forget ───
 
-#pragma once
-
 #include <cstdint>
 #include <sstream>
 #include <stdexcept>
@@ -109,7 +107,7 @@ uint64_t CasStrategy::acquire(Client& client, int op_id, uint32_t lock_id) {
     ibv_wc wcs[16];
 
     while (true) {
-        std::cout << "Trying to get next lock: " << op_id << " lockid=" << lock_id << '\n';
+        // std::cout << "Trying to get next lock: " << op_id << " lockid=" << lock_id << '\n';
         const uint64_t expected = target_slot_ - 1;
 
         state->cas_results[node] = 0xFEFEFEFEFEFEFEFE;
@@ -145,8 +143,8 @@ uint64_t CasStrategy::acquire(Client& client, int op_id, uint32_t lock_id) {
 
         bool got_acquire = false;
         while (!got_acquire) {
-            std::cout << "Trying to get completion for lock: " << op_id
-                      << " lockid=" << lock_id << '\n';
+            // std::cout << "Trying to get completion for lock: " << op_id
+            //           << " lockid=" << lock_id << '\n';
 
             const int n = ibv_poll_cq(cq, 16, wcs);
             if (n < 0) throw std::runtime_error("Poll CQ failed");
@@ -163,11 +161,11 @@ uint64_t CasStrategy::acquire(Client& client, int op_id, uint32_t lock_id) {
 
                 auto d = wrid::decode(c.wr_id);
 
-                std::cout << "CQE: lock=" << d.lock_id
-                          << " seq=" << d.seq
-                          << " op=" << static_cast<int>(d.op_type)
-                          << " node=" << static_cast<int>(d.conn_idx)
-                          << '\n';
+                // std::cout << "CQE: lock=" << d.lock_id
+                //           << " seq=" << d.seq
+                //           << " op=" << static_cast<int>(d.op_type)
+                //           << " node=" << static_cast<int>(d.conn_idx)
+                //           << '\n';
 
                 if (d.lock_id == static_cast<uint16_t>(lock_id) &&
                     d.seq == static_cast<uint32_t>(op_id) &&
@@ -202,7 +200,7 @@ uint64_t CasStrategy::acquire(Client& client, int op_id, uint32_t lock_id) {
         // ── Step 3: Did we win? ──
 
         if (result == expected) {
-            std::cout << "We got the next lock: " << result << " lockid=" << lock_id << '\n';
+            // std::cout << "We got the next lock: " << result << " lockid=" << lock_id << '\n';
             // We won — replicate our client_id to this lock's log on all nodes
             state->next_frontier = static_cast<uint64_t>(client.id());
 
@@ -241,7 +239,7 @@ uint64_t CasStrategy::acquire(Client& client, int op_id, uint32_t lock_id) {
             return target_slot_;
         }
 
-        std::cout << "We failed to get the next lock: " << result << " lockid=" << lock_id << '\n';
+        // std::cout << "We failed to get the next lock: " << result << " lockid=" << lock_id << '\n';
 
 
         // ── Lost — adjust target_slot based on what we read back ──
@@ -290,7 +288,7 @@ void CasStrategy::release(Client& client, int op_id, uint32_t lock_id) {
         }
     }
 
-    std::cout << "Advanced next to: " << new_val << " lockid=" << lock_id << '\n';
+    // std::cout << "Advanced next to: " << new_val << " lockid=" << lock_id << '\n';
 
     target_slot_ += 2;
 }
