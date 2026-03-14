@@ -20,6 +20,8 @@ struct LockState {
     bool locked = false;
 
     bool commit_dirty = false;
+    bool in_drain_set = false;    // whether this lock is in the drain set
+    bool in_commit_set = false;   // whether this lock is in the commit set
 };
 
 struct FollowerBatch {
@@ -70,6 +72,14 @@ void MuLeader::run() {
 
     uint32_t follower_unsignaled[MAX_REPLICAS] = {};
 
+    // ── Dirty sets: small arrays of lock IDs that need processing ──
+    // drain_set: locks with pending requests that need to be replicated
+    // commit_set: locks that got acks and may be ready to advance commit
+    auto* drain_set = new uint32_t[num_locks];
+    auto* commit_set = new uint32_t[num_locks];
+    size_t drain_set_size = 0;
+    size_t commit_set_size = 0;
+
     for (size_t i = 0; i < TOTAL_CLIENTS; ++i) {
         for (size_t r = 0; r < 16; ++r) {
             ibv_recv_wr wr{}, *bad = nullptr;
@@ -95,18 +105,15 @@ void MuLeader::run() {
     uint64_t total_send_completions = 0;
     uint64_t total_other_completions = 0;
 
-    // ── TIMING COUNTERS (cumulative nanoseconds) ──
-    uint64_t t_poll_ns = 0;           // ibv_poll_cq call itself
-    uint64_t t_recv_ns = 0;           // processing recv completions
-    uint64_t t_write_ack_ns = 0;      // processing write completions (ack increment)
-    uint64_t t_write_commit_ns = 0;   // processing write completions (commit advancement)
-    uint64_t t_drain_ns = 0;          // drain pending → build WR chains
-    uint64_t t_post_ns = 0;           // ibv_post_send to followers
-    uint64_t t_total_ns = 0;          // entire loop iteration
-
-    // how many iterations had actual work (n > 0)
+    // ── TIMING COUNTERS ──
+    uint64_t t_poll_ns = 0;
+    uint64_t t_recv_ns = 0;
+    uint64_t t_write_ack_ns = 0;
+    uint64_t t_write_commit_ns = 0;
+    uint64_t t_drain_ns = 0;
+    uint64_t t_post_ns = 0;
+    uint64_t t_total_ns = 0;
     uint64_t busy_iters = 0;
-    // how many iterations drained something
     uint64_t drain_iters = 0;
 
     auto last_dump = clock::now();
@@ -140,8 +147,14 @@ void MuLeader::run() {
                 const uint16_t lock_id = mu_decode_lock_id(imm);
                 const uint16_t client_id = mu_decode_client_id(imm);
 
-                auto& lock_state = locks[lock_id];
-                lock_state.pending.push(imm);
+                auto& ls = locks[lock_id];
+                ls.pending.push(imm);
+
+                // Add to drain set if not already there
+                if (!ls.in_drain_set) {
+                    ls.in_drain_set = true;
+                    drain_set[drain_set_size++] = lock_id;
+                }
 
                 ibv_recv_wr next{}, *bad = nullptr;
                 next.wr_id = client_id;
@@ -161,7 +174,7 @@ void MuLeader::run() {
                 const size_t f = wr_id & 0xFFFF;
                 auto& batch = batches[f];
 
-                // ── Ack increment phase ──
+                // ── Ack increment ──
                 auto wa0 = clock::now();
                 for (uint32_t lid = lock_start_; lid < lock_end_; ++lid) {
                     if (!batch.has_entry[lid]) continue;
@@ -170,15 +183,23 @@ void MuLeader::run() {
                         ls.acks[s]++;
                     }
                     batch.has_entry[lid] = false;
+
+                    // Add to commit set if not already there
+                    if (!ls.in_commit_set) {
+                        ls.in_commit_set = true;
+                        commit_set[commit_set_size++] = lid;
+                    }
                 }
                 auto wa1 = clock::now();
                 t_write_ack_ns += std::chrono::duration_cast<ns>(wa1 - wa0).count();
 
                 follower_unsignaled[f] = 0;
 
-                // ── Commit advancement phase ──
+                // ── Commit advancement — ONLY for locks in commit_set ──
                 auto wc0 = clock::now();
-                for (uint32_t lid = lock_start_; lid < lock_end_; ++lid) {
+                size_t new_commit_size = 0;
+                for (size_t ci = 0; ci < commit_set_size; ++ci) {
+                    const uint32_t lid = commit_set[ci];
                     auto& ls = locks[lid];
                     const uint64_t old_commit = ls.commit_index;
 
@@ -220,7 +241,15 @@ void MuLeader::run() {
                     if (ls.commit_index != old_commit) {
                         ls.commit_dirty = true;
                     }
+
+                    // Keep in commit set if still has inflight (more acks coming)
+                    if (ls.inflight > 0) {
+                        commit_set[new_commit_size++] = lid;
+                    } else {
+                        ls.in_commit_set = false;
+                    }
                 }
+                commit_set_size = new_commit_size;
                 auto wc1 = clock::now();
                 t_write_commit_ns += std::chrono::duration_cast<ns>(wc1 - wc0).count();
             }
@@ -232,7 +261,7 @@ void MuLeader::run() {
             }
         }
 
-        // ── Phase 3: Drain pending → replicate ──
+        // ── Phase 3: Drain ONLY dirty locks → replicate ──
         auto d0 = clock::now();
 
         ibv_send_wr* follower_head[MAX_REPLICAS] = {};
@@ -240,9 +269,13 @@ void MuLeader::run() {
         size_t repl_count = 0;
         bool did_drain = false;
 
-        for (uint32_t lock_id = lock_start_; lock_id < lock_end_; ++lock_id) {
+        size_t new_drain_size = 0;
+
+        for (size_t di = 0; di < drain_set_size; ++di) {
+            const uint32_t lock_id = drain_set[di];
             auto& ls = locks[lock_id];
 
+            // Handle commit_dirty first (replicate header)
             if (ls.commit_dirty) {
                 auto* lock_base = mu_lock_base(local_buf, lock_id);
                 mu_write_commit_index(lock_base, ls.commit_index);
@@ -279,7 +312,15 @@ void MuLeader::run() {
                 ls.commit_dirty = false;
             }
 
-            if (ls.inflight >= MAX_INFLIGHT || ls.pending.size() == 0) continue;
+            if (ls.inflight >= MAX_INFLIGHT || ls.pending.size() == 0) {
+                // Keep in drain set if still has pending work (just at inflight limit)
+                if (ls.pending.size() > 0) {
+                    drain_set[new_drain_size++] = lock_id;
+                } else {
+                    ls.in_drain_set = false;
+                }
+                continue;
+            }
 
             did_drain = true;
             const size_t to_drain = std::min(ls.pending.size(), MAX_INFLIGHT - ls.inflight);
@@ -332,8 +373,69 @@ void MuLeader::run() {
 
                 ls.current_index++;
                 ls.inflight++;
+
+                // Add to commit set since we now have inflight entries
+                if (!ls.in_commit_set) {
+                    ls.in_commit_set = true;
+                    commit_set[commit_set_size++] = lock_id;
+                }
+            }
+
+            // Keep in drain set if still has pending
+            if (ls.pending.size() > 0) {
+                drain_set[new_drain_size++] = lock_id;
+            } else {
+                ls.in_drain_set = false;
             }
         }
+
+        // Also scan commit_dirty locks that aren't in drain set
+        // (they got committed via write completion but weren't re-added to drain)
+        // Actually commit_dirty is handled above when lock IS in drain_set.
+        // But if a lock got committed and removed from drain_set, we need to
+        // catch its commit_dirty. Add them back via commit_set:
+        for (size_t ci = 0; ci < commit_set_size; ++ci) {
+            const uint32_t lid = commit_set[ci];
+            auto& ls = locks[lid];
+            if (ls.commit_dirty && !ls.in_drain_set) {
+                auto* lock_base = mu_lock_base(local_buf, lid);
+                mu_write_commit_index(lock_base, ls.commit_index);
+
+                for (size_t f = 0; f < peers_.size(); ++f) {
+                    if (peers_[f].id == node_id_ || !peers_[f].id) continue;
+
+                    auto& sge = repl_sges[repl_count];
+                    sge.addr = reinterpret_cast<uintptr_t>(lock_base);
+                    sge.length = LOCK_HEADER_SIZE;
+                    sge.lkey = mr_->lkey;
+
+                    auto& wr = repl_wrs[repl_count];
+                    wr = {};
+                    wr.wr_id = (ACK_TAG << 48);
+                    wr.opcode = IBV_WR_RDMA_WRITE;
+                    wr.sg_list = &sge;
+                    wr.num_sge = 1;
+                    wr.send_flags = IBV_SEND_INLINE;
+                    wr.wr.rdma.remote_addr = peers_[f].remote_addr
+                        + lid * LOCK_REGION_SIZE;
+                    wr.wr.rdma.rkey = peers_[f].rkey;
+                    wr.next = nullptr;
+
+                    if (!follower_head[f]) {
+                        follower_head[f] = &wr;
+                    } else {
+                        follower_tail[f]->next = &wr;
+                    }
+                    follower_tail[f] = &wr;
+                    follower_unsignaled[f]++;
+                    repl_count++;
+                }
+                ls.commit_dirty = false;
+            }
+        }
+
+        drain_set_size = new_drain_size;
+
         auto d1 = clock::now();
         t_drain_ns += std::chrono::duration_cast<ns>(d1 - d0).count();
         if (did_drain) drain_iters++;
@@ -359,7 +461,7 @@ void MuLeader::run() {
         auto iter_end = clock::now();
         t_total_ns += std::chrono::duration_cast<ns>(iter_end - iter_start).count();
 
-        // ── Periodic dump (every 5 seconds wall-clock) ──
+        // ── Periodic dump (every ~5 seconds) ──
         if (poll_iter % 1000000 == 0) {
             auto now = clock::now();
             double elapsed_s = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_dump).count() / 1000.0;
@@ -373,8 +475,10 @@ void MuLeader::run() {
                           << "  wall_elapsed:    " << elapsed_s << " s\n"
                           << "  poll_iters:      " << poll_iter << "\n"
                           << "  busy_iters:      " << busy_iters
-                          << " (" << (100.0 * busy_iters / poll_iter) << "%)\n"
+                          << " (" << (poll_iter > 0 ? 100.0 * busy_iters / poll_iter : 0) << "%)\n"
                           << "  drain_iters:     " << drain_iters << "\n"
+                          << "  drain_set_size:  " << drain_set_size << "\n"
+                          << "  commit_set_size: " << commit_set_size << "\n"
                           << "  recvs=" << total_recvs
                           << " writes=" << total_writes
                           << " sends=" << total_send_completions
@@ -385,17 +489,17 @@ void MuLeader::run() {
                           << "\n"
                           << "  ── TIME BREAKDOWN (cumulative) ──\n"
                           << "  t_poll:          " << (t_poll_ns / 1e6) << " ms ("
-                          << (100.0 * t_poll_ns / t_total_ns) << "%)\n"
+                          << (t_total_ns > 0 ? 100.0 * t_poll_ns / t_total_ns : 0) << "%)\n"
                           << "  t_recv:          " << (t_recv_ns / 1e6) << " ms ("
-                          << (100.0 * t_recv_ns / t_total_ns) << "%)\n"
+                          << (t_total_ns > 0 ? 100.0 * t_recv_ns / t_total_ns : 0) << "%)\n"
                           << "  t_write_ack:     " << (t_write_ack_ns / 1e6) << " ms ("
-                          << (100.0 * t_write_ack_ns / t_total_ns) << "%)\n"
+                          << (t_total_ns > 0 ? 100.0 * t_write_ack_ns / t_total_ns : 0) << "%)\n"
                           << "  t_write_commit:  " << (t_write_commit_ns / 1e6) << " ms ("
-                          << (100.0 * t_write_commit_ns / t_total_ns) << "%)\n"
+                          << (t_total_ns > 0 ? 100.0 * t_write_commit_ns / t_total_ns : 0) << "%)\n"
                           << "  t_drain:         " << (t_drain_ns / 1e6) << " ms ("
-                          << (100.0 * t_drain_ns / t_total_ns) << "%)\n"
+                          << (t_total_ns > 0 ? 100.0 * t_drain_ns / t_total_ns : 0) << "%)\n"
                           << "  t_post:          " << (t_post_ns / 1e6) << " ms ("
-                          << (100.0 * t_post_ns / t_total_ns) << "%)\n"
+                          << (t_total_ns > 0 ? 100.0 * t_post_ns / t_total_ns : 0) << "%)\n"
                           << "  t_total:         " << (t_total_ns / 1e6) << " ms\n"
                           << "  ── PER-OP AVERAGES ──\n";
 
@@ -410,7 +514,6 @@ void MuLeader::run() {
                 if (total_posts_to_followers > 0)
                     std::cerr << "  avg post:        " << (t_post_ns / total_posts_to_followers) << " ns\n";
 
-                // dump first 3 active locks
                 int dumped = 0;
                 for (uint32_t lid = lock_start_; lid < lock_end_ && dumped < 3; ++lid) {
                     auto& ls = locks[lid];
@@ -428,7 +531,6 @@ void MuLeader::run() {
                 }
                 std::cerr << std::endl;
 
-                // Reset for next interval
                 last_dump = now;
                 t_poll_ns = t_recv_ns = t_write_ack_ns = t_write_commit_ns = 0;
                 t_drain_ns = t_post_ns = t_total_ns = 0;
