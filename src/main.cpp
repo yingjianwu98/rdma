@@ -194,8 +194,8 @@ int main() {
             // ─── CSV row for spreadsheets ───
             // Paste this line into a cell, then use "Split text to columns" with comma delimiter
             std::cout << "\nCSV: "
-                      << machine_id
                       << STRATEGY
+                       << "," << machine_id
                       << "," << TOTAL_CLIENTS
                       << "," << MAX_LOCKS
                       << "," << local_total_ops
@@ -210,7 +210,7 @@ int main() {
                       << std::endl;
 
             // Header reminder (print once for reference)
-            std::cout << "HDR: client_machine_id, strategy,clients,locks,total_ops,wall_s,goodput,mean_us,p50_us,p90_us,p99_us,p99.9_us,max_us"
+            std::cout << "HDR: strategy,client_machine_id,clients,locks,total_ops,wall_s,goodput,mean_us,p50_us,p90_us,p99_us,p99.9_us,max_us"
                       << std::endl;
 
         } else {
