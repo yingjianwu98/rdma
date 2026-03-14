@@ -44,8 +44,8 @@ constexpr size_t MAX_REPLICAS = 10;
 
 // ─── Benchmark constants ───
 
-constexpr size_t NUM_OPS = 20000000;
-constexpr size_t NUM_CLIENTS_PER_MACHINE = 12;
+constexpr size_t NUM_OPS = 5000000;
+constexpr size_t NUM_CLIENTS_PER_MACHINE = 16;
 constexpr size_t TOTAL_MACHINES = 1;
 constexpr size_t TOTAL_CLIENTS = NUM_CLIENTS_PER_MACHINE * TOTAL_MACHINES;
 constexpr size_t NUM_OPS_PER_CLIENT = NUM_OPS / TOTAL_CLIENTS;
@@ -53,7 +53,7 @@ constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * TOTAL_CLIENTS;
 
 // ─── Lock table layout ───
 
-constexpr size_t MAX_LOCKS = 10000;
+constexpr size_t MAX_LOCKS = 1;
 constexpr size_t MAX_LOG_PER_LOCK = (NUM_OPS / MAX_LOCKS) * 4;;
 constexpr size_t LOCK_HEADER_SIZE = 8;
 constexpr size_t LOCK_LOG_SIZE = MAX_LOG_PER_LOCK * ENTRY_SIZE;
