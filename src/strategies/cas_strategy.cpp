@@ -13,6 +13,7 @@
 #pragma once
 
 #include <cstdint>
+#include <sstream>
 #include <stdexcept>
 
 namespace wrid {
@@ -111,7 +112,7 @@ uint64_t CasStrategy::acquire(Client& client, int op_id, uint32_t lock_id) {
         std::cout << "Trying to get next lock: " << op_id << " lockid=" << lock_id << '\n';
         const uint64_t expected = target_slot_ - 1;
 
-        state->cas_results[0] = 0xFEFEFEFEFEFEFEFE;
+        state->cas_results[node] = 0xFEFEFEFEFEFEFEFE;
 
         ibv_sge sge{
             .addr = reinterpret_cast<uintptr_t>(&state->cas_results[0]),
@@ -165,7 +166,7 @@ uint64_t CasStrategy::acquire(Client& client, int op_id, uint32_t lock_id) {
                 std::cout << "CQE: lock=" << d.lock_id
                           << " seq=" << d.seq
                           << " op=" << static_cast<int>(d.op_type)
-                          << " conn=" << static_cast<int>(d.conn_idx)
+                          << " node=" << static_cast<int>(d.conn_idx)
                           << '\n';
 
                 if (d.lock_id == static_cast<uint16_t>(lock_id) &&
@@ -179,17 +180,24 @@ uint64_t CasStrategy::acquire(Client& client, int op_id, uint32_t lock_id) {
                     continue;
                 }
 
-                std::cerr << "Unexpected CQE: wr_id=0x" << std::hex << c.wr_id
-                          << std::dec
-                          << " lock=" << d.lock_id
-                          << " seq=" << d.seq
-                          << " op=" << static_cast<int>(d.op_type)
-                          << " conn=" << static_cast<int>(d.conn_idx)
-                          << '\n';
+
+                throw std::runtime_error(
+                    std::string("Unexpected CQE: wr_id=0x") +
+                    [&] {
+                        std::ostringstream oss;
+                        oss << std::hex << c.wr_id
+                            << std::dec
+                            << " lock=" << d.lock_id
+                            << " seq=" << d.seq
+                            << " op=" << static_cast<int>(d.op_type)
+                            << " conn=" << static_cast<int>(d.conn_idx);
+                        return oss.str();
+                    }()
+                );
             }
         }
 
-        const uint64_t result = state->cas_results[0];
+        const uint64_t result = state->cas_results[node];
 
         // ── Step 3: Did we win? ──
 
