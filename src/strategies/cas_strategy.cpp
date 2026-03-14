@@ -170,6 +170,7 @@ void CasStrategy::release(Client& client, int op_id, uint32_t lock_id) {
         ibv_send_wr wr{}, *bad;
         wr.wr_id = make_wr_id(op_id, TAG_ADVANCE, i);
         wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
+        // send inlined maybe?
         wr.send_flags = ++signal_count_ % 100 == 0 ? IBV_SEND_SIGNALED : 0;
         wr.sg_list = &sge;
         wr.num_sge = 1;
