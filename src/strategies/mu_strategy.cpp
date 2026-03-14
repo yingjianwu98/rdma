@@ -6,7 +6,7 @@
 #include <stdexcept>
 #include <string>
 
-static void mu_send_and_wait(Client& client, uint32_t lock_id, uint32_t op) {
+static void send_and_wait(Client& client, uint32_t lock_id, uint32_t op) {
     auto* cq = client.cq();
 
     // route to the leader instance that owns this lock
@@ -62,10 +62,10 @@ static void mu_send_and_wait(Client& client, uint32_t lock_id, uint32_t op) {
 }
 
 uint64_t MuStrategy::acquire(Client& client, int /*op_id*/, uint32_t lock_id) {
-    mu_send_and_wait(client, lock_id, MU_OP_CLIENT_LOCK);
+    send_and_wait(client, lock_id, MU_OP_CLIENT_LOCK);
     return 0;
 }
 
 void MuStrategy::release(Client& client, int /*op_id*/, uint32_t lock_id) {
-    mu_send_and_wait(client, lock_id, MU_OP_CLIENT_UNLOCK);
+    send_and_wait(client, lock_id, MU_OP_CLIENT_UNLOCK);
 }
