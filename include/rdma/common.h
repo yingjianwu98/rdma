@@ -51,7 +51,7 @@ constexpr size_t TOTAL_CLIENTS = NUM_CLIENTS_PER_MACHINE * TOTAL_MACHINES;
 constexpr size_t NUM_OPS_PER_CLIENT = NUM_OPS / TOTAL_CLIENTS;
 constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * TOTAL_CLIENTS;
 
-// ─── Lock table layout ───
+// ─── Lock table layout ─── 
 
 constexpr size_t MAX_LOCKS = 5;
 constexpr size_t MAX_LOG_PER_LOCK = (NUM_OPS / MAX_LOCKS) * 4;;
