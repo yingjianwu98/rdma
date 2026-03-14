@@ -47,7 +47,7 @@ uint64_t CasStrategy::acquire(Client& client, int op_id, uint32_t lock_id) {
         state->cas_results[node] = 0xFEFEFEFEFEFEFEFE;
 
         ibv_sge sge{
-            .addr = reinterpret_cast<uintptr_t>(&state->cas_results[0]),
+            .addr = reinterpret_cast<uintptr_t>(&state->cas_results[node]),
             .length = 8,
             .lkey = mr->lkey
         };
