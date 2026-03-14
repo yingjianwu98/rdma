@@ -95,38 +95,38 @@ void MuLeader::run() {
         const int n = ibv_poll_cq(cq_, 32, wc);
 
         poll_iter++;
-        // if (poll_iter % 5000000 == 0) {
-        //     // also dump first few locks' state
-        //     std::cerr << "[MuLeader " << node_id_
-        //               << " locks " << lock_start_ << "-" << lock_end_
-        //               << "] iter=" << poll_iter
-        //               << " recvs=" << total_recvs
-        //               << " writes=" << total_writes
-        //               << " sends=" << total_send_completions
-        //               << " other=" << total_other_completions
-        //               << " drained=" << total_drained
-        //               << " committed=" << total_committed
-        //               << " acks_sent=" << total_acks_sent
-        //               << " follower_posts=" << total_posts_to_followers
-        //               << "\n";
-        //
-        //     // dump state of first 3 active locks
-        //     int dumped = 0;
-        //     for (uint32_t lid = lock_start_; lid < lock_end_ && dumped < 3; ++lid) {
-        //         auto& ls = locks[lid];
-        //         if (ls.current_index == 0 && ls.pending.size() == 0) continue;
-        //         std::cerr << "  lock[" << lid
-        //                   << "] pending=" << ls.pending.size()
-        //                   << " inflight=" << ls.inflight
-        //                   << " current=" << ls.current_index
-        //                   << " commit=" << ls.commit_index
-        //                   << " holder=" << ls.holder_slot
-        //                   << " locked=" << ls.locked
-        //                   << " acks[commit]=" << (ls.commit_index < MAX_LOG_PER_LOCK ? (int)ls.acks[ls.commit_index] : -1)
-        //                   << "\n";
-        //         dumped++;
-        //     }
-        // }
+        if (poll_iter % 5000000 == 0) {
+            // also dump first few locks' state
+            std::cerr << "[MuLeader " << node_id_
+                      << " locks " << lock_start_ << "-" << lock_end_
+                      << "] iter=" << poll_iter
+                      << " recvs=" << total_recvs
+                      << " writes=" << total_writes
+                      << " sends=" << total_send_completions
+                      << " other=" << total_other_completions
+                      << " drained=" << total_drained
+                      << " committed=" << total_committed
+                      << " acks_sent=" << total_acks_sent
+                      << " follower_posts=" << total_posts_to_followers
+                      << "\n";
+
+            // dump state of first 3 active locks
+            int dumped = 0;
+            for (uint32_t lid = lock_start_; lid < lock_end_ && dumped < 3; ++lid) {
+                auto& ls = locks[lid];
+                if (ls.current_index == 0 && ls.pending.size() == 0) continue;
+                std::cerr << "  lock[" << lid
+                          << "] pending=" << ls.pending.size()
+                          << " inflight=" << ls.inflight
+                          << " current=" << ls.current_index
+                          << " commit=" << ls.commit_index
+                          << " holder=" << ls.holder_slot
+                          << " locked=" << ls.locked
+                          << " acks[commit]=" << (ls.commit_index < MAX_LOG_PER_LOCK ? (int)ls.acks[ls.commit_index] : -1)
+                          << "\n";
+                dumped++;
+            }
+        }
 
         for (int i = 0; i < n; ++i) {
             if (wc[i].status != IBV_WC_SUCCESS) {
