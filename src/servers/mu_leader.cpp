@@ -4,6 +4,7 @@
 #include "rdma/mu_encoding.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <deque>
@@ -56,6 +57,23 @@ struct LockState {
     int unlock_mutation = -1;
 };
 
+struct MuLeaderStats {
+    uint64_t lock_reqs_recv = 0;
+    uint64_t unlock_reqs_recv = 0;
+    uint64_t grants_sent = 0;
+    uint64_t unlock_acks_sent = 0;
+    uint64_t replication_writes_posted = 0;
+    uint64_t append_quorums = 0;
+    uint64_t unlock_quorums = 0;
+    uint64_t empty_cq_polls = 0;
+    uint64_t nonempty_cq_polls = 0;
+    uint64_t cqes_polled = 0;
+    uint64_t ready_lock_queue_high_watermark = 0;
+    uint64_t mutation_pool_high_watermark = 0;
+    uint64_t append_inflight_high_watermark = 0;
+    uint64_t pending_lock_queue_high_watermark = 0;
+};
+
 uint64_t make_recv_wr_id(const uint16_t client_id, const uint16_t recv_slot) {
     return (MU_RECV_WR_TAG << MU_WR_TAG_SHIFT)
          | (static_cast<uint64_t>(client_id) << 16)
@@ -96,10 +114,32 @@ bool is_recv_wr_id(const uint64_t wr_id) {
 
 void MuLeader::run() {
     const bool mu_debug = get_uint_env_or("MU_DEBUG", 0) != 0;
+    const bool mu_stats_enabled = get_uint_env_or("MU_STATS", 0) != 0;
     auto debug = [&](const std::string& msg) {
         if (mu_debug) {
             std::cout << "[MuLeader " << node_id_ << "] " << msg << "\n";
         }
+    };
+    MuLeaderStats stats{};
+    MuLeaderStats prev_stats{};
+    auto last_stats_at = std::chrono::steady_clock::now();
+    auto print_stats = [&](const MuLeaderStats& delta) {
+        std::cout << "[MuLeaderStats " << node_id_ << "] "
+                  << "lock_reqs=" << delta.lock_reqs_recv
+                  << " unlock_reqs=" << delta.unlock_reqs_recv
+                  << " grants=" << delta.grants_sent
+                  << " unlock_acks=" << delta.unlock_acks_sent
+                  << " repl_writes=" << delta.replication_writes_posted
+                  << " append_quorums=" << delta.append_quorums
+                  << " unlock_quorums=" << delta.unlock_quorums
+                  << " empty_polls=" << delta.empty_cq_polls
+                  << " nonempty_polls=" << delta.nonempty_cq_polls
+                  << " cqes=" << delta.cqes_polled
+                  << " ready_q_hwm=" << stats.ready_lock_queue_high_watermark
+                  << " mutation_hwm=" << stats.mutation_pool_high_watermark
+                  << " append_inflight_hwm=" << stats.append_inflight_high_watermark
+                  << " pending_lock_hwm=" << stats.pending_lock_queue_high_watermark
+                  << "\n";
     };
 
     std::cout << "[MuLeader " << node_id_ << "] locks ["
@@ -148,6 +188,9 @@ void MuLeader::run() {
         if (ready_flags[lock_id] != 0) return;
         ready_flags[lock_id] = 1;
         ready_locks.push_back(lock_id);
+        stats.ready_lock_queue_high_watermark = std::max<uint64_t>(
+            stats.ready_lock_queue_high_watermark,
+            ready_locks.size());
     };
 
     auto send_response = [&](const MuResponse& resp) {
@@ -172,6 +215,14 @@ void MuLeader::run() {
 
         if (ibv_post_send(clients_[resp.client_id].cm_id->qp, &wr, &bad_wr)) {
             throw std::runtime_error("MuLeader: failed to post client response send");
+        }
+
+        if (resp.op == static_cast<uint8_t>(MuRpcOp::Lock)
+            && resp.status == static_cast<uint8_t>(MuRpcStatus::Ok)) {
+            stats.grants_sent++;
+        } else if (resp.op == static_cast<uint8_t>(MuRpcOp::Unlock)
+                   && resp.status == static_cast<uint8_t>(MuRpcStatus::Ok)) {
+            stats.unlock_acks_sent++;
         }
     };
 
@@ -205,6 +256,9 @@ void MuLeader::run() {
         ctx.ack_count = 1;
         ctx.pending_followers = 0;
         ctx.quorum_done = false;
+        stats.mutation_pool_high_watermark = std::max<uint64_t>(
+            stats.mutation_pool_high_watermark,
+            mutations.size() - free_mutations.size());
         return id;
     };
 
@@ -244,6 +298,7 @@ void MuLeader::run() {
             }
 
             ctx.pending_followers++;
+            stats.replication_writes_posted++;
         }
 
         if (ctx.pending_followers == 0) {
@@ -301,6 +356,7 @@ void MuLeader::run() {
         if (ctx.kind == MutationKind::append_lock) {
             lock.committed_tail = std::max(lock.committed_tail, ctx.slot + 1);
             mu_write_commit_index(mu_lock_base(local_buf, ctx.lock_id), lock.committed_tail);
+            stats.append_quorums++;
             debug(
                 "append quorum lock=" + std::to_string(ctx.lock_id)
                 + " slot=" + std::to_string(ctx.slot)
@@ -310,6 +366,7 @@ void MuLeader::run() {
             if (lock.unlock_mutation == static_cast<int>(mutation_id)) {
                 lock.unlock_mutation = -1;
             }
+            stats.unlock_quorums++;
             debug(
                 "unlock quorum lock=" + std::to_string(ctx.lock_id)
                 + " slot=" + std::to_string(ctx.slot)
@@ -381,6 +438,9 @@ void MuLeader::run() {
         ctx.client_id = req.client_id;
         ctx.req_id = req.req_id;
         lock.append_inflight++;
+        stats.append_inflight_high_watermark = std::max<uint64_t>(
+            stats.append_inflight_high_watermark,
+            lock.append_inflight);
 
         post_mutation_writes(mutation_id);
     };
@@ -470,6 +530,12 @@ void MuLeader::run() {
         if (n < 0) {
             throw std::runtime_error("MuLeader: CQ poll failed");
         }
+        if (n == 0) {
+            stats.empty_cq_polls++;
+        } else {
+            stats.nonempty_cq_polls++;
+            stats.cqes_polled += static_cast<uint64_t>(n);
+        }
 
         for (int i = 0; i < n; ++i) {
             const ibv_wc& comp = wc[i];
@@ -536,8 +602,13 @@ void MuLeader::run() {
                     }
 
                     lock.pending_locks.push_back(req);
+                    stats.lock_reqs_recv++;
+                    stats.pending_lock_queue_high_watermark = std::max<uint64_t>(
+                        stats.pending_lock_queue_high_watermark,
+                        lock.pending_locks.size());
                     enqueue_ready(req.lock_id);
                 } else if (req.op == static_cast<uint8_t>(MuRpcOp::Unlock)) {
+                    stats.unlock_reqs_recv++;
                     if (!lock.holder_active
                         || req.client_id != lock.holder_client_id
                         || req.req_id != lock.holder_req_id
@@ -627,6 +698,26 @@ void MuLeader::run() {
             ready_locks.pop_front();
             ready_flags[lock_id] = 0;
             service_lock(lock_id);
+        }
+
+        if (mu_stats_enabled) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now - last_stats_at >= std::chrono::seconds(1)) {
+                MuLeaderStats delta{};
+                delta.lock_reqs_recv = stats.lock_reqs_recv - prev_stats.lock_reqs_recv;
+                delta.unlock_reqs_recv = stats.unlock_reqs_recv - prev_stats.unlock_reqs_recv;
+                delta.grants_sent = stats.grants_sent - prev_stats.grants_sent;
+                delta.unlock_acks_sent = stats.unlock_acks_sent - prev_stats.unlock_acks_sent;
+                delta.replication_writes_posted = stats.replication_writes_posted - prev_stats.replication_writes_posted;
+                delta.append_quorums = stats.append_quorums - prev_stats.append_quorums;
+                delta.unlock_quorums = stats.unlock_quorums - prev_stats.unlock_quorums;
+                delta.empty_cq_polls = stats.empty_cq_polls - prev_stats.empty_cq_polls;
+                delta.nonempty_cq_polls = stats.nonempty_cq_polls - prev_stats.nonempty_cq_polls;
+                delta.cqes_polled = stats.cqes_polled - prev_stats.cqes_polled;
+                print_stats(delta);
+                prev_stats = stats;
+                last_stats_at = now;
+            }
         }
     }
 }
