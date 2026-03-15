@@ -28,9 +28,12 @@ constexpr uint64_t MU_RECV_WR_TAG = 0xB1ULL;
 constexpr uint64_t MU_REPL_WR_TAG = 0xB2ULL;
 constexpr uint64_t MU_RESP_WR_TAG = 0x4C53000000000000ULL;
 constexpr uint64_t MU_WR_TAG_SHIFT = 56;
-constexpr uint64_t MU_REPL_GEN_SHIFT = 24;
-constexpr uint64_t MU_REPL_GEN_MASK = 0xFFFFFFFFULL;
-constexpr uint64_t MU_REPL_ID_MASK = 0xFFFFFFULL;
+constexpr uint64_t MU_REPL_GEN_SHIFT = 32;
+constexpr uint64_t MU_REPL_GEN_MASK = 0xFFFFFFULL;
+constexpr uint64_t MU_REPL_ID_SHIFT = 8;
+constexpr uint64_t MU_REPL_ID_MASK = 0xFFFFULL;
+constexpr uint64_t MU_REPL_FOLLOWER_MASK = 0xFFULL;
+constexpr size_t MU_QP_CREDIT_RESERVE = 8;
 
 struct MutationCtx {
     bool in_use = false;
@@ -98,10 +101,11 @@ uint16_t recv_slot_index(const uint64_t wr_id) {
     return static_cast<uint16_t>(wr_id & 0xFFFFu);
 }
 
-uint64_t make_repl_wr_id(const uint32_t mutation_id, const uint32_t generation) {
+uint64_t make_repl_wr_id(const uint32_t mutation_id, const uint32_t generation, const uint8_t follower_id) {
     return (MU_REPL_WR_TAG << MU_WR_TAG_SHIFT)
          | ((static_cast<uint64_t>(generation) & MU_REPL_GEN_MASK) << MU_REPL_GEN_SHIFT)
-         | (static_cast<uint64_t>(mutation_id) & MU_REPL_ID_MASK);
+         | ((static_cast<uint64_t>(mutation_id) & MU_REPL_ID_MASK) << MU_REPL_ID_SHIFT)
+         | static_cast<uint64_t>(follower_id);
 }
 
 uint32_t repl_generation(const uint64_t wr_id) {
@@ -109,7 +113,11 @@ uint32_t repl_generation(const uint64_t wr_id) {
 }
 
 uint32_t repl_mutation_id(const uint64_t wr_id) {
-    return static_cast<uint32_t>(wr_id & MU_REPL_ID_MASK);
+    return static_cast<uint32_t>((wr_id >> MU_REPL_ID_SHIFT) & MU_REPL_ID_MASK);
+}
+
+uint8_t repl_follower_id(const uint64_t wr_id) {
+    return static_cast<uint8_t>(wr_id & MU_REPL_FOLLOWER_MASK);
 }
 
 bool is_repl_wr_id(const uint64_t wr_id) {
@@ -205,6 +213,7 @@ void MuLeader::run() {
     std::vector<uint8_t> ready_flags(MAX_LOCKS, 0);
     std::vector<uint32_t> client_send_signal_counts(num_clients, 0);
     std::vector<size_t> follower_indices;
+    std::vector<uint32_t> follower_outstanding_wqes(peers_.size(), 0);
     follower_indices.reserve(peers_.size());
     for (size_t i = 0; i < peers_.size(); ++i) {
         if (i == node_id_ || peers_[i].cm_id == nullptr) continue;
@@ -308,6 +317,15 @@ void MuLeader::run() {
     std::function<void(uint32_t)> try_grant;
     std::function<void(uint32_t)> handle_quorum;
 
+    auto has_repl_credit = [&](const uint32_t wr_count) {
+        for (const size_t follower_idx : follower_indices) {
+            if (follower_outstanding_wqes[follower_idx] + wr_count > QP_DEPTH - MU_QP_CREDIT_RESERVE) {
+                return false;
+            }
+        }
+        return true;
+    };
+
     auto post_mutation_writes = [&](const uint32_t mutation_id) {
         auto& ctx = mutations[mutation_id];
         auto* lock_base = mu_lock_base(local_buf, ctx.lock_id);
@@ -316,6 +334,10 @@ void MuLeader::run() {
         const size_t followers = follower_indices.size();
         const size_t quorum_needed = (QUORUM > 0) ? std::min<size_t>(QUORUM - 1, followers) : 0;
         const size_t signaled_to_track = mu_quorum_only_signal ? quorum_needed : followers;
+        const size_t signal_start = followers == 0 ? 0 : (repl_signal_cursor % followers);
+        if (followers != 0 && signaled_to_track != 0) {
+            repl_signal_cursor = (repl_signal_cursor + signaled_to_track) % followers;
+        }
 
         for (size_t follower_pos = 0; follower_pos < follower_indices.size(); ++follower_pos) {
             const size_t follower_idx = follower_indices[follower_pos];
@@ -324,7 +346,7 @@ void MuLeader::run() {
             if (mu_quorum_only_signal && followers != 0) {
                 should_signal = false;
                 for (size_t i = 0; i < signaled_to_track; ++i) {
-                    if (follower_pos == i) {
+                    if (follower_pos == ((signal_start + i) % followers)) {
                         should_signal = true;
                         break;
                     }
@@ -341,7 +363,7 @@ void MuLeader::run() {
             sges[0].length = ENTRY_SIZE;
             sges[0].lkey = mr_->lkey;
 
-            wrs[0].wr_id = make_repl_wr_id(mutation_id, ctx.generation);
+            wrs[0].wr_id = make_repl_wr_id(mutation_id, ctx.generation, static_cast<uint8_t>(follower_idx));
             wrs[0].opcode = IBV_WR_RDMA_WRITE;
             wrs[0].sg_list = &sges[0];
             wrs[0].num_sge = 1;
@@ -354,7 +376,7 @@ void MuLeader::run() {
                 sges[1].length = ENTRY_SIZE;
                 sges[1].lkey = mr_->lkey;
 
-                wrs[1].wr_id = make_repl_wr_id(mutation_id, ctx.generation);
+                wrs[1].wr_id = make_repl_wr_id(mutation_id, ctx.generation, static_cast<uint8_t>(follower_idx));
                 wrs[1].opcode = IBV_WR_RDMA_WRITE;
                 wrs[1].sg_list = &sges[1];
                 wrs[1].num_sge = 1;
@@ -374,6 +396,7 @@ void MuLeader::run() {
             }
 
             stats.replication_writes_posted += static_cast<uint64_t>(wr_count);
+            follower_outstanding_wqes[follower_idx] += static_cast<uint32_t>(wr_count);
             if (should_signal) {
                 ctx.pending_followers++;
                 stats.replication_writes_signaled++;
@@ -472,9 +495,9 @@ void MuLeader::run() {
         enqueue_ready(ctx.lock_id);
     };
 
-    auto start_append_mutation = [&](const uint32_t lock_id) {
+    auto start_append_mutation = [&](const uint32_t lock_id) -> bool {
         auto& lock = locks[lock_id];
-        if (lock.pending_locks.empty()) return;
+        if (lock.pending_locks.empty()) return false;
 
         MuRequest req = lock.pending_locks.front();
 
@@ -488,7 +511,12 @@ void MuLeader::run() {
             send_response(resp);
             lock.pending_locks.pop_front();
             enqueue_ready(lock_id);
-            return;
+            return true;
+        }
+
+        if (!has_repl_credit(1)) {
+            enqueue_ready(lock_id);
+            return false;
         }
 
         const auto mutation_id_opt = try_alloc_mutation();
@@ -498,7 +526,7 @@ void MuLeader::run() {
                 + " pending=" + std::to_string(lock.pending_locks.size())
                 + " append_inflight=" + std::to_string(lock.append_inflight));
             enqueue_ready(lock_id);
-            return;
+            return false;
         }
 
         lock.pending_locks.pop_front();
@@ -526,6 +554,7 @@ void MuLeader::run() {
             lock.append_inflight);
 
         post_mutation_writes(mutation_id);
+        return true;
     };
 
     auto start_unlock_mutation = [&](const uint32_t lock_id) {
@@ -560,6 +589,12 @@ void MuLeader::run() {
             resp.granted_slot = req.granted_slot;
             send_response(resp);
             lock.pending_unlock.reset();
+            enqueue_ready(lock_id);
+            return;
+        }
+
+        const uint32_t unlock_wr_count = can_append_next ? 2 : 1;
+        if (!has_repl_credit(unlock_wr_count)) {
             enqueue_ready(lock_id);
             return;
         }
@@ -623,11 +658,9 @@ void MuLeader::run() {
         }
 
         while (!lock.pending_locks.empty()) {
-            start_append_mutation(lock_id);
-            if (!free_mutations.empty()) {
-                continue;
+            if (!start_append_mutation(lock_id)) {
+                break;
             }
-            break;
         }
     };
 
@@ -778,6 +811,7 @@ void MuLeader::run() {
                     continue;
                 }
 
+                follower_outstanding_wqes[repl_follower_id(comp.wr_id)] = 0;
                 ctx.pending_followers--;
                 ctx.ack_count++;
                 stats.replication_cqes++;
