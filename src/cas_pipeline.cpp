@@ -234,7 +234,7 @@ CasPipelineConfig load_cas_pipeline_config() {
     CasPipelineConfig config{};
     config.active_window = std::max<size_t>(1, get_uint_env_or("CAS_ACTIVE_WINDOW", 1));
     config.cq_batch = std::max<size_t>(1, get_uint_env_or("CAS_CQ_BATCH", 32));
-    config.zipf_skew = get_double_env_or("CAS_ZIPF_SKEW", 0.99);
+    config.zipf_skew = get_double_env_or("CAS_ZIPF_SKEW", 0.0);
     return config;
 }
 
