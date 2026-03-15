@@ -12,6 +12,7 @@
 #include <iomanip>
 #include <iostream>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -123,7 +124,7 @@ bool is_resp_send_wr_id(const uint64_t wr_id) {
 
 void MuLeader::run() {
     const bool mu_debug = get_uint_env_or("MU_DEBUG", 0) != 0;
-    const bool mu_stats_enabled = get_uint_env_or("MU_STATS", 1) != 0;
+    const bool mu_stats_enabled = get_uint_env_or("MU_STATS", 0) != 0;
     const bool mu_stats_print_idle = get_uint_env_or("MU_STATS_PRINT_IDLE", 0) != 0;
     const bool mu_quorum_only_signal =
         get_uint_env_or("MU_REPL_SIGNAL_QUORUM_ONLY", MU_REPL_SIGNAL_QUORUM_ONLY_DEFAULT) != 0;
@@ -147,37 +148,52 @@ void MuLeader::run() {
         const double nonempty_poll_pct = total_polls == 0
             ? 0.0
             : 100.0 * static_cast<double>(delta.nonempty_cq_polls) / static_cast<double>(total_polls);
-        std::cout << "[MuLeaderStats " << node_id_ << "] "
-                  << "interval_s=" << std::fixed << std::setprecision(2) << interval_s
-                  << "lock_reqs=" << delta.lock_reqs_recv
-                  << " unlock_reqs=" << delta.unlock_reqs_recv
-                  << " grants=" << delta.grants_sent
-                  << " unlock_acks=" << delta.unlock_acks_sent
-                  << " grants_ps=" << std::setprecision(0) << (interval_s > 0.0 ? delta.grants_sent / interval_s : 0.0)
-                  << " unlock_acks_ps=" << (interval_s > 0.0 ? delta.unlock_acks_sent / interval_s : 0.0)
-                  << " recv_cqes=" << delta.recv_cqes
-                  << " resp_send_cqes=" << delta.resp_send_cqes
-                  << " repl_writes=" << delta.replication_writes_posted
-                  << " repl_sig=" << delta.replication_writes_signaled
-                  << " repl_cqes=" << delta.replication_cqes
-                  << " append_quorums=" << delta.append_quorums
-                  << " unlock_quorums=" << delta.unlock_quorums
-                  << " empty_polls=" << delta.empty_cq_polls
-                  << " nonempty_polls=" << delta.nonempty_cq_polls
-                  << " nonempty_poll_pct=" << std::setprecision(1) << nonempty_poll_pct
-                  << " cqes=" << delta.cqes_polled
-                  << " current_ready_q=" << current_ready_q
-                  << " current_mutations=" << current_mutations
-                  << " current_append_inflight=" << current_append_inflight
-                  << " interval_ready_q_hwm=" << interval_ready_q_hwm
-                  << " interval_mutation_hwm=" << interval_mutation_hwm
-                  << " interval_append_inflight_hwm=" << interval_append_inflight_hwm
-                  << " interval_pending_lock_hwm=" << interval_pending_lock_hwm
-                  << " lifetime_ready_q_hwm=" << stats.ready_lock_queue_high_watermark
-                  << " lifetime_mutation_hwm=" << stats.mutation_pool_high_watermark
-                  << " lifetime_append_inflight_hwm=" << stats.append_inflight_high_watermark
-                  << " lifetime_pending_lock_hwm=" << stats.pending_lock_queue_high_watermark
-                  << "\n";
+        std::ostringstream line1;
+        line1 << std::fixed << std::setprecision(2)
+              << "[MuLeaderStats " << node_id_ << "] interval=" << interval_s << "s"
+              << " | rates: lock=" << delta.lock_reqs_recv
+              << " unlock=" << delta.unlock_reqs_recv
+              << " grant=" << delta.grants_sent
+              << " ack=" << delta.unlock_acks_sent
+              << " | ops/s: grant=" << std::setprecision(0) << (interval_s > 0.0 ? delta.grants_sent / interval_s : 0.0)
+              << " ack=" << (interval_s > 0.0 ? delta.unlock_acks_sent / interval_s : 0.0);
+
+        std::ostringstream line2;
+        line2 << std::fixed << std::setprecision(1)
+              << "[MuLeaderStats " << node_id_ << "] cq"
+              << " | recv=" << delta.recv_cqes
+              << " resp_send=" << delta.resp_send_cqes
+              << " repl=" << delta.replication_cqes
+              << " total=" << delta.cqes_polled
+              << " | polls: empty=" << delta.empty_cq_polls
+              << " nonempty=" << delta.nonempty_cq_polls
+              << " nonempty%=" << nonempty_poll_pct;
+
+        std::ostringstream line3;
+        line3 << "[MuLeaderStats " << node_id_ << "] replication"
+              << " | writes=" << delta.replication_writes_posted
+              << " signaled=" << delta.replication_writes_signaled
+              << " append_quorums=" << delta.append_quorums
+              << " unlock_quorums=" << delta.unlock_quorums;
+
+        std::ostringstream line4;
+        line4 << "[MuLeaderStats " << node_id_ << "] queues"
+              << " | current: ready=" << current_ready_q
+              << " mutations=" << current_mutations
+              << " append_total=" << current_append_inflight
+              << " | interval_hwm: ready=" << interval_ready_q_hwm
+              << " mutations=" << interval_mutation_hwm
+              << " append_total=" << interval_append_inflight_hwm
+              << " pending_lock=" << interval_pending_lock_hwm
+              << " | lifetime_hwm: ready=" << stats.ready_lock_queue_high_watermark
+              << " mutations=" << stats.mutation_pool_high_watermark
+              << " append_per_lock=" << stats.append_inflight_high_watermark
+              << " pending_lock=" << stats.pending_lock_queue_high_watermark;
+
+        std::cout << line1.str() << "\n"
+                  << line2.str() << "\n"
+                  << line3.str() << "\n"
+                  << line4.str() << "\n";
     };
 
     std::cout << "[MuLeader " << node_id_ << "] locks ["
