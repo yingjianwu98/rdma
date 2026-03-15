@@ -91,7 +91,7 @@ bool is_recv_wr_id(const uint64_t wr_id) {
 }  // namespace
 
 void MuLeader::run() {
-    const bool mu_debug = get_uint_env_or("MU_DEBUG", 0) != 0;
+    const bool mu_debug = get_uint_env_or("MU_DEBUG", 1) != 0;
     auto debug = [&](const std::string& msg) {
         if (mu_debug) {
             std::cout << "[MuLeader " << node_id_ << "] " << msg << "\n";
