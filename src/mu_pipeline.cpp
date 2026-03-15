@@ -12,6 +12,7 @@
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -29,9 +30,11 @@ constexpr uint64_t MU_WR_GEN_SHIFT = 24;
 constexpr uint64_t MU_WR_SLOT_SHIFT = 8;
 constexpr uint64_t MU_WR_GEN_MASK = 0xFFFFFFFFULL;
 constexpr uint64_t MU_WR_SLOT_MASK = 0xFFFFULL;
+constexpr size_t MU_CLIENT_RECV_RING_MIN = 32;
 
 struct MuClientBuffers {
     MuResponse* responses = nullptr;
+    size_t recv_ring = 0;
 };
 
 struct MuOpCtx {
@@ -43,15 +46,12 @@ struct MuOpCtx {
     uint32_t granted_slot = 0;
     size_t latency_index = 0;
     MuOpPhase phase = MuOpPhase::idle;
-    MuResponse* response = nullptr;
     std::chrono::steady_clock::time_point started_at{};
 };
 
-uint64_t make_recv_wr_id(const MuOpCtx& op, const MuOpPhase phase) {
+uint64_t make_recv_wr_id(const uint32_t recv_slot) {
     return (MU_RECV_WR_TAG << MU_WR_TAG_SHIFT)
-         | ((static_cast<uint64_t>(op.generation) & MU_WR_GEN_MASK) << MU_WR_GEN_SHIFT)
-         | ((static_cast<uint64_t>(op.slot) & MU_WR_SLOT_MASK) << MU_WR_SLOT_SHIFT)
-         | static_cast<uint64_t>(phase);
+         | ((static_cast<uint64_t>(recv_slot) & MU_WR_SLOT_MASK) << MU_WR_SLOT_SHIFT);
 }
 
 uint64_t make_send_wr_id(const MuOpCtx& op, const MuOpPhase phase) {
@@ -81,28 +81,33 @@ MuOpPhase wr_phase(const uint64_t wr_id) {
     return static_cast<MuOpPhase>(wr_id & 0xFFu);
 }
 
-MuClientBuffers map_client_buffers(void* raw_buffer, const size_t buffer_size, const size_t active_window) {
+MuClientBuffers map_client_buffers(
+    void* raw_buffer,
+    const size_t buffer_size,
+    const size_t recv_ring
+) {
     MuClientBuffers buffers{};
     auto* base = static_cast<uint8_t*>(raw_buffer);
-    const size_t response_bytes = align_up(active_window * sizeof(MuResponse), 64);
+    const size_t response_bytes = align_up(recv_ring * sizeof(MuResponse), 64);
     if (response_bytes > buffer_size) {
         throw std::runtime_error("MU pipeline: client buffer too small");
     }
     buffers.responses = reinterpret_cast<MuResponse*>(base);
+    buffers.recv_ring = recv_ring;
     return buffers;
 }
 
-void post_recv(Client& client, MuOpCtx& op) {
+void post_recv(Client& client, MuResponse* response, const uint32_t recv_slot) {
     auto* mr = client.mr();
     auto& leader = client.connections().front();
 
     ibv_sge sge{};
-    sge.addr = reinterpret_cast<uintptr_t>(op.response);
+    sge.addr = reinterpret_cast<uintptr_t>(response);
     sge.length = sizeof(MuResponse);
     sge.lkey = mr->lkey;
 
     ibv_recv_wr wr{}, *bad_wr = nullptr;
-    wr.wr_id = make_recv_wr_id(op, op.phase);
+    wr.wr_id = make_recv_wr_id(recv_slot);
     wr.sg_list = &sge;
     wr.num_sge = 1;
 
@@ -153,7 +158,8 @@ MuPipelineConfig load_mu_pipeline_config() {
 }
 
 size_t mu_pipeline_client_buffer_size(const MuPipelineConfig& config) {
-    const size_t response_bytes = align_up(config.active_window * sizeof(MuResponse), 64);
+    const size_t recv_ring = std::max(config.active_window * 2, MU_CLIENT_RECV_RING_MIN);
+    const size_t response_bytes = align_up(recv_ring * sizeof(MuResponse), 64);
     return align_up(response_bytes + PAGE_SIZE, PAGE_SIZE);
 }
 
@@ -180,18 +186,28 @@ void run_mu_pipeline(
     if (config.active_window > MU_WR_SLOT_MASK) {
         throw std::runtime_error("MU pipeline: active window exceeds wr_id slot capacity");
     }
+    const size_t recv_ring = std::max(config.active_window * 2, MU_CLIENT_RECV_RING_MIN);
+    if (recv_ring > MU_WR_SLOT_MASK) {
+        throw std::runtime_error("MU pipeline: recv ring exceeds wr_id slot capacity");
+    }
 
-    auto buffers = map_client_buffers(client.buffer(), client.buffer_size(), config.active_window);
+    auto buffers = map_client_buffers(client.buffer(), client.buffer_size(), recv_ring);
     std::vector<MuOpCtx> ops(config.active_window);
     std::vector<ibv_wc> completions(config.cq_batch);
     std::mt19937 rng(std::random_device{}());
     std::uniform_int_distribution<uint32_t> lock_dist(0, MAX_LOCKS - 1);
     uint32_t leader_signal_count = 0;
+    std::unordered_map<uint32_t, uint32_t> req_to_slot;
+    req_to_slot.reserve(config.active_window * 2);
 
     size_t submitted = 0;
     size_t completed = 0;
     size_t active = 0;
     uint32_t next_req_id = 1;
+
+    for (uint32_t recv_slot = 0; recv_slot < recv_ring; ++recv_slot) {
+        post_recv(client, &buffers.responses[recv_slot], recv_slot);
+    }
 
     auto submit_lock = [&](const size_t slot) {
         auto& op = ops[slot];
@@ -203,10 +219,8 @@ void run_mu_pipeline(
         op.granted_slot = 0;
         op.latency_index = submitted;
         op.phase = MuOpPhase::wait_lock_grant;
-        op.response = &buffers.responses[slot];
         op.started_at = std::chrono::steady_clock::now();
-
-        post_recv(client, op);
+        req_to_slot[op.req_id] = op.slot;
 
         MuRequest req{};
         req.op = static_cast<uint8_t>(MuRpcOp::Lock);
@@ -231,7 +245,6 @@ void run_mu_pipeline(
 
     auto submit_unlock = [&](MuOpCtx& op) {
         op.phase = MuOpPhase::wait_unlock_ack;
-        post_recv(client, op);
 
         MuRequest req{};
         req.op = static_cast<uint8_t>(MuRpcOp::Unlock);
@@ -280,22 +293,31 @@ void run_mu_pipeline(
                 continue;
             }
 
-            const uint32_t slot = wr_slot(wc.wr_id);
-            if (slot >= ops.size()) {
-                throw std::runtime_error("MU pipeline: recv slot out of range");
+            const uint32_t recv_slot = wr_slot(wc.wr_id);
+            if (recv_slot >= buffers.recv_ring) {
+                throw std::runtime_error("MU pipeline: recv ring slot out of range");
             }
+
+            const MuResponse resp = buffers.responses[recv_slot];
+            post_recv(client, &buffers.responses[recv_slot], recv_slot);
+
+            const auto it = req_to_slot.find(resp.req_id);
+            if (it == req_to_slot.end()) {
+                if (mu_debug) {
+                    debug(
+                        "recv unknown response op=" + std::to_string(resp.op)
+                        + " lock=" + std::to_string(resp.lock_id)
+                        + " req=" + std::to_string(resp.req_id));
+                }
+                continue;
+            }
+
+            const uint32_t slot = it->second;
 
             auto& op = ops[slot];
-            if (!op.active || op.generation != wr_generation(wc.wr_id)) {
+            if (!op.active) {
                 continue;
             }
-
-            const MuOpPhase phase = wr_phase(wc.wr_id);
-            if (phase != op.phase) {
-                continue;
-            }
-
-            const MuResponse& resp = *op.response;
             if (resp.client_id != client.id() || resp.lock_id != op.lock_id || resp.req_id != op.req_id) {
                 throw std::runtime_error("MU pipeline: mismatched response payload");
             }
@@ -303,7 +325,10 @@ void run_mu_pipeline(
                 throw std::runtime_error("MU pipeline: leader returned error status " + std::to_string(resp.status));
             }
 
-            if (phase == MuOpPhase::wait_lock_grant) {
+            if (resp.op == static_cast<uint8_t>(MuRpcOp::Lock)) {
+                if (op.phase != MuOpPhase::wait_lock_grant) {
+                    throw std::runtime_error("MU pipeline: lock response arrived in wrong phase");
+                }
                 if (resp.op != static_cast<uint8_t>(MuRpcOp::Lock)) {
                     throw std::runtime_error("MU pipeline: expected lock grant response");
                 }
@@ -319,7 +344,10 @@ void run_mu_pipeline(
             }
 
             if (resp.op != static_cast<uint8_t>(MuRpcOp::Unlock)) {
-                throw std::runtime_error("MU pipeline: expected unlock ack response");
+                throw std::runtime_error("MU pipeline: unexpected response opcode");
+            }
+            if (op.phase != MuOpPhase::wait_unlock_ack) {
+                throw std::runtime_error("MU pipeline: unlock response arrived in wrong phase");
             }
 
             debug(
@@ -328,6 +356,7 @@ void run_mu_pipeline(
                 + " granted_slot=" + std::to_string(op.granted_slot));
 
             lock_counts[op.lock_id]++;
+            req_to_slot.erase(it);
             op.active = false;
             op.phase = MuOpPhase::idle;
             completed++;
