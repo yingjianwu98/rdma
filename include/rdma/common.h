@@ -57,7 +57,7 @@ constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * TOTAL_CLIENTS;
 // ─── Lock table layout ───
 
 constexpr size_t MAX_LOCKS = 5000;
-constexpr size_t CAS_ACTIVE_CLIENTS = 16;
+constexpr size_t CAS_ACTIVE_CLIENTS = 32;
 constexpr size_t MAX_LOG_PER_LOCK = ((NUM_OPS + MAX_LOCKS - 1) / MAX_LOCKS) * 4;
 constexpr size_t LOCK_HEADER_SIZE = 8;
 constexpr size_t LOCK_LOG_SIZE = MAX_LOG_PER_LOCK * ENTRY_SIZE;
