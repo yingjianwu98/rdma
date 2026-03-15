@@ -471,6 +471,10 @@ void MuLeader::run() {
                     std::string("MuLeader: completion error ") + ibv_wc_status_str(comp.status));
             }
 
+            debug(
+                "cq opcode=" + std::to_string(comp.opcode)
+                + " wr_id=" + std::to_string(comp.wr_id));
+
             if ((comp.opcode & IBV_WC_RECV) != 0) {
                 if (!is_recv_wr_id(comp.wr_id)) {
                     continue;
@@ -570,7 +574,7 @@ void MuLeader::run() {
                 continue;
             }
 
-            if (comp.opcode == IBV_WC_RDMA_WRITE && is_repl_wr_id(comp.wr_id)) {
+            if (is_repl_wr_id(comp.wr_id)) {
                 const uint32_t mutation_id = repl_mutation_id(comp.wr_id);
                 if (mutation_id >= mutations.size()) {
                     throw std::runtime_error("MuLeader: mutation id out of range");
