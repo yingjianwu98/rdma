@@ -63,6 +63,8 @@ struct MuLeaderStats {
     uint64_t grants_sent = 0;
     uint64_t unlock_acks_sent = 0;
     uint64_t replication_writes_posted = 0;
+    uint64_t replication_writes_signaled = 0;
+    uint64_t replication_cqes = 0;
     uint64_t append_quorums = 0;
     uint64_t unlock_quorums = 0;
     uint64_t empty_cq_polls = 0;
@@ -115,6 +117,8 @@ bool is_recv_wr_id(const uint64_t wr_id) {
 void MuLeader::run() {
     const bool mu_debug = get_uint_env_or("MU_DEBUG", 0) != 0;
     const bool mu_stats_enabled = get_uint_env_or("MU_STATS", 1) != 0;
+    const bool mu_quorum_only_signal =
+        get_uint_env_or("MU_REPL_SIGNAL_QUORUM_ONLY", MU_REPL_SIGNAL_QUORUM_ONLY_DEFAULT) != 0;
     auto debug = [&](const std::string& msg) {
         if (mu_debug) {
             std::cout << "[MuLeader " << node_id_ << "] " << msg << "\n";
@@ -130,6 +134,8 @@ void MuLeader::run() {
                   << " grants=" << delta.grants_sent
                   << " unlock_acks=" << delta.unlock_acks_sent
                   << " repl_writes=" << delta.replication_writes_posted
+                  << " repl_sig=" << delta.replication_writes_signaled
+                  << " repl_cqes=" << delta.replication_cqes
                   << " append_quorums=" << delta.append_quorums
                   << " unlock_quorums=" << delta.unlock_quorums
                   << " empty_polls=" << delta.empty_cq_polls
@@ -147,6 +153,7 @@ void MuLeader::run() {
 
     auto* local_buf = static_cast<uint8_t*>(buf_);
     const uint32_t num_clients = expected_clients();
+    size_t repl_signal_cursor = 0;
     const size_t handled_locks = static_cast<size_t>(lock_end_ - lock_start_);
     const size_t mutation_pool_size = std::max<size_t>(
         handled_locks * (MU_MAX_APPEND_INFLIGHT_PER_LOCK + 1),
@@ -275,9 +282,27 @@ void MuLeader::run() {
         auto& ctx = mutations[mutation_id];
         auto* lock_base = mu_lock_base(local_buf, ctx.lock_id);
         auto* entry_ptr = mu_entry_ptr(lock_base, ctx.slot);
+        const size_t followers = follower_indices.size();
+        const size_t quorum_needed = (QUORUM > 0) ? std::min<size_t>(QUORUM - 1, followers) : 0;
+        const size_t signaled_to_track = mu_quorum_only_signal ? quorum_needed : followers;
+        const size_t signal_start = followers == 0 ? 0 : (repl_signal_cursor % followers);
+        if (followers != 0 && signaled_to_track != 0) {
+            repl_signal_cursor = (repl_signal_cursor + signaled_to_track) % followers;
+        }
 
-        for (const size_t follower_idx : follower_indices) {
+        for (size_t follower_pos = 0; follower_pos < follower_indices.size(); ++follower_pos) {
+            const size_t follower_idx = follower_indices[follower_pos];
             auto& follower = peers_[follower_idx];
+            bool should_signal = !mu_quorum_only_signal;
+            if (mu_quorum_only_signal && followers != 0) {
+                should_signal = false;
+                for (size_t i = 0; i < signaled_to_track; ++i) {
+                    if (follower_pos == ((signal_start + i) % followers)) {
+                        should_signal = true;
+                        break;
+                    }
+                }
+            }
 
             ibv_sge sge{};
             sge.addr = reinterpret_cast<uintptr_t>(entry_ptr);
@@ -289,7 +314,7 @@ void MuLeader::run() {
             wr.opcode = IBV_WR_RDMA_WRITE;
             wr.sg_list = &sge;
             wr.num_sge = 1;
-            wr.send_flags = IBV_SEND_INLINE | IBV_SEND_SIGNALED;
+            wr.send_flags = IBV_SEND_INLINE | (should_signal ? IBV_SEND_SIGNALED : 0);
             wr.wr.rdma.remote_addr = follower.remote_addr + lock_log_slot_offset(ctx.lock_id, ctx.slot);
             wr.wr.rdma.rkey = follower.rkey;
 
@@ -297,8 +322,11 @@ void MuLeader::run() {
                 throw std::runtime_error("MuLeader: failed to replicate mutation");
             }
 
-            ctx.pending_followers++;
             stats.replication_writes_posted++;
+            if (should_signal) {
+                ctx.pending_followers++;
+                stats.replication_writes_signaled++;
+            }
         }
 
         if (ctx.pending_followers == 0) {
@@ -669,6 +697,7 @@ void MuLeader::run() {
 
                 ctx.pending_followers--;
                 ctx.ack_count++;
+                stats.replication_cqes++;
                 debug(
                     "replication cqe kind=" + std::to_string(static_cast<int>(ctx.kind))
                     + " lock=" + std::to_string(ctx.lock_id)
@@ -709,6 +738,8 @@ void MuLeader::run() {
                 delta.grants_sent = stats.grants_sent - prev_stats.grants_sent;
                 delta.unlock_acks_sent = stats.unlock_acks_sent - prev_stats.unlock_acks_sent;
                 delta.replication_writes_posted = stats.replication_writes_posted - prev_stats.replication_writes_posted;
+                delta.replication_writes_signaled = stats.replication_writes_signaled - prev_stats.replication_writes_signaled;
+                delta.replication_cqes = stats.replication_cqes - prev_stats.replication_cqes;
                 delta.append_quorums = stats.append_quorums - prev_stats.append_quorums;
                 delta.unlock_quorums = stats.unlock_quorums - prev_stats.unlock_quorums;
                 delta.empty_cq_polls = stats.empty_cq_polls - prev_stats.empty_cq_polls;
