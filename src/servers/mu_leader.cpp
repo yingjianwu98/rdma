@@ -9,6 +9,7 @@
 #include <cstring>
 #include <deque>
 #include <functional>
+#include <iomanip>
 #include <iostream>
 #include <optional>
 #include <stdexcept>
@@ -62,6 +63,8 @@ struct MuLeaderStats {
     uint64_t unlock_reqs_recv = 0;
     uint64_t grants_sent = 0;
     uint64_t unlock_acks_sent = 0;
+    uint64_t recv_cqes = 0;
+    uint64_t resp_send_cqes = 0;
     uint64_t replication_writes_posted = 0;
     uint64_t replication_writes_signaled = 0;
     uint64_t replication_cqes = 0;
@@ -117,6 +120,7 @@ bool is_recv_wr_id(const uint64_t wr_id) {
 void MuLeader::run() {
     const bool mu_debug = get_uint_env_or("MU_DEBUG", 0) != 0;
     const bool mu_stats_enabled = get_uint_env_or("MU_STATS", 1) != 0;
+    const bool mu_stats_print_idle = get_uint_env_or("MU_STATS_PRINT_IDLE", 0) != 0;
     const bool mu_quorum_only_signal =
         get_uint_env_or("MU_REPL_SIGNAL_QUORUM_ONLY", MU_REPL_SIGNAL_QUORUM_ONLY_DEFAULT) != 0;
     auto debug = [&](const std::string& msg) {
@@ -127,12 +131,28 @@ void MuLeader::run() {
     MuLeaderStats stats{};
     MuLeaderStats prev_stats{};
     auto last_stats_at = std::chrono::steady_clock::now();
-    auto print_stats = [&](const MuLeaderStats& delta) {
+    uint64_t current_ready_q = 0;
+    uint64_t current_mutations = 0;
+    uint64_t current_append_inflight = 0;
+    uint64_t interval_ready_q_hwm = 0;
+    uint64_t interval_mutation_hwm = 0;
+    uint64_t interval_append_inflight_hwm = 0;
+    uint64_t interval_pending_lock_hwm = 0;
+    auto print_stats = [&](const MuLeaderStats& delta, const double interval_s) {
+        const uint64_t total_polls = delta.empty_cq_polls + delta.nonempty_cq_polls;
+        const double nonempty_poll_pct = total_polls == 0
+            ? 0.0
+            : 100.0 * static_cast<double>(delta.nonempty_cq_polls) / static_cast<double>(total_polls);
         std::cout << "[MuLeaderStats " << node_id_ << "] "
+                  << "interval_s=" << std::fixed << std::setprecision(2) << interval_s
                   << "lock_reqs=" << delta.lock_reqs_recv
                   << " unlock_reqs=" << delta.unlock_reqs_recv
                   << " grants=" << delta.grants_sent
                   << " unlock_acks=" << delta.unlock_acks_sent
+                  << " grants_ps=" << std::setprecision(0) << (interval_s > 0.0 ? delta.grants_sent / interval_s : 0.0)
+                  << " unlock_acks_ps=" << (interval_s > 0.0 ? delta.unlock_acks_sent / interval_s : 0.0)
+                  << " recv_cqes=" << delta.recv_cqes
+                  << " resp_send_cqes=" << delta.resp_send_cqes
                   << " repl_writes=" << delta.replication_writes_posted
                   << " repl_sig=" << delta.replication_writes_signaled
                   << " repl_cqes=" << delta.replication_cqes
@@ -140,11 +160,19 @@ void MuLeader::run() {
                   << " unlock_quorums=" << delta.unlock_quorums
                   << " empty_polls=" << delta.empty_cq_polls
                   << " nonempty_polls=" << delta.nonempty_cq_polls
+                  << " nonempty_poll_pct=" << std::setprecision(1) << nonempty_poll_pct
                   << " cqes=" << delta.cqes_polled
-                  << " ready_q_hwm=" << stats.ready_lock_queue_high_watermark
-                  << " mutation_hwm=" << stats.mutation_pool_high_watermark
-                  << " append_inflight_hwm=" << stats.append_inflight_high_watermark
-                  << " pending_lock_hwm=" << stats.pending_lock_queue_high_watermark
+                  << " current_ready_q=" << current_ready_q
+                  << " current_mutations=" << current_mutations
+                  << " current_append_inflight=" << current_append_inflight
+                  << " interval_ready_q_hwm=" << interval_ready_q_hwm
+                  << " interval_mutation_hwm=" << interval_mutation_hwm
+                  << " interval_append_inflight_hwm=" << interval_append_inflight_hwm
+                  << " interval_pending_lock_hwm=" << interval_pending_lock_hwm
+                  << " lifetime_ready_q_hwm=" << stats.ready_lock_queue_high_watermark
+                  << " lifetime_mutation_hwm=" << stats.mutation_pool_high_watermark
+                  << " lifetime_append_inflight_hwm=" << stats.append_inflight_high_watermark
+                  << " lifetime_pending_lock_hwm=" << stats.pending_lock_queue_high_watermark
                   << "\n";
     };
 
@@ -195,9 +223,11 @@ void MuLeader::run() {
         if (ready_flags[lock_id] != 0) return;
         ready_flags[lock_id] = 1;
         ready_locks.push_back(lock_id);
+        current_ready_q = ready_locks.size();
         stats.ready_lock_queue_high_watermark = std::max<uint64_t>(
             stats.ready_lock_queue_high_watermark,
             ready_locks.size());
+        interval_ready_q_hwm = std::max<uint64_t>(interval_ready_q_hwm, ready_locks.size());
     };
 
     auto send_response = [&](const MuResponse& resp) {
@@ -266,6 +296,8 @@ void MuLeader::run() {
         stats.mutation_pool_high_watermark = std::max<uint64_t>(
             stats.mutation_pool_high_watermark,
             mutations.size() - free_mutations.size());
+        current_mutations = mutations.size() - free_mutations.size();
+        interval_mutation_hwm = std::max<uint64_t>(interval_mutation_hwm, mutations.size() - free_mutations.size());
         return id;
     };
 
@@ -273,6 +305,7 @@ void MuLeader::run() {
         auto& ctx = mutations[mutation_id];
         ctx.in_use = false;
         free_mutations.push_back(mutation_id);
+        current_mutations = mutations.size() - free_mutations.size();
     };
 
     std::function<void(uint32_t)> try_grant;
@@ -466,9 +499,11 @@ void MuLeader::run() {
         ctx.client_id = req.client_id;
         ctx.req_id = req.req_id;
         lock.append_inflight++;
+        current_append_inflight++;
         stats.append_inflight_high_watermark = std::max<uint64_t>(
             stats.append_inflight_high_watermark,
             lock.append_inflight);
+        interval_append_inflight_hwm = std::max<uint64_t>(interval_append_inflight_hwm, current_append_inflight);
 
         post_mutation_writes(mutation_id);
     };
@@ -580,6 +615,7 @@ void MuLeader::run() {
                 if (!is_recv_wr_id(comp.wr_id)) {
                     continue;
                 }
+                stats.recv_cqes++;
 
                 const uint16_t client_id = recv_client_id(comp.wr_id);
                 const uint16_t recv_slot = recv_slot_index(comp.wr_id);
@@ -634,6 +670,7 @@ void MuLeader::run() {
                     stats.pending_lock_queue_high_watermark = std::max<uint64_t>(
                         stats.pending_lock_queue_high_watermark,
                         lock.pending_locks.size());
+                    interval_pending_lock_hwm = std::max<uint64_t>(interval_pending_lock_hwm, lock.pending_locks.size());
                     enqueue_ready(req.lock_id);
                 } else if (req.op == static_cast<uint8_t>(MuRpcOp::Unlock)) {
                     stats.unlock_reqs_recv++;
@@ -680,6 +717,11 @@ void MuLeader::run() {
                 continue;
             }
 
+            if (is_resp_send_wr_id(comp.wr_id)) {
+                stats.resp_send_cqes++;
+                continue;
+            }
+
             if (is_repl_wr_id(comp.wr_id)) {
                 const uint32_t mutation_id = repl_mutation_id(comp.wr_id);
                 if (mutation_id >= mutations.size()) {
@@ -713,6 +755,9 @@ void MuLeader::run() {
                     auto& lock = locks[ctx.lock_id];
                     if (ctx.kind == MutationKind::append_lock && lock.append_inflight > 0) {
                         lock.append_inflight--;
+                        if (current_append_inflight > 0) {
+                            current_append_inflight--;
+                        }
                     }
                     release_mutation(mutation_id);
                     enqueue_ready(ctx.lock_id);
@@ -726,17 +771,21 @@ void MuLeader::run() {
             const uint32_t lock_id = ready_locks.front();
             ready_locks.pop_front();
             ready_flags[lock_id] = 0;
+            current_ready_q = ready_locks.size();
             service_lock(lock_id);
         }
 
         if (mu_stats_enabled) {
             const auto now = std::chrono::steady_clock::now();
             if (now - last_stats_at >= std::chrono::seconds(1)) {
+                const double interval_s = std::chrono::duration_cast<std::chrono::duration<double>>(now - last_stats_at).count();
                 MuLeaderStats delta{};
                 delta.lock_reqs_recv = stats.lock_reqs_recv - prev_stats.lock_reqs_recv;
                 delta.unlock_reqs_recv = stats.unlock_reqs_recv - prev_stats.unlock_reqs_recv;
                 delta.grants_sent = stats.grants_sent - prev_stats.grants_sent;
                 delta.unlock_acks_sent = stats.unlock_acks_sent - prev_stats.unlock_acks_sent;
+                delta.recv_cqes = stats.recv_cqes - prev_stats.recv_cqes;
+                delta.resp_send_cqes = stats.resp_send_cqes - prev_stats.resp_send_cqes;
                 delta.replication_writes_posted = stats.replication_writes_posted - prev_stats.replication_writes_posted;
                 delta.replication_writes_signaled = stats.replication_writes_signaled - prev_stats.replication_writes_signaled;
                 delta.replication_cqes = stats.replication_cqes - prev_stats.replication_cqes;
@@ -745,9 +794,23 @@ void MuLeader::run() {
                 delta.empty_cq_polls = stats.empty_cq_polls - prev_stats.empty_cq_polls;
                 delta.nonempty_cq_polls = stats.nonempty_cq_polls - prev_stats.nonempty_cq_polls;
                 delta.cqes_polled = stats.cqes_polled - prev_stats.cqes_polled;
-                print_stats(delta);
+                const bool interval_active = delta.lock_reqs_recv != 0
+                    || delta.unlock_reqs_recv != 0
+                    || delta.grants_sent != 0
+                    || delta.unlock_acks_sent != 0
+                    || delta.recv_cqes != 0
+                    || delta.replication_cqes != 0;
+                if (interval_active || mu_stats_print_idle) {
+                    print_stats(delta, interval_s);
+                }
                 prev_stats = stats;
                 last_stats_at = now;
+                current_ready_q = ready_locks.size();
+                current_mutations = mutations.size() - free_mutations.size();
+                interval_ready_q_hwm = current_ready_q;
+                interval_mutation_hwm = current_mutations;
+                interval_append_inflight_hwm = current_append_inflight;
+                interval_pending_lock_hwm = 0;
             }
         }
     }
