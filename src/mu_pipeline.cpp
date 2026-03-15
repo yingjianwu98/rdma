@@ -138,7 +138,7 @@ void post_request(
 
 MuPipelineConfig load_mu_pipeline_config() {
     MuPipelineConfig config{};
-    config.active_window = std::max<size_t>(1, get_uint_env_or("MU_ACTIVE_WINDOW", 8));
+    config.active_window = std::max<size_t>(1, get_uint_env_or("MU_ACTIVE_WINDOW", 1));
     config.cq_batch = std::max<size_t>(1, get_uint_env_or("MU_CQ_BATCH", MU_CLIENT_CQ_BATCH_DEFAULT));
     config.client_send_signal_every = std::max<uint32_t>(
         1,
