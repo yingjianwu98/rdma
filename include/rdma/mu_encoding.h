@@ -98,9 +98,10 @@ inline void mu_write_entry_word(uint8_t* lock_base, const uint32_t slot, const u
     *reinterpret_cast<uint64_t*>(mu_entry_ptr(lock_base, slot)) = word;
 }
 
-constexpr size_t MU_CLIENT_SEND_SIGNAL_EVERY_DEFAULT = 512;
-constexpr size_t MU_SERVER_SEND_SIGNAL_EVERY_DEFAULT = 1024;
+constexpr size_t MU_CLIENT_SEND_SIGNAL_EVERY_DEFAULT = 64;
+constexpr size_t MU_SERVER_SEND_SIGNAL_EVERY_DEFAULT = 128;
 constexpr size_t MU_CLIENT_CQ_BATCH_DEFAULT = 32;
-constexpr size_t MU_SERVER_CQ_BATCH_DEFAULT = 128;
-constexpr size_t MU_SERVER_RECV_RING_DEFAULT = 2048;
+constexpr size_t MU_SERVER_RECV_RING = 512;
+constexpr size_t MU_MAX_PENDING_PER_LOCK = 1024;
+constexpr size_t MU_MAX_APPEND_INFLIGHT_PER_LOCK = 32;
 constexpr size_t MU_REPL_SIGNAL_QUORUM_ONLY_DEFAULT = 1;
