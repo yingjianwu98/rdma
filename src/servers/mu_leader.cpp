@@ -24,7 +24,6 @@ enum class MutationKind : uint8_t {
 constexpr uint64_t MU_RECV_WR_TAG = 0x4C52000000000000ULL;
 constexpr uint64_t MU_REPL_WR_TAG = 0x4C57000000000000ULL;
 constexpr uint64_t MU_RESP_WR_TAG = 0x4C53000000000000ULL;
-constexpr size_t MU_MAX_MUTATIONS = MAX_LOCKS * 4;
 
 struct MutationCtx {
     bool in_use = false;
@@ -97,6 +96,10 @@ void MuLeader::run() {
 
     auto* local_buf = static_cast<uint8_t*>(buf_);
     const uint32_t num_clients = expected_clients();
+    const size_t handled_locks = static_cast<size_t>(lock_end_ - lock_start_);
+    const size_t mutation_pool_size = std::max<size_t>(
+        handled_locks * (MU_MAX_APPEND_INFLIGHT_PER_LOCK + 1),
+        MU_MAX_APPEND_INFLIGHT_PER_LOCK + 1);
 
     std::vector<MuRequest> recv_buffers(num_clients * MU_SERVER_RECV_RING);
     ibv_mr* recv_mr = ibv_reg_mr(
@@ -109,10 +112,10 @@ void MuLeader::run() {
     }
 
     std::vector<LockState> locks(MAX_LOCKS);
-    std::vector<MutationCtx> mutations(MU_MAX_MUTATIONS);
+    std::vector<MutationCtx> mutations(mutation_pool_size);
     std::deque<uint32_t> free_mutations;
-    free_mutations.resize(MU_MAX_MUTATIONS);
-    for (uint32_t i = 0; i < MU_MAX_MUTATIONS; ++i) {
+    free_mutations.resize(mutation_pool_size);
+    for (uint32_t i = 0; i < mutation_pool_size; ++i) {
         free_mutations[i] = i;
     }
 
@@ -176,9 +179,9 @@ void MuLeader::run() {
         }
     };
 
-    auto alloc_mutation = [&]() -> uint32_t {
+    auto try_alloc_mutation = [&]() -> std::optional<uint32_t> {
         if (free_mutations.empty()) {
-            throw std::runtime_error("MuLeader: mutation pool exhausted");
+            return std::nullopt;
         }
         const uint32_t id = free_mutations.front();
         free_mutations.pop_front();
@@ -303,6 +306,12 @@ void MuLeader::run() {
         auto& lock = locks[lock_id];
         if (lock.pending_locks.empty() || lock.append_inflight >= MU_MAX_APPEND_INFLIGHT_PER_LOCK) return;
 
+        const auto mutation_id_opt = try_alloc_mutation();
+        if (!mutation_id_opt.has_value()) {
+            enqueue_ready(lock_id);
+            return;
+        }
+
         MuRequest req = lock.pending_locks.front();
         lock.pending_locks.pop_front();
 
@@ -322,7 +331,7 @@ void MuLeader::run() {
         auto* lock_base = mu_lock_base(local_buf, lock_id);
         mu_write_entry_word(lock_base, slot, mu_make_entry(req.client_id, req.req_id, false));
 
-        const uint32_t mutation_id = alloc_mutation();
+        const uint32_t mutation_id = *mutation_id_opt;
         auto& ctx = mutations[mutation_id];
         ctx.kind = MutationKind::append_lock;
         ctx.lock_id = lock_id;
@@ -337,6 +346,12 @@ void MuLeader::run() {
     auto start_unlock_mutation = [&](const uint32_t lock_id) {
         auto& lock = locks[lock_id];
         if (!lock.pending_unlock.has_value() || lock.unlock_mutation != -1) return;
+
+        const auto mutation_id_opt = try_alloc_mutation();
+        if (!mutation_id_opt.has_value()) {
+            enqueue_ready(lock_id);
+            return;
+        }
 
         const MuRequest req = *lock.pending_unlock;
         lock.pending_unlock.reset();
@@ -361,7 +376,7 @@ void MuLeader::run() {
         const uint64_t current_entry = mu_read_entry_word(lock_base, req.granted_slot);
         mu_write_entry_word(lock_base, req.granted_slot, mu_entry_mark_unlocked(current_entry));
 
-        const uint32_t mutation_id = alloc_mutation();
+        const uint32_t mutation_id = *mutation_id_opt;
         auto& ctx = mutations[mutation_id];
         ctx.kind = MutationKind::unlock_flip;
         ctx.lock_id = lock_id;
