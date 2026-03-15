@@ -44,14 +44,14 @@ struct MuOpCtx {
 
 uint64_t make_recv_wr_id(const MuOpCtx& op, const MuOpPhase phase) {
     return MU_RECV_WR_TAG
-         | (static_cast<uint64_t>(op.generation) << 32)
+         | ((static_cast<uint64_t>(op.generation) & 0xFFFFULL) << 32)
          | (static_cast<uint64_t>(op.slot) << 8)
          | static_cast<uint64_t>(phase);
 }
 
 uint64_t make_send_wr_id(const MuOpCtx& op, const MuOpPhase phase) {
     return MU_SEND_WR_TAG
-         | (static_cast<uint64_t>(op.generation) << 32)
+         | ((static_cast<uint64_t>(op.generation) & 0xFFFFULL) << 32)
          | (static_cast<uint64_t>(op.slot) << 8)
          | static_cast<uint64_t>(phase);
 }
@@ -65,7 +65,7 @@ bool is_send_wr_id(const uint64_t wr_id) {
 }
 
 uint32_t wr_generation(const uint64_t wr_id) {
-    return static_cast<uint32_t>(wr_id >> 32);
+    return static_cast<uint32_t>((wr_id >> 32) & 0xFFFFu);
 }
 
 uint32_t wr_slot(const uint64_t wr_id) {

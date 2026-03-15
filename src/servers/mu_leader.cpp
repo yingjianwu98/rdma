@@ -68,12 +68,12 @@ uint16_t recv_slot_index(const uint64_t wr_id) {
 
 uint64_t make_repl_wr_id(const uint32_t mutation_id, const uint32_t generation) {
     return MU_REPL_WR_TAG
-         | (static_cast<uint64_t>(generation) << 32)
+         | ((static_cast<uint64_t>(generation) & 0xFFFFULL) << 32)
          | static_cast<uint64_t>(mutation_id);
 }
 
 uint32_t repl_generation(const uint64_t wr_id) {
-    return static_cast<uint32_t>(wr_id >> 32);
+    return static_cast<uint32_t>((wr_id >> 32) & 0xFFFFu);
 }
 
 uint32_t repl_mutation_id(const uint64_t wr_id) {
