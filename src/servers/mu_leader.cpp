@@ -116,7 +116,7 @@ bool is_recv_wr_id(const uint64_t wr_id) {
 
 void MuLeader::run() {
     const bool mu_debug = get_uint_env_or("MU_DEBUG", 0) != 0;
-    const bool mu_stats_enabled = get_uint_env_or("MU_STATS", 1) != 0;
+    const bool mu_stats_enabled = get_uint_env_or("MU_STATS", 0) != 0;
     const bool mu_quorum_only_signal =
         get_uint_env_or("MU_REPL_SIGNAL_QUORUM_ONLY", MU_REPL_SIGNAL_QUORUM_ONLY_DEFAULT) != 0;
     auto debug = [&](const std::string& msg) {
