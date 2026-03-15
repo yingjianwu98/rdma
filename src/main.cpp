@@ -6,6 +6,7 @@
 #include "rdma/client.h"
 #include "rdma/cas_pipeline.h"
 #include "rdma/mu_pipeline.h"
+#include "rdma/tas_pipeline.h"
 #include "rdma/lock_table.h"
 #include "rdma/strategies/cas_strategy.h"
 #include "rdma/strategies/faa_strategy.h"
@@ -23,7 +24,7 @@
 #include <thread>
 
 // ─── Configuration ───
-constexpr const char* STRATEGY = "mu";      // "mu", "faa", "cas", or "tas"
+constexpr const char* STRATEGY = "tas";      // "mu", "faa", "cas", or "tas"
 
 int main() {
     try {
@@ -33,6 +34,7 @@ int main() {
         const bool is_tas = (std::string(STRATEGY) == "tas");
         const CasPipelineConfig cas_config = is_cas ? load_cas_pipeline_config() : CasPipelineConfig{};
         const MuPipelineConfig mu_config = is_mu ? load_mu_pipeline_config() : MuPipelineConfig{};
+        const TasPipelineConfig tas_config = is_tas ? load_tas_pipeline_config() : TasPipelineConfig{};
 
         if (get_uint_env("IS_CLIENT") != 0) {
             const uint32_t machine_id = get_uint_env("MACHINE_ID");
@@ -52,19 +54,17 @@ int main() {
 
                 workers.emplace_back(
                     [i, global_id, is_mu, is_faa, is_cas, is_tas,
-                     &start_latch, &all_latencies, &lock_counts, &verify_client, &cas_config, &mu_config]() {
+                     &start_latch, &all_latencies, &lock_counts, &verify_client, &cas_config, &mu_config, &tas_config]() {
                         try {
                             pin_thread_to_cpu(pick_cpu_for_client(i));
 
                             std::vector<std::unique_ptr<LockStrategy>> strategies;
                             LockTable table;
 
-                            if (!is_cas && !is_mu) {
+                            if (!is_cas && !is_mu && !is_tas) {
                                 for (size_t l = 0; l < MAX_LOCKS; ++l) {
                                     if (is_faa) {
                                         strategies.push_back(std::make_unique<FaaStrategy>());
-                                    } else if (is_tas) {
-                                        strategies.push_back(std::make_unique<TasStrategy>());
                                     }
                                     table.add(*strategies.back());
                                 }
@@ -73,7 +73,8 @@ int main() {
                             auto client = std::make_unique<Client>(
                                 global_id,
                                 is_cas ? cas_pipeline_client_buffer_size(cas_config)
-                                       : (is_mu ? mu_pipeline_client_buffer_size(mu_config) : CLIENT_ALIGNED_SIZE));
+                                       : (is_mu ? mu_pipeline_client_buffer_size(mu_config)
+                                                : (is_tas ? tas_pipeline_client_buffer_size(tas_config) : CLIENT_ALIGNED_SIZE)));
 
                             if (is_mu) {
                                 std::vector leader_only = {CLUSTER_NODES[0]};
@@ -116,6 +117,12 @@ int main() {
                                     latencies,
                                     (*lock_counts)[global_id].data(),
                                     mu_config);
+                            } else if (is_tas) {
+                                run_tas_pipeline(
+                                    *client,
+                                    latencies,
+                                    (*lock_counts)[global_id].data(),
+                                    tas_config);
                             } else {
                                 for (size_t op = 0; op < NUM_OPS_PER_CLIENT; ++op) {
                                     auto [lock_id, lock] = table.random(*client);
@@ -192,6 +199,10 @@ int main() {
                           << cas_config.zipf_skew << "\n";
             } else if (is_mu) {
                 std::cout << "Active Window:  " << std::setw(14) << mu_config.active_window << "\n";
+            } else if (is_tas) {
+                std::cout << "Active Window:  " << std::setw(14) << tas_config.active_window << "\n";
+                std::cout << "Zipf Skew:      " << std::setw(14) << std::fixed << std::setprecision(2)
+                          << tas_config.zipf_skew << "\n";
             }
             std::cout << "Clients:        " << std::setw(14) << TOTAL_CLIENTS
                       << " (" << NUM_CLIENTS_PER_MACHINE << " on this machine)\n";
@@ -221,8 +232,9 @@ int main() {
                       << "," << machine_id
                       << "," << TOTAL_CLIENTS
                       << "," << MAX_LOCKS
-                      << "," << (is_cas ? cas_config.active_window : (is_mu ? mu_config.active_window : 0))
-                      << "," << std::fixed << std::setprecision(2) << (is_cas ? cas_config.zipf_skew : 0.0)
+                      << "," << (is_cas ? cas_config.active_window : (is_mu ? mu_config.active_window : (is_tas ? tas_config.active_window : 0)))
+                      << "," << std::fixed << std::setprecision(2)
+                      << (is_cas ? cas_config.zipf_skew : (is_tas ? tas_config.zipf_skew : 0.0))
                       << "," << local_total_ops
                       << "," << std::fixed << std::setprecision(3) << wall_s
                       << "," << std::setprecision(0) << goodput

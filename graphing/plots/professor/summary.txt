@@ -1,0 +1,20 @@
+Professor plot summary
+
+Single-client best points:
+  locks=1: best_window=1, goodput=167,920 ops/s, p99=5.69 us
+  locks=5: best_window=8, goodput=550,993 ops/s, p99=66.83 us
+  locks=16: best_window=8, goodput=784,584 ops/s, p99=30.62 us
+  locks=100: best_window=8, goodput=946,817 ops/s, p99=16.05 us
+  locks=1000: best_window=16, goodput=984,441 ops/s, p99=24.02 us
+  locks=5000: best_window=16, goodput=896,729 ops/s, p99=36.69 us
+  locks=10000: best_window=16, goodput=833,295 ops/s, p99=44.33 us
+
+Multi-client sanity checks (window=16):
+  locks=1000, clients=1: goodput=984,441 ops/s, per_client=984,441 ops/s, p99=24.02 us
+  locks=1000, clients=2: goodput=1,547,816 ops/s, per_client=773,908 ops/s, p99=39.88 us
+  locks=1000, clients=4: goodput=1,522,495 ops/s, per_client=380,623 ops/s, p99=118.25 us
+  locks=1000, clients=8: goodput=1,491,607 ops/s, per_client=186,450 ops/s, p99=309.62 us
+  locks=10000, clients=1: goodput=833,295 ops/s, per_client=833,295 ops/s, p99=44.33 us
+  locks=10000, clients=2: goodput=791,964 ops/s, per_client=395,982 ops/s, p99=112.80 us
+  locks=10000, clients=4: goodput=757,817 ops/s, per_client=189,454 ops/s, p99=298.19 us
+  locks=10000, clients=8: goodput=738,226 ops/s, per_client=92,278 ops/s, p99=620.94 us
