@@ -196,7 +196,8 @@ void post_release(
     const CasOpCtx& op,
     uint64_t* release_sinks,
     uint64_t& release_sequence,
-    uint64_t& pending_release_wrs
+    uint64_t& release_signal_count,
+    const uint32_t release_signal_every
 ) {
     const auto& conns = client.connections();
     const auto* mr = client.mr();
@@ -214,7 +215,9 @@ void post_release(
         wr.sg_list = &sge;
         wr.num_sge = 1;
         wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
-        wr.send_flags = IBV_SEND_SIGNALED;
+        wr.send_flags = (++release_signal_count % std::max<uint32_t>(release_signal_every, 1u) == 0)
+                            ? IBV_SEND_SIGNALED
+                            : 0;
         wr.wr.rdma.remote_addr = conns[i].addr + lock_control_offset(op.lock_id);
         wr.wr.atomic.rkey = conns[i].rkey;
         wr.wr.atomic.compare_add = (i == op.owner_node) ? op.held_slot : std::min(op.held_slot, op.held_slot - 1);
@@ -223,8 +226,6 @@ void post_release(
         if (ibv_post_send(conns[i].id->qp, &wr, &bad_wr)) {
             throw std::runtime_error("CAS pipeline: release post failed");
         }
-
-        pending_release_wrs++;
     }
 }
 
@@ -235,6 +236,7 @@ CasPipelineConfig load_cas_pipeline_config() {
     config.active_window = std::max<size_t>(1, get_uint_env_or("CAS_ACTIVE_WINDOW", 1));
     config.cq_batch = std::max<size_t>(1, get_uint_env_or("CAS_CQ_BATCH", 32));
     config.zipf_skew = get_double_env_or("CAS_ZIPF_SKEW", 0.0);
+    config.release_signal_every = std::max<uint32_t>(1, get_uint_env_or("CAS_RELEASE_SIGNAL_EVERY", 100));
     return config;
 }
 
@@ -265,13 +267,15 @@ void run_cas_pipeline(
     std::vector<CasOpCtx> ops(config.active_window);
     ZipfLockPicker picker(config.zipf_skew);
     std::vector<ibv_wc> completions(config.cq_batch);
+    std::array<uint64_t, MAX_LOCKS> frontier_hints{};
+    frontier_hints.fill(1);
     *buffers.replicate_value = static_cast<uint64_t>(client.id());
 
     size_t submitted = 0;
     size_t completed = 0;
     size_t active = 0;
-    uint64_t pending_release_wrs = 0;
     uint64_t release_sequence = 1;
+    uint64_t release_signal_count = 0;
 
     auto submit_op = [&](const size_t slot) {
         auto& op = ops[slot];
@@ -281,7 +285,7 @@ void run_cas_pipeline(
         op.lock_id = picker.next();
         op.owner_node = op.lock_id % conns.size();
         op.phase = OpPhase::idle;
-        op.target_slot = 1;
+        op.target_slot = frontier_hints[op.lock_id];
         op.held_slot = 0;
         op.replicate_acks = 0;
         op.quorum_reached = false;
@@ -297,7 +301,7 @@ void run_cas_pipeline(
         submit_op(active);
     }
 
-    while (completed < NUM_OPS_PER_CLIENT || pending_release_wrs > 0 || active > 0) {
+    while (completed < NUM_OPS_PER_CLIENT) {
         const int polled = ibv_poll_cq(client.cq(), static_cast<int>(completions.size()), completions.data());
         if (polled < 0) {
             throw std::runtime_error("CAS pipeline: CQ poll failed");
@@ -315,10 +319,6 @@ void run_cas_pipeline(
             }
 
             if (is_release_wr_id(wc.wr_id)) {
-                if (pending_release_wrs == 0) {
-                    throw std::runtime_error("CAS pipeline: unexpected release completion");
-                }
-                pending_release_wrs--;
                 continue;
             }
 
@@ -346,6 +346,7 @@ void run_cas_pipeline(
                     post_replicate(client, op, buffers.replicate_value);
                 } else {
                     op.target_slot = (result % 2 != 0) ? result + 2 : result + 1;
+                    frontier_hints[op.lock_id] = op.target_slot;
                     post_acquire(client, op);
                 }
                 continue;
@@ -358,7 +359,14 @@ void run_cas_pipeline(
                         op.quorum_reached = true;
                         latencies[op.latency_index] = std::chrono::duration_cast<std::chrono::nanoseconds>(
                             std::chrono::steady_clock::now() - op.started_at).count();
-                        post_release(client, op, buffers.release_sinks, release_sequence, pending_release_wrs);
+                        frontier_hints[op.lock_id] = std::max(frontier_hints[op.lock_id], op.held_slot + 2);
+                        post_release(
+                            client,
+                            op,
+                            buffers.release_sinks,
+                            release_sequence,
+                            release_signal_count,
+                            config.release_signal_every);
                         lock_counts[op.lock_id]++;
                         op.active = false;
                         op.phase = OpPhase::idle;

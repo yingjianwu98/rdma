@@ -9,6 +9,7 @@ struct CasPipelineConfig {
     size_t active_window;
     size_t cq_batch;
     double zipf_skew;
+    uint32_t release_signal_every;
 };
 
 [[nodiscard]] CasPipelineConfig load_cas_pipeline_config();
