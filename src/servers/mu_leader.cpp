@@ -115,6 +115,10 @@ bool is_recv_wr_id(const uint64_t wr_id) {
     return (wr_id >> MU_WR_TAG_SHIFT) == MU_RECV_WR_TAG;
 }
 
+bool is_resp_send_wr_id(const uint64_t wr_id) {
+    return (wr_id & 0xFFFF000000000000ULL) == MU_RESP_WR_TAG;
+}
+
 }  // namespace
 
 void MuLeader::run() {
