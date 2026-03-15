@@ -1,4 +1,8 @@
+#pragma once
+
 #include "rdma/server.h"
+
+#include <cstdint>
 
 class MuFollower : public Server {
 public:

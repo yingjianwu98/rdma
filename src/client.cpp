@@ -108,7 +108,7 @@ void Client::connect(const std::vector<std::string>& node_ips, const uint16_t po
 
             cq_ = ibv_create_cq(
                 cm_id->verbs,
-                QP_DEPTH * static_cast<int>(std::max<size_t>(node_ips.size() + TOTAL_CLIENTS + MU_NUM_INSTANCES, 32)),
+                QP_DEPTH * static_cast<int>(std::max<size_t>(node_ips.size() + TOTAL_CLIENTS + CLUSTER_NODES.size(), 32)),
                 nullptr, nullptr, 0);
             if (!cq_) throw std::runtime_error("ibv_create_cq failed");
 

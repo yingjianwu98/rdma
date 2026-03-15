@@ -1,27 +1,24 @@
 #include "rdma/servers/mu_follower.h"
-#include "rdma/common.h"
 
-#include <arpa/inet.h>
 #include <iostream>
+#include <stdexcept>
+#include <string>
 
 void MuFollower::run() {
-    std::cout << "[MuFollower " << node_id_ << "] locks ["
+    std::cout << "[MuFollower " << node_id_ << "] Passive mode for locks ["
               << lock_start_ << ", " << lock_end_ << ")\n";
 
-    uint64_t applied[MAX_LOCKS] = {};
-    auto* local_buf = static_cast<uint8_t*>(buf_);
-
-    volatile uint64_t* commit_ptrs[MAX_LOCKS];
-    for (uint32_t i = lock_start_; i < lock_end_; ++i) {
-        commit_ptrs[i] = reinterpret_cast<volatile uint64_t*>(
-            local_buf + i * LOCK_REGION_SIZE);
-    }
-
+    ibv_wc wc[32];
     while (true) {
-        for (uint32_t lock_id = lock_start_; lock_id < lock_end_; ++lock_id) {
-            const uint64_t committed = *commit_ptrs[lock_id];
-            while (applied[lock_id] < committed) {
-                applied[lock_id]++;
+        const int n = ibv_poll_cq(cq_, 32, wc);
+        if (n < 0) {
+            throw std::runtime_error("MuFollower: ibv_poll_cq failed");
+        }
+
+        for (int i = 0; i < n; ++i) {
+            if (wc[i].status != IBV_WC_SUCCESS) {
+                throw std::runtime_error(
+                    std::string("MuFollower: WC error ") + ibv_wc_status_str(wc[i].status));
             }
         }
     }

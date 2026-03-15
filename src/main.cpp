@@ -5,6 +5,7 @@
 #include "rdma/servers/synra_node.h"
 #include "rdma/client.h"
 #include "rdma/cas_pipeline.h"
+#include "rdma/mu_pipeline.h"
 #include "rdma/lock_table.h"
 #include "rdma/strategies/cas_strategy.h"
 #include "rdma/strategies/faa_strategy.h"
@@ -22,7 +23,7 @@
 #include <thread>
 
 // ─── Configuration ───
-constexpr const char* STRATEGY = "cas";      // "mu", "faa", "cas", or "tas"
+constexpr const char* STRATEGY = "mu";      // "mu", "faa", "cas", or "tas"
 
 int main() {
     try {
@@ -31,6 +32,7 @@ int main() {
         const bool is_cas = (std::string(STRATEGY) == "cas");
         const bool is_tas = (std::string(STRATEGY) == "tas");
         const CasPipelineConfig cas_config = is_cas ? load_cas_pipeline_config() : CasPipelineConfig{};
+        const MuPipelineConfig mu_config = is_mu ? load_mu_pipeline_config() : MuPipelineConfig{};
 
         if (get_uint_env("IS_CLIENT") != 0) {
             const uint32_t machine_id = get_uint_env("MACHINE_ID");
@@ -50,18 +52,16 @@ int main() {
 
                 workers.emplace_back(
                     [i, global_id, is_mu, is_faa, is_cas, is_tas,
-                     &start_latch, &all_latencies, &lock_counts, &verify_client, &cas_config]() {
+                     &start_latch, &all_latencies, &lock_counts, &verify_client, &cas_config, &mu_config]() {
                         try {
                             pin_thread_to_cpu(pick_cpu_for_client(i));
 
                             std::vector<std::unique_ptr<LockStrategy>> strategies;
                             LockTable table;
 
-                            if (!is_cas) {
+                            if (!is_cas && !is_mu) {
                                 for (size_t l = 0; l < MAX_LOCKS; ++l) {
-                                    if (is_mu) {
-                                        strategies.push_back(std::make_unique<MuStrategy>());
-                                    } else if (is_faa) {
+                                    if (is_faa) {
                                         strategies.push_back(std::make_unique<FaaStrategy>());
                                     } else if (is_tas) {
                                         strategies.push_back(std::make_unique<TasStrategy>());
@@ -72,14 +72,12 @@ int main() {
 
                             auto client = std::make_unique<Client>(
                                 global_id,
-                                is_cas ? cas_pipeline_client_buffer_size(cas_config) : CLIENT_ALIGNED_SIZE);
+                                is_cas ? cas_pipeline_client_buffer_size(cas_config)
+                                       : (is_mu ? mu_pipeline_client_buffer_size(mu_config) : CLIENT_ALIGNED_SIZE));
 
                             if (is_mu) {
-                                std::vector<std::string> leader_only = {CLUSTER_NODES[0]};
-                                for (size_t inst = 0; inst < MU_NUM_INSTANCES; ++inst) {
-                                    client->connect(leader_only,
-                                                    RDMA_PORT + static_cast<uint16_t>(inst));
-                                }
+                                std::vector leader_only = {CLUSTER_NODES[0]};
+                                client->connect(leader_only, RDMA_PORT);
                             } else {
                                 client->connect(CLUSTER_NODES, RDMA_PORT);
                                 if (is_faa) {
@@ -88,7 +86,7 @@ int main() {
                             }
 
                             {
-                                const size_t num_go = is_mu ? MU_NUM_INSTANCES : CLUSTER_NODES.size();
+                                const size_t num_go = is_mu ? 1 : CLUSTER_NODES.size();
                                 auto* cq = client->cq();
 
                                 size_t got = 0;
@@ -112,6 +110,12 @@ int main() {
                                     latencies,
                                     (*lock_counts)[global_id].data(),
                                     cas_config);
+                            } else if (is_mu) {
+                                run_mu_pipeline(
+                                    *client,
+                                    latencies,
+                                    (*lock_counts)[global_id].data(),
+                                    mu_config);
                             } else {
                                 for (size_t op = 0; op < NUM_OPS_PER_CLIENT; ++op) {
                                     auto [lock_id, lock] = table.random(*client);
@@ -186,6 +190,8 @@ int main() {
                 std::cout << "Active Window:  " << std::setw(14) << cas_config.active_window << "\n";
                 std::cout << "Zipf Skew:      " << std::setw(14) << std::fixed << std::setprecision(2)
                           << cas_config.zipf_skew << "\n";
+            } else if (is_mu) {
+                std::cout << "Active Window:  " << std::setw(14) << mu_config.active_window << "\n";
             }
             std::cout << "Clients:        " << std::setw(14) << TOTAL_CLIENTS
                       << " (" << NUM_CLIENTS_PER_MACHINE << " on this machine)\n";
@@ -215,7 +221,7 @@ int main() {
                       << "," << machine_id
                       << "," << TOTAL_CLIENTS
                       << "," << MAX_LOCKS
-                      << "," << (is_cas ? cas_config.active_window : 0)
+                      << "," << (is_cas ? cas_config.active_window : (is_mu ? mu_config.active_window : 0))
                       << "," << std::fixed << std::setprecision(2) << (is_cas ? cas_config.zipf_skew : 0.0)
                       << "," << local_total_ops
                       << "," << std::fixed << std::setprecision(3) << wall_s
@@ -236,28 +242,14 @@ int main() {
             const uint32_t node_id = get_uint_env("NODE_ID");
 
             if (is_mu) {
-                std::vector<std::thread> threads;
-
-                for (size_t inst = 0; inst < MU_NUM_INSTANCES; ++inst) {
-                    threads.emplace_back([node_id, inst]() {
-                        pin_thread_to_cpu(static_cast<int>(inst));
-                        uint16_t port = RDMA_PORT + static_cast<uint16_t>(inst);
-                        uint32_t lock_start = inst * MU_LOCKS_PER_INSTANCE;
-                        uint32_t lock_end = (inst == MU_NUM_INSTANCES - 1)
-                                                ? MAX_LOCKS
-                                                : (inst + 1) * MU_LOCKS_PER_INSTANCE;
-
-                        if (node_id == 0) {
-                            MuLeader leader(node_id, lock_start, lock_end);
-                            leader.start(port);
-                        } else {
-                            MuFollower follower(node_id, lock_start, lock_end);
-                            follower.start(port);
-                        }
-                    });
+                pin_thread_to_cpu(0);
+                if (node_id == 0) {
+                    MuLeader leader(node_id, 0, MAX_LOCKS);
+                    leader.start(RDMA_PORT);
+                } else {
+                    MuFollower follower(node_id, 0, MAX_LOCKS);
+                    follower.start(RDMA_PORT);
                 }
-
-                for (auto& t : threads) t.join();
             } else {
                 pin_thread_to_cpu(1);
                 SynraNode node(node_id);

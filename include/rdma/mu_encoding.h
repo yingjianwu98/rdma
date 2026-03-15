@@ -1,92 +1,106 @@
 #pragma once
+
+#include "rdma/common.h"
+
+#include <cstddef>
 #include <cstdint>
 
-// ── MU multi-instance config ──
+enum class MuRpcOp : uint8_t {
+    Lock = 1,
+    Unlock = 2,
+};
 
-constexpr size_t MU_NUM_INSTANCES = 2;
-constexpr size_t MU_LOCKS_PER_INSTANCE = MAX_LOCKS / MU_NUM_INSTANCES;
+enum class MuRpcStatus : uint8_t {
+    Ok = 0,
+    InvalidUnlock = 1,
+    QueueFull = 2,
+    InternalError = 3,
+};
 
-static inline size_t mu_instance_for_lock(uint16_t lock_id) {
-    size_t inst = lock_id / MU_LOCKS_PER_INSTANCE;
-    if (inst >= MU_NUM_INSTANCES) inst = MU_NUM_INSTANCES - 1;
-    return inst;
+struct MuRequest {
+    uint8_t op;
+    uint8_t reserved0;
+    uint16_t client_id;
+    uint32_t lock_id;
+    uint32_t req_id;
+    uint32_t granted_slot;
+};
+
+struct MuResponse {
+    uint8_t op;
+    uint8_t status;
+    uint16_t client_id;
+    uint32_t lock_id;
+    uint32_t req_id;
+    uint32_t granted_slot;
+};
+
+static_assert(sizeof(MuRequest) == 16);
+static_assert(sizeof(MuResponse) == 16);
+
+constexpr uint64_t MU_UNLOCKED_BIT = 1ULL;
+constexpr uint64_t MU_CLIENT_ID_SHIFT = 1;
+constexpr uint64_t MU_REQ_ID_SHIFT = 17;
+constexpr uint64_t MU_CLIENT_ID_MASK = 0xFFFFULL;
+constexpr uint64_t MU_REQ_ID_MASK = 0xFFFFFFFFULL;
+
+inline uint64_t mu_make_entry(const uint16_t client_id, const uint32_t req_id, const bool unlocked = false) {
+    return (static_cast<uint64_t>(req_id) << MU_REQ_ID_SHIFT)
+         | (static_cast<uint64_t>(client_id) << MU_CLIENT_ID_SHIFT)
+         | (unlocked ? MU_UNLOCKED_BIT : 0ULL);
 }
 
-// ── Lock header (first 8 bytes of each lock region) ──
-static inline void mu_write_commit_index(uint8_t* lock_base, uint64_t commit_index) {
+inline uint16_t mu_entry_client_id(const uint64_t entry) {
+    return static_cast<uint16_t>((entry >> MU_CLIENT_ID_SHIFT) & MU_CLIENT_ID_MASK);
+}
+
+inline uint32_t mu_entry_req_id(const uint64_t entry) {
+    return static_cast<uint32_t>((entry >> MU_REQ_ID_SHIFT) & MU_REQ_ID_MASK);
+}
+
+inline bool mu_entry_is_unlocked(const uint64_t entry) {
+    return (entry & MU_UNLOCKED_BIT) != 0;
+}
+
+inline uint64_t mu_entry_mark_unlocked(const uint64_t entry) {
+    return entry | MU_UNLOCKED_BIT;
+}
+
+inline void mu_write_commit_index(uint8_t* lock_base, const uint64_t commit_index) {
     *reinterpret_cast<uint64_t*>(lock_base) = commit_index;
 }
 
-static inline uint64_t mu_read_commit_index(const uint8_t* lock_base) {
+inline uint64_t mu_read_commit_index(const uint8_t* lock_base) {
     return *reinterpret_cast<const uint64_t*>(lock_base);
 }
 
-static inline uint8_t* mu_lock_base(uint8_t* buf, uint32_t lock_id) {
-    return buf + lock_id * LOCK_REGION_SIZE;
+inline uint8_t* mu_lock_base(uint8_t* buf, const uint32_t lock_id) {
+    return buf + lock_base_offset(lock_id);
 }
 
-static inline uint8_t* mu_entry_ptr(uint8_t* lock_base, uint64_t slot) {
-    return lock_base + LOCK_HEADER_SIZE + slot * ENTRY_SIZE;
+inline const uint8_t* mu_lock_base(const uint8_t* buf, const uint32_t lock_id) {
+    return buf + lock_base_offset(lock_id);
 }
 
-static constexpr size_t MAX_INFLIGHT = 200;
-
-// ── Client IMM encoding (32 bits) ──
-static constexpr uint32_t MU_OP_CLIENT_LOCK   = 0;
-static constexpr uint32_t MU_OP_CLIENT_UNLOCK  = 1;
-
-static inline uint32_t mu_encode_imm(uint16_t lock_id, uint16_t client_id, uint32_t op) {
-    return (static_cast<uint32_t>(lock_id) << 16)
-        | (1u << 15)
-        | ((static_cast<uint32_t>(client_id) & 0x3FFF) << 1)
-        | (op & 0x1);
+inline uint8_t* mu_entry_ptr(uint8_t* lock_base, const uint32_t slot) {
+    return lock_base + LOCK_HEADER_SIZE + (static_cast<size_t>(slot) * ENTRY_SIZE);
 }
 
-static inline uint16_t mu_decode_client_id(uint32_t imm) {
-    return static_cast<uint16_t>((imm >> 1) & 0x3FFF);
+inline const uint8_t* mu_entry_ptr(const uint8_t* lock_base, const uint32_t slot) {
+    return lock_base + LOCK_HEADER_SIZE + (static_cast<size_t>(slot) * ENTRY_SIZE);
 }
 
-static inline uint16_t mu_decode_lock_id(uint32_t imm) {
-    return static_cast<uint16_t>((imm >> 16) & 0xFFFF);
+inline uint64_t mu_read_entry_word(const uint8_t* lock_base, const uint32_t slot) {
+    return *reinterpret_cast<const uint64_t*>(mu_entry_ptr(lock_base, slot));
 }
 
-static inline uint32_t mu_decode_op(uint32_t imm) {
-    return (imm & 0x1) ? MU_OP_CLIENT_UNLOCK : MU_OP_CLIENT_LOCK;
+inline void mu_write_entry_word(uint8_t* lock_base, const uint32_t slot, const uint64_t word) {
+    *reinterpret_cast<uint64_t*>(mu_entry_ptr(lock_base, slot)) = word;
 }
 
-// ── Entry: just the client imm (4 bytes used, 8 byte slot) ──
-static inline void mu_write_entry(uint8_t* entry, uint32_t client_imm) {
-    *reinterpret_cast<uint64_t*>(entry) = static_cast<uint64_t>(client_imm);
-}
-
-static inline uint32_t mu_read_client_imm(const uint8_t* entry) {
-    return *reinterpret_cast<const uint32_t*>(entry);
-}
-
-static constexpr uint64_t ACK_TAG = 0xFFFF;
-
-inline constexpr uint32_t mu_encode_ack(uint8_t lock_id, uint16_t slot, bool granted) {
-    return (static_cast<uint32_t>(lock_id) << 24)
-        | (static_cast<uint32_t>(slot) << 8)
-        | (granted ? 1u : 0u);
-}
-
-static constexpr uint32_t MU_REPL_COMMIT_BIT = (1u << 31);
-
-static inline uint32_t mu_encode_commit_notify(uint16_t lock_id, uint16_t commit_index) {
-    return MU_REPL_COMMIT_BIT
-        | (static_cast<uint32_t>(lock_id) << 16)
-        | static_cast<uint32_t>(commit_index);
-}
-
-static inline bool mu_is_commit_notify(uint32_t imm) {
-    return (imm & MU_REPL_COMMIT_BIT) != 0;
-}
-
-static inline uint16_t mu_decode_commit_lock_id(uint32_t imm) {
-    return static_cast<uint16_t>((imm >> 16) & 0x7FFF);
-}
-
-static inline uint16_t mu_decode_commit_index(uint32_t imm) {
-    return static_cast<uint16_t>(imm & 0xFFFF);
-}
+constexpr size_t MU_CLIENT_SEND_SIGNAL_EVERY_DEFAULT = 64;
+constexpr size_t MU_SERVER_SEND_SIGNAL_EVERY_DEFAULT = 128;
+constexpr size_t MU_CLIENT_CQ_BATCH_DEFAULT = 32;
+constexpr size_t MU_SERVER_RECV_RING = 256;
+constexpr size_t MU_MAX_PENDING_PER_LOCK = 1024;
+constexpr size_t MU_MAX_APPEND_INFLIGHT_PER_LOCK = 8;

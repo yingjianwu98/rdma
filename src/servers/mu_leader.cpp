@@ -1,544 +1,543 @@
 #include "rdma/servers/mu_leader.h"
+
 #include "rdma/common.h"
 #include "rdma/mu_encoding.h"
 
+#include <algorithm>
+#include <cstdint>
 #include <cstring>
-#include <chrono>
+#include <deque>
+#include <functional>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
+#include <string>
+#include <vector>
+
+namespace {
+
+enum class MutationKind : uint8_t {
+    append_lock = 1,
+    unlock_flip = 2,
+};
+
+constexpr uint64_t MU_RECV_WR_TAG = 0x4C52000000000000ULL;
+constexpr uint64_t MU_REPL_WR_TAG = 0x4C57000000000000ULL;
+constexpr uint64_t MU_RESP_WR_TAG = 0x4C53000000000000ULL;
+constexpr size_t MU_MAX_MUTATIONS = MAX_LOCKS * 4;
+
+struct MutationCtx {
+    bool in_use = false;
+    uint32_t generation = 0;
+    MutationKind kind = MutationKind::append_lock;
+    uint32_t lock_id = 0;
+    uint32_t slot = 0;
+    uint16_t client_id = 0;
+    uint32_t req_id = 0;
+    uint32_t ack_count = 0;
+    uint32_t pending_followers = 0;
+    bool quorum_done = false;
+};
 
 struct LockState {
-    size_t inflight = 0;
-
-    Queue<uint32_t, 512> pending;
-    uint8_t acks[MAX_LOG_PER_LOCK]{};
-
-    uint64_t commit_index = 0;
-    uint64_t current_index = 0;
-
-    uint64_t holder_slot = 0;
-    bool locked = false;
-
-    bool commit_dirty = false;
-    bool in_drain_set = false;    // whether this lock is in the drain set
-    bool in_commit_set = false;   // whether this lock is in the commit set
+    std::deque<MuRequest> pending_locks;
+    std::optional<MuRequest> pending_unlock;
+    uint32_t next_append_slot = 0;
+    uint32_t committed_tail = 0;
+    uint32_t next_grant_slot = 0;
+    bool holder_active = false;
+    uint32_t holder_slot = 0;
+    uint16_t holder_client_id = 0;
+    uint32_t holder_req_id = 0;
+    uint32_t append_inflight = 0;
+    int unlock_mutation = -1;
 };
 
-struct FollowerBatch {
-    uint32_t lock_slots[MAX_LOCKS];
-    bool has_entry[MAX_LOCKS];
-};
+uint64_t make_recv_wr_id(const uint16_t client_id, const uint16_t recv_slot) {
+    return MU_RECV_WR_TAG
+         | (static_cast<uint64_t>(client_id) << 16)
+         | static_cast<uint64_t>(recv_slot);
+}
+
+uint16_t recv_client_id(const uint64_t wr_id) {
+    return static_cast<uint16_t>((wr_id >> 16) & 0xFFFFu);
+}
+
+uint16_t recv_slot_index(const uint64_t wr_id) {
+    return static_cast<uint16_t>(wr_id & 0xFFFFu);
+}
+
+uint64_t make_repl_wr_id(const uint32_t mutation_id, const uint32_t generation) {
+    return MU_REPL_WR_TAG
+         | (static_cast<uint64_t>(generation) << 32)
+         | static_cast<uint64_t>(mutation_id);
+}
+
+uint32_t repl_generation(const uint64_t wr_id) {
+    return static_cast<uint32_t>(wr_id >> 32);
+}
+
+uint32_t repl_mutation_id(const uint64_t wr_id) {
+    return static_cast<uint32_t>(wr_id & 0xFFFFFFFFu);
+}
+
+bool is_repl_wr_id(const uint64_t wr_id) {
+    return (wr_id & 0xFFFF000000000000ULL) == MU_REPL_WR_TAG;
+}
+
+bool is_recv_wr_id(const uint64_t wr_id) {
+    return (wr_id & 0xFFFF000000000000ULL) == MU_RECV_WR_TAG;
+}
+
+}  // namespace
 
 void MuLeader::run() {
-    using clock = std::chrono::steady_clock;
-    using ns = std::chrono::nanoseconds;
-
-    uint32_t client_unsignaled[TOTAL_CLIENTS] = {};
-
-    auto post_client_ack = [&](uint16_t client_id, uint32_t imm_data) {
-        ibv_send_wr swr{}, *bad_wr = nullptr;
-        swr.wr_id = (ACK_TAG << 48) | client_id;
-        swr.opcode = IBV_WR_SEND_WITH_IMM;
-        swr.num_sge = 0;
-        swr.sg_list = nullptr;
-        swr.send_flags = IBV_SEND_INLINE;
-
-        client_unsignaled[client_id]++;
-        if (client_unsignaled[client_id] >= 512) {
-            swr.send_flags |= IBV_SEND_SIGNALED;
-            client_unsignaled[client_id] = 0;
-        }
-
-        swr.imm_data = htonl(imm_data);
-
-        if (ibv_post_send(clients_[client_id].cm_id->qp, &swr, &bad_wr)) {
-            throw std::runtime_error("Failed to post client ack");
-        }
-    };
-
     std::cout << "[MuLeader " << node_id_ << "] locks ["
               << lock_start_ << ", " << lock_end_ << ")\n";
 
     auto* local_buf = static_cast<uint8_t*>(buf_);
+    const uint32_t num_clients = expected_clients();
 
-    const size_t num_locks = lock_end_ - lock_start_;
-    const size_t max_repl_wrs = num_locks * MAX_INFLIGHT * (MAX_REPLICAS - 1)
-                              + num_locks * (MAX_REPLICAS - 1);
-    auto* repl_wrs = new ibv_send_wr[max_repl_wrs]();
-    auto* repl_sges = new ibv_sge[max_repl_wrs]();
-
-    auto* locks = new LockState[MAX_LOCKS]();
-    auto* batches = new FollowerBatch[MAX_REPLICAS]();
-
-    uint32_t follower_unsignaled[MAX_REPLICAS] = {};
-
-    // ── Dirty sets: small arrays of lock IDs that need processing ──
-    // drain_set: locks with pending requests that need to be replicated
-    // commit_set: locks that got acks and may be ready to advance commit
-    auto* drain_set = new uint32_t[num_locks];
-    auto* commit_set = new uint32_t[num_locks];
-    size_t drain_set_size = 0;
-    size_t commit_set_size = 0;
-
-    for (size_t i = 0; i < TOTAL_CLIENTS; ++i) {
-        for (size_t r = 0; r < 16; ++r) {
-            ibv_recv_wr wr{}, *bad = nullptr;
-            wr.wr_id = i;
-            wr.sg_list = nullptr;
-            wr.num_sge = 0;
-            if (ibv_post_recv(clients_[i].cm_id->qp, &wr, &bad)) {
-                throw std::runtime_error("Failed to post initial recv");
-            }
-        }
+    std::vector<MuRequest> recv_buffers(num_clients * MU_SERVER_RECV_RING);
+    ibv_mr* recv_mr = ibv_reg_mr(
+        pd_,
+        recv_buffers.data(),
+        recv_buffers.size() * sizeof(MuRequest),
+        IBV_ACCESS_LOCAL_WRITE);
+    if (!recv_mr) {
+        throw std::runtime_error("MuLeader: failed to register recv buffers");
     }
 
-    ibv_wc wc[32];
+    std::vector<LockState> locks(MAX_LOCKS);
+    std::vector<MutationCtx> mutations(MU_MAX_MUTATIONS);
+    std::deque<uint32_t> free_mutations;
+    free_mutations.resize(MU_MAX_MUTATIONS);
+    for (uint32_t i = 0; i < MU_MAX_MUTATIONS; ++i) {
+        free_mutations[i] = i;
+    }
 
-    // ── DEBUG COUNTERS ──
-    uint64_t poll_iter = 0;
-    uint64_t total_recvs = 0;
-    uint64_t total_writes = 0;
-    uint64_t total_drained = 0;
-    uint64_t total_committed = 0;
-    uint64_t total_acks_sent = 0;
-    uint64_t total_posts_to_followers = 0;
-    uint64_t total_send_completions = 0;
-    uint64_t total_other_completions = 0;
+    std::deque<uint32_t> ready_locks;
+    std::vector<uint8_t> ready_flags(MAX_LOCKS, 0);
+    std::vector<uint32_t> client_send_signal_counts(num_clients, 0);
+    std::vector<size_t> follower_indices;
+    follower_indices.reserve(peers_.size());
+    for (size_t i = 0; i < peers_.size(); ++i) {
+        if (i == node_id_ || peers_[i].cm_id == nullptr) continue;
+        follower_indices.push_back(i);
+    }
 
-    // ── TIMING COUNTERS ──
-    uint64_t t_poll_ns = 0;
-    uint64_t t_recv_ns = 0;
-    uint64_t t_write_ack_ns = 0;
-    uint64_t t_write_commit_ns = 0;
-    uint64_t t_drain_ns = 0;
-    uint64_t t_post_ns = 0;
-    uint64_t t_total_ns = 0;
-    uint64_t busy_iters = 0;
-    uint64_t drain_iters = 0;
+    auto enqueue_ready = [&](const uint32_t lock_id) {
+        if (lock_id < lock_start_ || lock_id >= lock_end_) return;
+        if (ready_flags[lock_id] != 0) return;
+        ready_flags[lock_id] = 1;
+        ready_locks.push_back(lock_id);
+    };
 
-    auto last_dump = clock::now();
-
-    while (true) {
-        auto iter_start = clock::now();
-
-        // ── Phase 1: Poll CQ ──
-        auto t0 = clock::now();
-        const int n = ibv_poll_cq(cq_, 32, wc);
-        auto t1 = clock::now();
-        t_poll_ns += std::chrono::duration_cast<ns>(t1 - t0).count();
-
-        poll_iter++;
-        if (n > 0) busy_iters++;
-
-        // ── Phase 2: Process completions ──
-        for (int i = 0; i < n; ++i) {
-            if (wc[i].status != IBV_WC_SUCCESS) {
-                std::cerr << "[MuLeader] WC error: "
-                    << ibv_wc_status_str(wc[i].status)
-                    << " opcode: " << wc[i].opcode
-                    << " wr_id: " << wc[i].wr_id << "\n";
-                throw std::runtime_error("RDMA completion failure");
-            }
-
-            if (wc[i].opcode & IBV_WC_RECV) {
-                auto r0 = clock::now();
-                total_recvs++;
-                const uint32_t imm = ntohl(wc[i].imm_data);
-                const uint16_t lock_id = mu_decode_lock_id(imm);
-                const uint16_t client_id = mu_decode_client_id(imm);
-
-                auto& ls = locks[lock_id];
-                ls.pending.push(imm);
-
-                // Add to drain set if not already there
-                if (!ls.in_drain_set) {
-                    ls.in_drain_set = true;
-                    drain_set[drain_set_size++] = lock_id;
-                }
-
-                ibv_recv_wr next{}, *bad = nullptr;
-                next.wr_id = client_id;
-                next.sg_list = nullptr;
-                next.num_sge = 0;
-                if (ibv_post_recv(clients_[client_id].cm_id->qp, &next, &bad)) {
-                    throw std::runtime_error("Failed to re-post recv");
-                }
-                auto r1 = clock::now();
-                t_recv_ns += std::chrono::duration_cast<ns>(r1 - r0).count();
-            }
-            else if (wc[i].opcode == IBV_WC_RDMA_WRITE) {
-                total_writes++;
-                const uint64_t wr_id = wc[i].wr_id;
-                if ((wr_id >> 48) == ACK_TAG) continue;
-
-                const size_t f = wr_id & 0xFFFF;
-                auto& batch = batches[f];
-
-                // ── Ack increment ──
-                auto wa0 = clock::now();
-                for (uint32_t lid = lock_start_; lid < lock_end_; ++lid) {
-                    if (!batch.has_entry[lid]) continue;
-                    auto& ls = locks[lid];
-                    for (uint64_t s = ls.commit_index; s <= batch.lock_slots[lid]; ++s) {
-                        ls.acks[s]++;
-                    }
-                    batch.has_entry[lid] = false;
-
-                    // Add to commit set if not already there
-                    if (!ls.in_commit_set) {
-                        ls.in_commit_set = true;
-                        commit_set[commit_set_size++] = lid;
-                    }
-                }
-                auto wa1 = clock::now();
-                t_write_ack_ns += std::chrono::duration_cast<ns>(wa1 - wa0).count();
-
-                follower_unsignaled[f] = 0;
-
-                // ── Commit advancement — ONLY for locks in commit_set ──
-                auto wc0 = clock::now();
-                size_t new_commit_size = 0;
-                for (size_t ci = 0; ci < commit_set_size; ++ci) {
-                    const uint32_t lid = commit_set[ci];
-                    auto& ls = locks[lid];
-                    const uint64_t old_commit = ls.commit_index;
-
-                    while (ls.commit_index < ls.current_index) {
-                        if (ls.acks[ls.commit_index] < QUORUM-1) break;
-
-                        auto* lock_base = mu_lock_base(local_buf, lid);
-                        const auto* entry = mu_entry_ptr(lock_base, ls.commit_index);
-                        const uint32_t entry_imm = mu_read_client_imm(entry);
-                        const uint16_t client_id = mu_decode_client_id(entry_imm);
-                        const uint32_t op = mu_decode_op(entry_imm);
-
-                        if (op == MU_OP_CLIENT_UNLOCK) {
-                            ls.locked = false;
-                            post_client_ack(client_id, mu_encode_ack(lid, ls.commit_index, false));
-                            total_acks_sent++;
-                        }
-
-                        while (!ls.locked && ls.holder_slot <= ls.commit_index) {
-                            const auto* next_entry = mu_entry_ptr(lock_base, ls.holder_slot);
-                            const uint32_t next_imm = mu_read_client_imm(next_entry);
-                            const uint32_t next_op = mu_decode_op(next_imm);
-
-                            if (next_op == MU_OP_CLIENT_LOCK) {
-                                const uint16_t next_client_id = mu_decode_client_id(next_imm);
-                                ls.locked = true;
-                                post_client_ack(next_client_id,
-                                    mu_encode_ack(lid, ls.holder_slot, true));
-                                total_acks_sent++;
-                            }
-                            ls.holder_slot++;
-                        }
-
-                        ls.commit_index++;
-                        ls.inflight--;
-                        total_committed++;
-                    }
-
-                    if (ls.commit_index != old_commit) {
-                        ls.commit_dirty = true;
-                    }
-
-                    // Keep in commit set if still has inflight (more acks coming)
-                    if (ls.inflight > 0) {
-                        commit_set[new_commit_size++] = lid;
-                    } else {
-                        ls.in_commit_set = false;
-                    }
-                }
-                commit_set_size = new_commit_size;
-                auto wc1 = clock::now();
-                t_write_commit_ns += std::chrono::duration_cast<ns>(wc1 - wc0).count();
-            }
-            else if (wc[i].opcode == IBV_WC_SEND) {
-                total_send_completions++;
-            }
-            else {
-                total_other_completions++;
-            }
+    auto send_response = [&](const MuResponse& resp) {
+        if (resp.client_id >= clients_.size() || clients_[resp.client_id].cm_id == nullptr) {
+            throw std::runtime_error("MuLeader: invalid client response target");
         }
 
-        // ── Phase 3: Drain ONLY dirty locks → replicate ──
-        auto d0 = clock::now();
+        ibv_sge sge{};
+        sge.addr = reinterpret_cast<uintptr_t>(&resp);
+        sge.length = sizeof(MuResponse);
+        sge.lkey = 0;
 
-        ibv_send_wr* follower_head[MAX_REPLICAS] = {};
-        ibv_send_wr* follower_tail[MAX_REPLICAS] = {};
-        size_t repl_count = 0;
-        bool did_drain = false;
+        ibv_send_wr wr{}, *bad_wr = nullptr;
+        wr.wr_id = MU_RESP_WR_TAG | resp.client_id;
+        wr.opcode = IBV_WR_SEND;
+        wr.sg_list = &sge;
+        wr.num_sge = 1;
+        wr.send_flags = IBV_SEND_INLINE;
+        if (++client_send_signal_counts[resp.client_id] % MU_SERVER_SEND_SIGNAL_EVERY_DEFAULT == 0) {
+            wr.send_flags |= IBV_SEND_SIGNALED;
+        }
 
-        size_t new_drain_size = 0;
+        if (ibv_post_send(clients_[resp.client_id].cm_id->qp, &wr, &bad_wr)) {
+            throw std::runtime_error("MuLeader: failed to post client response send");
+        }
+    };
 
-        for (size_t di = 0; di < drain_set_size; ++di) {
-            const uint32_t lock_id = drain_set[di];
-            auto& ls = locks[lock_id];
+    auto post_recv = [&](const uint16_t client_id, const uint16_t recv_slot) {
+        auto& buffer = recv_buffers[static_cast<size_t>(client_id) * MU_SERVER_RECV_RING + recv_slot];
 
-            // Handle commit_dirty first (replicate header)
-            if (ls.commit_dirty) {
-                auto* lock_base = mu_lock_base(local_buf, lock_id);
-                mu_write_commit_index(lock_base, ls.commit_index);
+        ibv_sge sge{};
+        sge.addr = reinterpret_cast<uintptr_t>(&buffer);
+        sge.length = sizeof(MuRequest);
+        sge.lkey = recv_mr->lkey;
 
-                for (size_t f = 0; f < peers_.size(); ++f) {
-                    if (peers_[f].id == node_id_ || !peers_[f].id) continue;
+        ibv_recv_wr wr{}, *bad_wr = nullptr;
+        wr.wr_id = make_recv_wr_id(client_id, recv_slot);
+        wr.sg_list = &sge;
+        wr.num_sge = 1;
 
-                    auto& sge = repl_sges[repl_count];
-                    sge.addr = reinterpret_cast<uintptr_t>(lock_base);
-                    sge.length = LOCK_HEADER_SIZE;
-                    sge.lkey = mr_->lkey;
+        if (ibv_post_recv(clients_[client_id].cm_id->qp, &wr, &bad_wr)) {
+            throw std::runtime_error("MuLeader: failed to post recv");
+        }
+    };
 
-                    auto& wr = repl_wrs[repl_count];
-                    wr = {};
-                    wr.wr_id = (ACK_TAG << 48);
-                    wr.opcode = IBV_WR_RDMA_WRITE;
-                    wr.sg_list = &sge;
-                    wr.num_sge = 1;
-                    wr.send_flags = IBV_SEND_INLINE;
-                    wr.wr.rdma.remote_addr = peers_[f].remote_addr
-                        + lock_id * LOCK_REGION_SIZE;
-                    wr.wr.rdma.rkey = peers_[f].rkey;
-                    wr.next = nullptr;
+    auto alloc_mutation = [&]() -> uint32_t {
+        if (free_mutations.empty()) {
+            throw std::runtime_error("MuLeader: mutation pool exhausted");
+        }
+        const uint32_t id = free_mutations.front();
+        free_mutations.pop_front();
+        auto& ctx = mutations[id];
+        ctx.in_use = true;
+        ctx.generation++;
+        ctx.ack_count = 1;
+        ctx.pending_followers = 0;
+        ctx.quorum_done = false;
+        return id;
+    };
 
-                    if (!follower_head[f]) {
-                        follower_head[f] = &wr;
-                    } else {
-                        follower_tail[f]->next = &wr;
-                    }
-                    follower_tail[f] = &wr;
-                    follower_unsignaled[f]++;
-                    repl_count++;
-                }
-                ls.commit_dirty = false;
+    auto release_mutation = [&](const uint32_t mutation_id) {
+        auto& ctx = mutations[mutation_id];
+        ctx.in_use = false;
+        free_mutations.push_back(mutation_id);
+    };
+
+    std::function<void(uint32_t)> try_grant;
+    std::function<void(uint32_t)> handle_quorum;
+
+    auto post_mutation_writes = [&](const uint32_t mutation_id) {
+        auto& ctx = mutations[mutation_id];
+        auto* lock_base = mu_lock_base(local_buf, ctx.lock_id);
+        auto* entry_ptr = mu_entry_ptr(lock_base, ctx.slot);
+
+        for (const size_t follower_idx : follower_indices) {
+            auto& follower = peers_[follower_idx];
+
+            ibv_sge sge{};
+            sge.addr = reinterpret_cast<uintptr_t>(entry_ptr);
+            sge.length = ENTRY_SIZE;
+            sge.lkey = mr_->lkey;
+
+            ibv_send_wr wr{}, *bad_wr = nullptr;
+            wr.wr_id = make_repl_wr_id(mutation_id, ctx.generation);
+            wr.opcode = IBV_WR_RDMA_WRITE;
+            wr.sg_list = &sge;
+            wr.num_sge = 1;
+            wr.send_flags = IBV_SEND_INLINE | IBV_SEND_SIGNALED;
+            wr.wr.rdma.remote_addr = follower.remote_addr + lock_log_slot_offset(ctx.lock_id, ctx.slot);
+            wr.wr.rdma.rkey = follower.rkey;
+
+            if (ibv_post_send(follower.cm_id->qp, &wr, &bad_wr)) {
+                throw std::runtime_error("MuLeader: failed to replicate mutation");
             }
 
-            if (ls.inflight >= MAX_INFLIGHT || ls.pending.size() == 0) {
-                // Keep in drain set if still has pending work (just at inflight limit)
-                if (ls.pending.size() > 0) {
-                    drain_set[new_drain_size++] = lock_id;
-                } else {
-                    ls.in_drain_set = false;
-                }
+            ctx.pending_followers++;
+        }
+
+        if (ctx.pending_followers == 0) {
+            handle_quorum(mutation_id);
+            release_mutation(mutation_id);
+        }
+    };
+
+    try_grant = [&](const uint32_t lock_id) {
+        auto& lock = locks[lock_id];
+        if (lock.holder_active) return;
+
+        const auto* lock_base = mu_lock_base(local_buf, lock_id);
+        while (lock.next_grant_slot < lock.committed_tail) {
+            const uint64_t entry = mu_read_entry_word(lock_base, lock.next_grant_slot);
+            if (mu_entry_is_unlocked(entry)) {
+                lock.next_grant_slot++;
                 continue;
             }
 
-            did_drain = true;
-            const size_t to_drain = std::min(ls.pending.size(), MAX_INFLIGHT - ls.inflight);
+            MuResponse resp{};
+            resp.op = static_cast<uint8_t>(MuRpcOp::Lock);
+            resp.status = static_cast<uint8_t>(MuRpcStatus::Ok);
+            resp.client_id = mu_entry_client_id(entry);
+            resp.lock_id = lock_id;
+            resp.req_id = mu_entry_req_id(entry);
+            resp.granted_slot = lock.next_grant_slot;
+            send_response(resp);
 
-            for (size_t j = 0; j < to_drain; ++j) {
-                uint32_t imm;
-                if (!ls.pending.pop(imm)) break;
+            lock.holder_active = true;
+            lock.holder_slot = lock.next_grant_slot;
+            lock.holder_client_id = resp.client_id;
+            lock.holder_req_id = resp.req_id;
+            lock.next_grant_slot++;
+            return;
+        }
+    };
 
-                total_drained++;
+    handle_quorum = [&](const uint32_t mutation_id) {
+        auto& ctx = mutations[mutation_id];
+        if (!ctx.in_use || ctx.quorum_done) return;
+        ctx.quorum_done = true;
 
-                const uint32_t slot = ls.current_index;
-                auto* lock_base = mu_lock_base(local_buf, lock_id);
-                auto* entry = mu_entry_ptr(lock_base, slot);
-                mu_write_entry(entry, imm);
+        auto& lock = locks[ctx.lock_id];
 
-                for (size_t f = 0; f < peers_.size(); ++f) {
-                    if (peers_[f].id == node_id_ || !peers_[f].id) continue;
+        if (ctx.kind == MutationKind::append_lock) {
+            lock.committed_tail = std::max(lock.committed_tail, ctx.slot + 1);
+            mu_write_commit_index(mu_lock_base(local_buf, ctx.lock_id), lock.committed_tail);
+            try_grant(ctx.lock_id);
+        } else {
+            if (lock.unlock_mutation == static_cast<int>(mutation_id)) {
+                lock.unlock_mutation = -1;
+            }
+            MuResponse resp{};
+            resp.op = static_cast<uint8_t>(MuRpcOp::Unlock);
+            resp.status = static_cast<uint8_t>(MuRpcStatus::Ok);
+            resp.client_id = ctx.client_id;
+            resp.lock_id = ctx.lock_id;
+            resp.req_id = ctx.req_id;
+            resp.granted_slot = ctx.slot;
+            send_response(resp);
 
-                    auto& sge = repl_sges[repl_count];
-                    sge.addr = reinterpret_cast<uintptr_t>(entry);
-                    sge.length = ENTRY_SIZE;
-                    sge.lkey = mr_->lkey;
+            lock.holder_active = false;
+            lock.holder_slot = 0;
+            lock.holder_client_id = 0;
+            lock.holder_req_id = 0;
+            try_grant(ctx.lock_id);
+        }
 
-                    auto& wr = repl_wrs[repl_count];
-                    wr = {};
-                    wr.wr_id = f;
-                    wr.opcode = IBV_WR_RDMA_WRITE;
-                    wr.sg_list = &sge;
-                    wr.num_sge = 1;
-                    wr.send_flags = IBV_SEND_INLINE;
-                    wr.wr.rdma.remote_addr = peers_[f].remote_addr
-                        + lock_id * LOCK_REGION_SIZE
-                        + LOCK_HEADER_SIZE
-                        + slot * ENTRY_SIZE;
-                    wr.wr.rdma.rkey = peers_[f].rkey;
-                    wr.next = nullptr;
+        enqueue_ready(ctx.lock_id);
+    };
 
-                    batches[f].lock_slots[lock_id] = slot;
-                    batches[f].has_entry[lock_id] = true;
+    auto start_append_mutation = [&](const uint32_t lock_id) {
+        auto& lock = locks[lock_id];
+        if (lock.pending_locks.empty() || lock.append_inflight >= MU_MAX_APPEND_INFLIGHT_PER_LOCK) return;
 
-                    if (!follower_head[f]) {
-                        follower_head[f] = &wr;
-                    } else {
-                        follower_tail[f]->next = &wr;
+        MuRequest req = lock.pending_locks.front();
+        lock.pending_locks.pop_front();
+
+        if (lock.next_append_slot >= MAX_LOG_PER_LOCK) {
+            MuResponse resp{};
+            resp.op = static_cast<uint8_t>(MuRpcOp::Lock);
+            resp.status = static_cast<uint8_t>(MuRpcStatus::QueueFull);
+            resp.client_id = req.client_id;
+            resp.lock_id = req.lock_id;
+            resp.req_id = req.req_id;
+            send_response(resp);
+            enqueue_ready(lock_id);
+            return;
+        }
+
+        const uint32_t slot = lock.next_append_slot++;
+        auto* lock_base = mu_lock_base(local_buf, lock_id);
+        mu_write_entry_word(lock_base, slot, mu_make_entry(req.client_id, req.req_id, false));
+
+        const uint32_t mutation_id = alloc_mutation();
+        auto& ctx = mutations[mutation_id];
+        ctx.kind = MutationKind::append_lock;
+        ctx.lock_id = lock_id;
+        ctx.slot = slot;
+        ctx.client_id = req.client_id;
+        ctx.req_id = req.req_id;
+        lock.append_inflight++;
+
+        post_mutation_writes(mutation_id);
+    };
+
+    auto start_unlock_mutation = [&](const uint32_t lock_id) {
+        auto& lock = locks[lock_id];
+        if (!lock.pending_unlock.has_value() || lock.unlock_mutation != -1) return;
+
+        const MuRequest req = *lock.pending_unlock;
+        lock.pending_unlock.reset();
+
+        if (!lock.holder_active
+            || req.client_id != lock.holder_client_id
+            || req.req_id != lock.holder_req_id
+            || req.granted_slot != lock.holder_slot) {
+            MuResponse resp{};
+            resp.op = static_cast<uint8_t>(MuRpcOp::Unlock);
+            resp.status = static_cast<uint8_t>(MuRpcStatus::InvalidUnlock);
+            resp.client_id = req.client_id;
+            resp.lock_id = req.lock_id;
+            resp.req_id = req.req_id;
+            resp.granted_slot = req.granted_slot;
+            send_response(resp);
+            enqueue_ready(lock_id);
+            return;
+        }
+
+        auto* lock_base = mu_lock_base(local_buf, lock_id);
+        const uint64_t current_entry = mu_read_entry_word(lock_base, req.granted_slot);
+        mu_write_entry_word(lock_base, req.granted_slot, mu_entry_mark_unlocked(current_entry));
+
+        const uint32_t mutation_id = alloc_mutation();
+        auto& ctx = mutations[mutation_id];
+        ctx.kind = MutationKind::unlock_flip;
+        ctx.lock_id = lock_id;
+        ctx.slot = req.granted_slot;
+        ctx.client_id = req.client_id;
+        ctx.req_id = req.req_id;
+        lock.unlock_mutation = static_cast<int>(mutation_id);
+
+        post_mutation_writes(mutation_id);
+    };
+
+    auto service_lock = [&](const uint32_t lock_id) {
+        auto& lock = locks[lock_id];
+
+        if (lock.pending_unlock.has_value() && lock.unlock_mutation == -1) {
+            start_unlock_mutation(lock_id);
+        }
+
+        while (!lock.pending_locks.empty() && lock.append_inflight < MU_MAX_APPEND_INFLIGHT_PER_LOCK) {
+            start_append_mutation(lock_id);
+        }
+    };
+
+    for (uint16_t client_id = 0; client_id < num_clients; ++client_id) {
+        for (uint16_t recv_slot = 0; recv_slot < MU_SERVER_RECV_RING; ++recv_slot) {
+            post_recv(client_id, recv_slot);
+        }
+    }
+
+    ibv_wc wc[64];
+    while (true) {
+        const int n = ibv_poll_cq(cq_, 64, wc);
+        if (n < 0) {
+            throw std::runtime_error("MuLeader: CQ poll failed");
+        }
+
+        for (int i = 0; i < n; ++i) {
+            const ibv_wc& comp = wc[i];
+            if (comp.status != IBV_WC_SUCCESS) {
+                throw std::runtime_error(
+                    std::string("MuLeader: completion error ") + ibv_wc_status_str(comp.status));
+            }
+
+            if ((comp.opcode & IBV_WC_RECV) != 0) {
+                if (!is_recv_wr_id(comp.wr_id)) {
+                    continue;
+                }
+
+                const uint16_t client_id = recv_client_id(comp.wr_id);
+                const uint16_t recv_slot = recv_slot_index(comp.wr_id);
+                const MuRequest req = recv_buffers[static_cast<size_t>(client_id) * MU_SERVER_RECV_RING + recv_slot];
+                post_recv(client_id, recv_slot);
+
+                if (req.client_id != client_id) {
+                    MuResponse resp{};
+                    resp.op = req.op;
+                    resp.status = static_cast<uint8_t>(MuRpcStatus::InternalError);
+                    resp.client_id = client_id;
+                    resp.lock_id = req.lock_id;
+                    resp.req_id = req.req_id;
+                    resp.granted_slot = req.granted_slot;
+                    send_response(resp);
+                    continue;
+                }
+
+                if (req.lock_id < lock_start_ || req.lock_id >= lock_end_) {
+                    MuResponse resp{};
+                    resp.op = req.op;
+                    resp.status = static_cast<uint8_t>(MuRpcStatus::InternalError);
+                    resp.client_id = req.client_id;
+                    resp.lock_id = req.lock_id;
+                    resp.req_id = req.req_id;
+                    resp.granted_slot = req.granted_slot;
+                    send_response(resp);
+                    continue;
+                }
+
+                auto& lock = locks[req.lock_id];
+                if (req.op == static_cast<uint8_t>(MuRpcOp::Lock)) {
+                    if (lock.pending_locks.size() >= MU_MAX_PENDING_PER_LOCK) {
+                        MuResponse resp{};
+                        resp.op = static_cast<uint8_t>(MuRpcOp::Lock);
+                        resp.status = static_cast<uint8_t>(MuRpcStatus::QueueFull);
+                        resp.client_id = req.client_id;
+                        resp.lock_id = req.lock_id;
+                        resp.req_id = req.req_id;
+                        send_response(resp);
+                        continue;
                     }
-                    follower_tail[f] = &wr;
-                    follower_unsignaled[f]++;
-                    repl_count++;
-                }
 
-                ls.current_index++;
-                ls.inflight++;
-
-                // Add to commit set since we now have inflight entries
-                if (!ls.in_commit_set) {
-                    ls.in_commit_set = true;
-                    commit_set[commit_set_size++] = lock_id;
-                }
-            }
-
-            // Keep in drain set if still has pending
-            if (ls.pending.size() > 0) {
-                drain_set[new_drain_size++] = lock_id;
-            } else {
-                ls.in_drain_set = false;
-            }
-        }
-
-        // Also scan commit_dirty locks that aren't in drain set
-        // (they got committed via write completion but weren't re-added to drain)
-        // Actually commit_dirty is handled above when lock IS in drain_set.
-        // But if a lock got committed and removed from drain_set, we need to
-        // catch its commit_dirty. Add them back via commit_set:
-        for (size_t ci = 0; ci < commit_set_size; ++ci) {
-            const uint32_t lid = commit_set[ci];
-            auto& ls = locks[lid];
-            if (ls.commit_dirty && !ls.in_drain_set) {
-                auto* lock_base = mu_lock_base(local_buf, lid);
-                mu_write_commit_index(lock_base, ls.commit_index);
-
-                for (size_t f = 0; f < peers_.size(); ++f) {
-                    if (peers_[f].id == node_id_ || !peers_[f].id) continue;
-
-                    auto& sge = repl_sges[repl_count];
-                    sge.addr = reinterpret_cast<uintptr_t>(lock_base);
-                    sge.length = LOCK_HEADER_SIZE;
-                    sge.lkey = mr_->lkey;
-
-                    auto& wr = repl_wrs[repl_count];
-                    wr = {};
-                    wr.wr_id = (ACK_TAG << 48);
-                    wr.opcode = IBV_WR_RDMA_WRITE;
-                    wr.sg_list = &sge;
-                    wr.num_sge = 1;
-                    wr.send_flags = IBV_SEND_INLINE;
-                    wr.wr.rdma.remote_addr = peers_[f].remote_addr
-                        + lid * LOCK_REGION_SIZE;
-                    wr.wr.rdma.rkey = peers_[f].rkey;
-                    wr.next = nullptr;
-
-                    if (!follower_head[f]) {
-                        follower_head[f] = &wr;
-                    } else {
-                        follower_tail[f]->next = &wr;
+                    lock.pending_locks.push_back(req);
+                    enqueue_ready(req.lock_id);
+                } else if (req.op == static_cast<uint8_t>(MuRpcOp::Unlock)) {
+                    if (!lock.holder_active
+                        || req.client_id != lock.holder_client_id
+                        || req.req_id != lock.holder_req_id
+                        || req.granted_slot != lock.holder_slot) {
+                        MuResponse resp{};
+                        resp.op = static_cast<uint8_t>(MuRpcOp::Unlock);
+                        resp.status = static_cast<uint8_t>(MuRpcStatus::InvalidUnlock);
+                        resp.client_id = req.client_id;
+                        resp.lock_id = req.lock_id;
+                        resp.req_id = req.req_id;
+                        resp.granted_slot = req.granted_slot;
+                        send_response(resp);
+                        continue;
                     }
-                    follower_tail[f] = &wr;
-                    follower_unsignaled[f]++;
-                    repl_count++;
+
+                    if (lock.pending_unlock.has_value()) {
+                        MuResponse resp{};
+                        resp.op = static_cast<uint8_t>(MuRpcOp::Unlock);
+                        resp.status = static_cast<uint8_t>(MuRpcStatus::InternalError);
+                        resp.client_id = req.client_id;
+                        resp.lock_id = req.lock_id;
+                        resp.req_id = req.req_id;
+                        resp.granted_slot = req.granted_slot;
+                        send_response(resp);
+                        continue;
+                    }
+
+                    lock.pending_unlock = req;
+                    enqueue_ready(req.lock_id);
+                } else {
+                    MuResponse resp{};
+                    resp.op = req.op;
+                    resp.status = static_cast<uint8_t>(MuRpcStatus::InternalError);
+                    resp.client_id = req.client_id;
+                    resp.lock_id = req.lock_id;
+                    resp.req_id = req.req_id;
+                    resp.granted_slot = req.granted_slot;
+                    send_response(resp);
                 }
-                ls.commit_dirty = false;
+
+                continue;
+            }
+
+            if (comp.opcode == IBV_WC_RDMA_WRITE && is_repl_wr_id(comp.wr_id)) {
+                const uint32_t mutation_id = repl_mutation_id(comp.wr_id);
+                if (mutation_id >= mutations.size()) {
+                    throw std::runtime_error("MuLeader: mutation id out of range");
+                }
+
+                auto& ctx = mutations[mutation_id];
+                if (!ctx.in_use || ctx.generation != repl_generation(comp.wr_id)) {
+                    continue;
+                }
+
+                if (ctx.pending_followers == 0) {
+                    continue;
+                }
+
+                ctx.pending_followers--;
+                ctx.ack_count++;
+
+                if (!ctx.quorum_done && ctx.ack_count >= QUORUM) {
+                    handle_quorum(mutation_id);
+                }
+
+                if (ctx.pending_followers == 0) {
+                    auto& lock = locks[ctx.lock_id];
+                    if (ctx.kind == MutationKind::append_lock && lock.append_inflight > 0) {
+                        lock.append_inflight--;
+                    }
+                    release_mutation(mutation_id);
+                    enqueue_ready(ctx.lock_id);
+                }
+
+                continue;
             }
         }
 
-        drain_set_size = new_drain_size;
-
-        auto d1 = clock::now();
-        t_drain_ns += std::chrono::duration_cast<ns>(d1 - d0).count();
-        if (did_drain) drain_iters++;
-
-        // ── Phase 4: Post to followers ──
-        auto p0 = clock::now();
-        for (size_t f = 0; f < peers_.size(); ++f) {
-            if (!follower_head[f]) continue;
-
-            total_posts_to_followers++;
-
-            follower_tail[f]->send_flags |= IBV_SEND_SIGNALED;
-            follower_tail[f]->wr_id = f;
-
-            ibv_send_wr* bad_wr = nullptr;
-            if (ibv_post_send(peers_[f].cm_id->qp, follower_head[f], &bad_wr)) {
-                throw std::runtime_error("Failed to post chained replication");
-            }
-        }
-        auto p1 = clock::now();
-        t_post_ns += std::chrono::duration_cast<ns>(p1 - p0).count();
-
-        auto iter_end = clock::now();
-        t_total_ns += std::chrono::duration_cast<ns>(iter_end - iter_start).count();
-
-        // ── Periodic dump (every ~5 seconds) ──
-        if (poll_iter % 1000000 == 0) {
-            auto now = clock::now();
-            double elapsed_s = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_dump).count() / 1000.0;
-
-            if (elapsed_s >= 5.0) {
-                double total_s = t_total_ns / 1e9;
-
-                std::cerr << "\n[MuLeader " << node_id_
-                          << " locks " << lock_start_ << "-" << lock_end_
-                          << "] ── TIMING DUMP ──\n"
-                          << "  wall_elapsed:    " << elapsed_s << " s\n"
-                          << "  poll_iters:      " << poll_iter << "\n"
-                          << "  busy_iters:      " << busy_iters
-                          << " (" << (poll_iter > 0 ? 100.0 * busy_iters / poll_iter : 0) << "%)\n"
-                          << "  drain_iters:     " << drain_iters << "\n"
-                          << "  drain_set_size:  " << drain_set_size << "\n"
-                          << "  commit_set_size: " << commit_set_size << "\n"
-                          << "  recvs=" << total_recvs
-                          << " writes=" << total_writes
-                          << " sends=" << total_send_completions
-                          << " drained=" << total_drained
-                          << " committed=" << total_committed
-                          << " acks_sent=" << total_acks_sent
-                          << " follower_posts=" << total_posts_to_followers
-                          << "\n"
-                          << "  ── TIME BREAKDOWN (cumulative) ──\n"
-                          << "  t_poll:          " << (t_poll_ns / 1e6) << " ms ("
-                          << (t_total_ns > 0 ? 100.0 * t_poll_ns / t_total_ns : 0) << "%)\n"
-                          << "  t_recv:          " << (t_recv_ns / 1e6) << " ms ("
-                          << (t_total_ns > 0 ? 100.0 * t_recv_ns / t_total_ns : 0) << "%)\n"
-                          << "  t_write_ack:     " << (t_write_ack_ns / 1e6) << " ms ("
-                          << (t_total_ns > 0 ? 100.0 * t_write_ack_ns / t_total_ns : 0) << "%)\n"
-                          << "  t_write_commit:  " << (t_write_commit_ns / 1e6) << " ms ("
-                          << (t_total_ns > 0 ? 100.0 * t_write_commit_ns / t_total_ns : 0) << "%)\n"
-                          << "  t_drain:         " << (t_drain_ns / 1e6) << " ms ("
-                          << (t_total_ns > 0 ? 100.0 * t_drain_ns / t_total_ns : 0) << "%)\n"
-                          << "  t_post:          " << (t_post_ns / 1e6) << " ms ("
-                          << (t_total_ns > 0 ? 100.0 * t_post_ns / t_total_ns : 0) << "%)\n"
-                          << "  t_total:         " << (t_total_ns / 1e6) << " ms\n"
-                          << "  ── PER-OP AVERAGES ──\n";
-
-                if (total_recvs > 0)
-                    std::cerr << "  avg recv:        " << (t_recv_ns / total_recvs) << " ns\n";
-                if (total_writes > 0) {
-                    std::cerr << "  avg write_ack:   " << (t_write_ack_ns / total_writes) << " ns\n";
-                    std::cerr << "  avg write_commit:" << (t_write_commit_ns / total_writes) << " ns\n";
-                }
-                if (drain_iters > 0)
-                    std::cerr << "  avg drain iter:  " << (t_drain_ns / drain_iters) << " ns\n";
-                if (total_posts_to_followers > 0)
-                    std::cerr << "  avg post:        " << (t_post_ns / total_posts_to_followers) << " ns\n";
-
-                int dumped = 0;
-                for (uint32_t lid = lock_start_; lid < lock_end_ && dumped < 3; ++lid) {
-                    auto& ls = locks[lid];
-                    if (ls.current_index == 0 && ls.pending.size() == 0) continue;
-                    std::cerr << "  lock[" << lid
-                              << "] pending=" << ls.pending.size()
-                              << " inflight=" << ls.inflight
-                              << " current=" << ls.current_index
-                              << " commit=" << ls.commit_index
-                              << " holder=" << ls.holder_slot
-                              << " locked=" << ls.locked
-                              << " acks[commit]=" << (ls.commit_index < MAX_LOG_PER_LOCK ? (int)ls.acks[ls.commit_index] : -1)
-                              << "\n";
-                    dumped++;
-                }
-                std::cerr << std::endl;
-
-                last_dump = now;
-                t_poll_ns = t_recv_ns = t_write_ack_ns = t_write_commit_ns = 0;
-                t_drain_ns = t_post_ns = t_total_ns = 0;
-                poll_iter = busy_iters = drain_iters = 0;
-                total_recvs = total_writes = total_send_completions = 0;
-                total_other_completions = total_drained = total_committed = 0;
-                total_acks_sent = total_posts_to_followers = 0;
-            }
+        while (!ready_locks.empty()) {
+            const uint32_t lock_id = ready_locks.front();
+            ready_locks.pop_front();
+            ready_flags[lock_id] = 0;
+            service_lock(lock_id);
         }
     }
 }
