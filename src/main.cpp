@@ -30,6 +30,7 @@ int main() {
         const bool is_faa = (std::string(STRATEGY) == "faa");
         const bool is_cas = (std::string(STRATEGY) == "cas");
         const bool is_tas = (std::string(STRATEGY) == "tas");
+        const CasPipelineConfig cas_config = is_cas ? load_cas_pipeline_config() : CasPipelineConfig{};
 
         if (get_uint_env("IS_CLIENT") != 0) {
             const uint32_t machine_id = get_uint_env("MACHINE_ID");
@@ -49,14 +50,9 @@ int main() {
 
                 workers.emplace_back(
                     [i, global_id, is_mu, is_faa, is_cas, is_tas,
-                     &start_latch, &all_latencies, &lock_counts, &verify_client]() {
+                     &start_latch, &all_latencies, &lock_counts, &verify_client, &cas_config]() {
                         try {
                             pin_thread_to_cpu(pick_cpu_for_client(i));
-
-                            CasPipelineConfig cas_config{};
-                            if (is_cas) {
-                                cas_config = load_cas_pipeline_config();
-                            }
 
                             std::vector<std::unique_ptr<LockStrategy>> strategies;
                             LockTable table;
@@ -186,6 +182,11 @@ int main() {
             std::cout << std::string(50, '=') << "\n";
             std::cout << "Strategy:       " << std::setw(14) << STRATEGY << "\n";
             std::cout << "Locks:          " << std::setw(14) << MAX_LOCKS << "\n";
+            if (is_cas) {
+                std::cout << "Active Window:  " << std::setw(14) << cas_config.active_window << "\n";
+                std::cout << "Zipf Skew:      " << std::setw(14) << std::fixed << std::setprecision(2)
+                          << cas_config.zipf_skew << "\n";
+            }
             std::cout << "Clients:        " << std::setw(14) << TOTAL_CLIENTS
                       << " (" << NUM_CLIENTS_PER_MACHINE << " on this machine)\n";
             std::cout << "Ops/Client:     " << std::setw(14) << NUM_OPS_PER_CLIENT << "\n";
@@ -211,9 +212,11 @@ int main() {
             // Paste this line into a cell, then use "Split text to columns" with comma delimiter
             std::cout << "\nCSV: "
                       << STRATEGY
-                       << "," << machine_id
+                      << "," << machine_id
                       << "," << TOTAL_CLIENTS
                       << "," << MAX_LOCKS
+                      << "," << (is_cas ? cas_config.active_window : 0)
+                      << "," << std::fixed << std::setprecision(2) << (is_cas ? cas_config.zipf_skew : 0.0)
                       << "," << local_total_ops
                       << "," << std::fixed << std::setprecision(3) << wall_s
                       << "," << std::setprecision(0) << goodput
@@ -226,7 +229,7 @@ int main() {
                       << std::endl;
 
             // Header reminder (print once for reference)
-            std::cout << "HDR: strategy,client_machine_id,clients,locks,total_ops,wall_s,goodput,mean_us,p50_us,p90_us,p99_us,p99.9_us,max_us"
+            std::cout << "HDR: strategy,client_machine_id,clients,locks,active_window,zipf_skew,total_ops,wall_s,goodput,mean_us,p50_us,p90_us,p99_us,p99.9_us,max_us"
                       << std::endl;
 
         } else {
