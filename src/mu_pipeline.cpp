@@ -278,6 +278,9 @@ void run_mu_pipeline(
             continue;
         }
 
+        std::vector<uint32_t> recv_reposts;
+        recv_reposts.reserve(static_cast<size_t>(std::max(polled, 0)));
+
         for (int i = 0; i < polled; ++i) {
             const ibv_wc& wc = completions[i];
             if (wc.status != IBV_WC_SUCCESS) {
@@ -299,7 +302,7 @@ void run_mu_pipeline(
             }
 
             const MuResponse resp = buffers.responses[recv_slot];
-            post_recv(client, &buffers.responses[recv_slot], recv_slot);
+            recv_reposts.push_back(recv_slot);
 
             const auto it = req_to_slot.find(resp.req_id);
             if (it == req_to_slot.end()) {
@@ -365,6 +368,10 @@ void run_mu_pipeline(
             if (submitted < NUM_OPS_PER_CLIENT) {
                 submit_lock(slot);
             }
+        }
+
+        for (const uint32_t recv_slot : recv_reposts) {
+            post_recv(client, &buffers.responses[recv_slot], recv_slot);
         }
     }
 }

@@ -10,6 +10,7 @@
 #include <deque>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -45,10 +46,10 @@ struct MutationCtx {
 
 struct LockState {
     std::deque<MuRequest> pending_locks;
+    std::deque<MuResponse> committed_waiters;
     std::optional<MuRequest> pending_unlock;
     uint32_t next_append_slot = 0;
     uint32_t committed_tail = 0;
-    uint32_t next_grant_slot = 0;
     bool holder_active = false;
     uint32_t holder_slot = 0;
     uint16_t holder_client_id = 0;
@@ -62,6 +63,8 @@ struct MuLeaderStats {
     uint64_t unlock_reqs_recv = 0;
     uint64_t grants_sent = 0;
     uint64_t unlock_acks_sent = 0;
+    uint64_t recv_cqes = 0;
+    uint64_t resp_send_cqes = 0;
     uint64_t replication_writes_posted = 0;
     uint64_t replication_writes_signaled = 0;
     uint64_t replication_cqes = 0;
@@ -112,6 +115,10 @@ bool is_recv_wr_id(const uint64_t wr_id) {
     return (wr_id >> MU_WR_TAG_SHIFT) == MU_RECV_WR_TAG;
 }
 
+bool is_resp_send_wr_id(const uint64_t wr_id) {
+    return (wr_id & 0xFFFF000000000000ULL) == MU_RESP_WR_TAG;
+}
+
 }  // namespace
 
 void MuLeader::run() {
@@ -119,6 +126,10 @@ void MuLeader::run() {
     const bool mu_stats_enabled = get_uint_env_or("MU_STATS", 1) != 0;
     const bool mu_quorum_only_signal =
         get_uint_env_or("MU_REPL_SIGNAL_QUORUM_ONLY", MU_REPL_SIGNAL_QUORUM_ONLY_DEFAULT) != 0;
+    const int server_cq_batch = static_cast<int>(std::max<size_t>(1, get_uint_env_or("MU_SERVER_CQ_BATCH", MU_SERVER_CQ_BATCH_DEFAULT)));
+    const uint16_t server_recv_ring = static_cast<uint16_t>(std::min<size_t>(
+        get_uint_env_or("MU_SERVER_RECV_RING", MU_SERVER_RECV_RING_DEFAULT),
+        std::numeric_limits<uint16_t>::max()));
     auto debug = [&](const std::string& msg) {
         if (mu_debug) {
             std::cout << "[MuLeader " << node_id_ << "] " << msg << "\n";
@@ -133,6 +144,8 @@ void MuLeader::run() {
                   << " unlock_reqs=" << delta.unlock_reqs_recv
                   << " grants=" << delta.grants_sent
                   << " unlock_acks=" << delta.unlock_acks_sent
+                  << " recv_cqes=" << delta.recv_cqes
+                  << " resp_send_cqes=" << delta.resp_send_cqes
                   << " repl_writes=" << delta.replication_writes_posted
                   << " repl_sig=" << delta.replication_writes_signaled
                   << " repl_cqes=" << delta.replication_cqes
@@ -155,14 +168,17 @@ void MuLeader::run() {
     const uint32_t num_clients = expected_clients();
     size_t repl_signal_cursor = 0;
     const size_t handled_locks = static_cast<size_t>(lock_end_ - lock_start_);
-    const size_t mutation_pool_size = std::max<size_t>(
-        handled_locks * (MU_MAX_APPEND_INFLIGHT_PER_LOCK + 1),
-        MU_MAX_APPEND_INFLIGHT_PER_LOCK + 1);
+    const size_t initial_follower_guess = std::max<size_t>(CLUSTER_NODES.size() - 1, 1);
+    const size_t mutation_pool_size = std::max<size_t>({
+        handled_locks * 2,
+        static_cast<size_t>(QP_DEPTH),
+        static_cast<size_t>(QP_DEPTH) * initial_follower_guess / 2,
+    });
     if (mutation_pool_size > MU_REPL_ID_MASK) {
         throw std::runtime_error("MuLeader: mutation pool exceeds wr_id capacity");
     }
 
-    std::vector<MuRequest> recv_buffers(num_clients * MU_SERVER_RECV_RING);
+    std::vector<MuRequest> recv_buffers(num_clients * server_recv_ring);
     ibv_mr* recv_mr = ibv_reg_mr(
         pd_,
         recv_buffers.data(),
@@ -234,7 +250,7 @@ void MuLeader::run() {
     };
 
     auto post_recv = [&](const uint16_t client_id, const uint16_t recv_slot) {
-        auto& buffer = recv_buffers[static_cast<size_t>(client_id) * MU_SERVER_RECV_RING + recv_slot];
+        auto& buffer = recv_buffers[static_cast<size_t>(client_id) * server_recv_ring + recv_slot];
 
         ibv_sge sge{};
         sge.addr = reinterpret_cast<uintptr_t>(&buffer);
@@ -343,35 +359,21 @@ void MuLeader::run() {
         auto& lock = locks[lock_id];
         if (lock.holder_active) return;
 
-        const auto* lock_base = mu_lock_base(local_buf, lock_id);
-        while (lock.next_grant_slot < lock.committed_tail) {
-            const uint64_t entry = mu_read_entry_word(lock_base, lock.next_grant_slot);
-            if (mu_entry_is_unlocked(entry)) {
-                lock.next_grant_slot++;
-                continue;
-            }
+        if (lock.committed_waiters.empty()) return;
 
-            MuResponse resp{};
-            resp.op = static_cast<uint8_t>(MuRpcOp::Lock);
-            resp.status = static_cast<uint8_t>(MuRpcStatus::Ok);
-            resp.client_id = mu_entry_client_id(entry);
-            resp.lock_id = lock_id;
-            resp.req_id = mu_entry_req_id(entry);
-            resp.granted_slot = lock.next_grant_slot;
-            debug(
-                "grant sent lock=" + std::to_string(lock_id)
-                + " slot=" + std::to_string(lock.next_grant_slot)
-                + " client=" + std::to_string(resp.client_id)
-                + " req=" + std::to_string(resp.req_id));
-            send_response(resp);
+        MuResponse resp = lock.committed_waiters.front();
+        lock.committed_waiters.pop_front();
+        debug(
+            "grant sent lock=" + std::to_string(lock_id)
+            + " slot=" + std::to_string(resp.granted_slot)
+            + " client=" + std::to_string(resp.client_id)
+            + " req=" + std::to_string(resp.req_id));
+        send_response(resp);
 
-            lock.holder_active = true;
-            lock.holder_slot = lock.next_grant_slot;
-            lock.holder_client_id = resp.client_id;
-            lock.holder_req_id = resp.req_id;
-            lock.next_grant_slot++;
-            return;
-        }
+        lock.holder_active = true;
+        lock.holder_slot = resp.granted_slot;
+        lock.holder_client_id = resp.client_id;
+        lock.holder_req_id = resp.req_id;
     };
 
     handle_quorum = [&](const uint32_t mutation_id) {
@@ -385,6 +387,14 @@ void MuLeader::run() {
             lock.committed_tail = std::max(lock.committed_tail, ctx.slot + 1);
             mu_write_commit_index(mu_lock_base(local_buf, ctx.lock_id), lock.committed_tail);
             stats.append_quorums++;
+            MuResponse resp{};
+            resp.op = static_cast<uint8_t>(MuRpcOp::Lock);
+            resp.status = static_cast<uint8_t>(MuRpcStatus::Ok);
+            resp.client_id = ctx.client_id;
+            resp.lock_id = ctx.lock_id;
+            resp.req_id = ctx.req_id;
+            resp.granted_slot = ctx.slot;
+            lock.committed_waiters.push_back(resp);
             debug(
                 "append quorum lock=" + std::to_string(ctx.lock_id)
                 + " slot=" + std::to_string(ctx.slot)
@@ -421,7 +431,22 @@ void MuLeader::run() {
 
     auto start_append_mutation = [&](const uint32_t lock_id) {
         auto& lock = locks[lock_id];
-        if (lock.pending_locks.empty() || lock.append_inflight >= MU_MAX_APPEND_INFLIGHT_PER_LOCK) return;
+        if (lock.pending_locks.empty()) return;
+
+        MuRequest req = lock.pending_locks.front();
+
+        if (lock.next_append_slot >= MAX_LOG_PER_LOCK) {
+            MuResponse resp{};
+            resp.op = static_cast<uint8_t>(MuRpcOp::Lock);
+            resp.status = static_cast<uint8_t>(MuRpcStatus::QueueFull);
+            resp.client_id = req.client_id;
+            resp.lock_id = req.lock_id;
+            resp.req_id = req.req_id;
+            send_response(resp);
+            lock.pending_locks.pop_front();
+            enqueue_ready(lock_id);
+            return;
+        }
 
         const auto mutation_id_opt = try_alloc_mutation();
         if (!mutation_id_opt.has_value()) {
@@ -433,20 +458,7 @@ void MuLeader::run() {
             return;
         }
 
-        MuRequest req = lock.pending_locks.front();
         lock.pending_locks.pop_front();
-
-        if (lock.next_append_slot >= MAX_LOG_PER_LOCK) {
-            MuResponse resp{};
-            resp.op = static_cast<uint8_t>(MuRpcOp::Lock);
-            resp.status = static_cast<uint8_t>(MuRpcStatus::QueueFull);
-            resp.client_id = req.client_id;
-            resp.lock_id = req.lock_id;
-            resp.req_id = req.req_id;
-            send_response(resp);
-            enqueue_ready(lock_id);
-            return;
-        }
 
         const uint32_t slot = lock.next_append_slot++;
         auto* lock_base = mu_lock_base(local_buf, lock_id);
@@ -477,17 +489,7 @@ void MuLeader::run() {
         auto& lock = locks[lock_id];
         if (!lock.pending_unlock.has_value() || lock.unlock_mutation != -1) return;
 
-        const auto mutation_id_opt = try_alloc_mutation();
-        if (!mutation_id_opt.has_value()) {
-            debug(
-                "unlock backpressure lock=" + std::to_string(lock_id)
-                + " holder_slot=" + std::to_string(lock.holder_slot));
-            enqueue_ready(lock_id);
-            return;
-        }
-
         const MuRequest req = *lock.pending_unlock;
-        lock.pending_unlock.reset();
 
         if (!lock.holder_active
             || req.client_id != lock.holder_client_id
@@ -509,9 +511,21 @@ void MuLeader::run() {
             resp.req_id = req.req_id;
             resp.granted_slot = req.granted_slot;
             send_response(resp);
+            lock.pending_unlock.reset();
             enqueue_ready(lock_id);
             return;
         }
+
+        const auto mutation_id_opt = try_alloc_mutation();
+        if (!mutation_id_opt.has_value()) {
+            debug(
+                "unlock backpressure lock=" + std::to_string(lock_id)
+                + " holder_slot=" + std::to_string(lock.holder_slot));
+            enqueue_ready(lock_id);
+            return;
+        }
+
+        lock.pending_unlock.reset();
 
         auto* lock_base = mu_lock_base(local_buf, lock_id);
         const uint64_t current_entry = mu_read_entry_word(lock_base, req.granted_slot);
@@ -541,20 +555,24 @@ void MuLeader::run() {
             start_unlock_mutation(lock_id);
         }
 
-        while (!lock.pending_locks.empty() && lock.append_inflight < MU_MAX_APPEND_INFLIGHT_PER_LOCK) {
+        while (!lock.pending_locks.empty()) {
             start_append_mutation(lock_id);
+            if (!free_mutations.empty()) {
+                continue;
+            }
+            break;
         }
     };
 
     for (uint16_t client_id = 0; client_id < num_clients; ++client_id) {
-        for (uint16_t recv_slot = 0; recv_slot < MU_SERVER_RECV_RING; ++recv_slot) {
+        for (uint16_t recv_slot = 0; recv_slot < server_recv_ring; ++recv_slot) {
             post_recv(client_id, recv_slot);
         }
     }
 
-    ibv_wc wc[64];
+    std::vector<ibv_wc> wc(static_cast<size_t>(server_cq_batch));
     while (true) {
-        const int n = ibv_poll_cq(cq_, 64, wc);
+        const int n = ibv_poll_cq(cq_, server_cq_batch, wc.data());
         if (n < 0) {
             throw std::runtime_error("MuLeader: CQ poll failed");
         }
@@ -565,8 +583,11 @@ void MuLeader::run() {
             stats.cqes_polled += static_cast<uint64_t>(n);
         }
 
+        std::vector<std::pair<uint16_t, uint16_t>> recv_reposts;
+        recv_reposts.reserve(static_cast<size_t>(std::max(n, 0)));
+
         for (int i = 0; i < n; ++i) {
-            const ibv_wc& comp = wc[i];
+            const ibv_wc& comp = wc[static_cast<size_t>(i)];
             if (comp.status != IBV_WC_SUCCESS) {
                 throw std::runtime_error(
                     std::string("MuLeader: completion error ") + ibv_wc_status_str(comp.status));
@@ -583,8 +604,9 @@ void MuLeader::run() {
 
                 const uint16_t client_id = recv_client_id(comp.wr_id);
                 const uint16_t recv_slot = recv_slot_index(comp.wr_id);
-                const MuRequest req = recv_buffers[static_cast<size_t>(client_id) * MU_SERVER_RECV_RING + recv_slot];
-                post_recv(client_id, recv_slot);
+                const MuRequest req = recv_buffers[static_cast<size_t>(client_id) * server_recv_ring + recv_slot];
+                recv_reposts.emplace_back(client_id, recv_slot);
+                stats.recv_cqes++;
                 debug(
                     "recv op=" + std::to_string(req.op)
                     + " lock=" + std::to_string(req.lock_id)
@@ -618,17 +640,6 @@ void MuLeader::run() {
 
                 auto& lock = locks[req.lock_id];
                 if (req.op == static_cast<uint8_t>(MuRpcOp::Lock)) {
-                    if (lock.pending_locks.size() >= MU_MAX_PENDING_PER_LOCK) {
-                        MuResponse resp{};
-                        resp.op = static_cast<uint8_t>(MuRpcOp::Lock);
-                        resp.status = static_cast<uint8_t>(MuRpcStatus::QueueFull);
-                        resp.client_id = req.client_id;
-                        resp.lock_id = req.lock_id;
-                        resp.req_id = req.req_id;
-                        send_response(resp);
-                        continue;
-                    }
-
                     lock.pending_locks.push_back(req);
                     stats.lock_reqs_recv++;
                     stats.pending_lock_queue_high_watermark = std::max<uint64_t>(
@@ -680,6 +691,11 @@ void MuLeader::run() {
                 continue;
             }
 
+            if (is_resp_send_wr_id(comp.wr_id)) {
+                stats.resp_send_cqes++;
+                continue;
+            }
+
             if (is_repl_wr_id(comp.wr_id)) {
                 const uint32_t mutation_id = repl_mutation_id(comp.wr_id);
                 if (mutation_id >= mutations.size()) {
@@ -722,6 +738,10 @@ void MuLeader::run() {
             }
         }
 
+        for (const auto& [client_id, recv_slot] : recv_reposts) {
+            post_recv(client_id, recv_slot);
+        }
+
         while (!ready_locks.empty()) {
             const uint32_t lock_id = ready_locks.front();
             ready_locks.pop_front();
@@ -737,6 +757,8 @@ void MuLeader::run() {
                 delta.unlock_reqs_recv = stats.unlock_reqs_recv - prev_stats.unlock_reqs_recv;
                 delta.grants_sent = stats.grants_sent - prev_stats.grants_sent;
                 delta.unlock_acks_sent = stats.unlock_acks_sent - prev_stats.unlock_acks_sent;
+                delta.recv_cqes = stats.recv_cqes - prev_stats.recv_cqes;
+                delta.resp_send_cqes = stats.resp_send_cqes - prev_stats.resp_send_cqes;
                 delta.replication_writes_posted = stats.replication_writes_posted - prev_stats.replication_writes_posted;
                 delta.replication_writes_signaled = stats.replication_writes_signaled - prev_stats.replication_writes_signaled;
                 delta.replication_cqes = stats.replication_cqes - prev_stats.replication_cqes;
