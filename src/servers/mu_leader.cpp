@@ -21,6 +21,7 @@ namespace {
 enum class MutationKind : uint8_t {
     append_lock = 1,
     unlock_flip = 2,
+    unlock_and_append = 3,
 };
 
 constexpr uint64_t MU_RECV_WR_TAG = 0xB1ULL;
@@ -39,6 +40,10 @@ struct MutationCtx {
     uint32_t slot = 0;
     uint16_t client_id = 0;
     uint32_t req_id = 0;
+    bool has_append = false;
+    uint32_t append_slot = 0;
+    uint16_t append_client_id = 0;
+    uint32_t append_req_id = 0;
     uint32_t ack_count = 0;
     uint32_t pending_followers = 0;
     bool quorum_done = false;
@@ -123,7 +128,7 @@ bool is_resp_send_wr_id(const uint64_t wr_id) {
 
 void MuLeader::run() {
     const bool mu_debug = get_uint_env_or("MU_DEBUG", 0) != 0;
-    const bool mu_stats_enabled = get_uint_env_or("MU_STATS", 1) != 0;
+    const bool mu_stats_enabled = get_uint_env_or("MU_STATS", 1 ) != 0;
     const bool mu_quorum_only_signal =
         get_uint_env_or("MU_REPL_SIGNAL_QUORUM_ONLY", MU_REPL_SIGNAL_QUORUM_ONLY_DEFAULT) != 0;
     const int server_cq_batch = static_cast<int>(std::max<size_t>(1, get_uint_env_or("MU_SERVER_CQ_BATCH", MU_SERVER_CQ_BATCH_DEFAULT)));
@@ -276,6 +281,15 @@ void MuLeader::run() {
         auto& ctx = mutations[id];
         ctx.in_use = true;
         ctx.generation++;
+        ctx.kind = MutationKind::append_lock;
+        ctx.lock_id = 0;
+        ctx.slot = 0;
+        ctx.client_id = 0;
+        ctx.req_id = 0;
+        ctx.has_append = false;
+        ctx.append_slot = 0;
+        ctx.append_client_id = 0;
+        ctx.append_req_id = 0;
         ctx.ack_count = 1;
         ctx.pending_followers = 0;
         ctx.quorum_done = false;
@@ -298,13 +312,10 @@ void MuLeader::run() {
         auto& ctx = mutations[mutation_id];
         auto* lock_base = mu_lock_base(local_buf, ctx.lock_id);
         auto* entry_ptr = mu_entry_ptr(lock_base, ctx.slot);
+        auto* append_entry_ptr = ctx.has_append ? mu_entry_ptr(lock_base, ctx.append_slot) : nullptr;
         const size_t followers = follower_indices.size();
         const size_t quorum_needed = (QUORUM > 0) ? std::min<size_t>(QUORUM - 1, followers) : 0;
         const size_t signaled_to_track = mu_quorum_only_signal ? quorum_needed : followers;
-        const size_t signal_start = followers == 0 ? 0 : (repl_signal_cursor % followers);
-        if (followers != 0 && signaled_to_track != 0) {
-            repl_signal_cursor = (repl_signal_cursor + signaled_to_track) % followers;
-        }
 
         for (size_t follower_pos = 0; follower_pos < follower_indices.size(); ++follower_pos) {
             const size_t follower_idx = follower_indices[follower_pos];
@@ -313,32 +324,56 @@ void MuLeader::run() {
             if (mu_quorum_only_signal && followers != 0) {
                 should_signal = false;
                 for (size_t i = 0; i < signaled_to_track; ++i) {
-                    if (follower_pos == ((signal_start + i) % followers)) {
+                    if (follower_pos == i) {
                         should_signal = true;
                         break;
                     }
                 }
             }
 
-            ibv_sge sge{};
-            sge.addr = reinterpret_cast<uintptr_t>(entry_ptr);
-            sge.length = ENTRY_SIZE;
-            sge.lkey = mr_->lkey;
+            ibv_sge sges[2]{};
+            ibv_send_wr wrs[2]{};
+            ibv_send_wr* head = &wrs[0];
+            ibv_send_wr* tail = &wrs[0];
+            int wr_count = 1;
 
-            ibv_send_wr wr{}, *bad_wr = nullptr;
-            wr.wr_id = make_repl_wr_id(mutation_id, ctx.generation);
-            wr.opcode = IBV_WR_RDMA_WRITE;
-            wr.sg_list = &sge;
-            wr.num_sge = 1;
-            wr.send_flags = IBV_SEND_INLINE | (should_signal ? IBV_SEND_SIGNALED : 0);
-            wr.wr.rdma.remote_addr = follower.remote_addr + lock_log_slot_offset(ctx.lock_id, ctx.slot);
-            wr.wr.rdma.rkey = follower.rkey;
+            sges[0].addr = reinterpret_cast<uintptr_t>(entry_ptr);
+            sges[0].length = ENTRY_SIZE;
+            sges[0].lkey = mr_->lkey;
 
-            if (ibv_post_send(follower.cm_id->qp, &wr, &bad_wr)) {
+            wrs[0].wr_id = make_repl_wr_id(mutation_id, ctx.generation);
+            wrs[0].opcode = IBV_WR_RDMA_WRITE;
+            wrs[0].sg_list = &sges[0];
+            wrs[0].num_sge = 1;
+            wrs[0].send_flags = IBV_SEND_INLINE;
+            wrs[0].wr.rdma.remote_addr = follower.remote_addr + lock_log_slot_offset(ctx.lock_id, ctx.slot);
+            wrs[0].wr.rdma.rkey = follower.rkey;
+
+            if (ctx.has_append) {
+                sges[1].addr = reinterpret_cast<uintptr_t>(append_entry_ptr);
+                sges[1].length = ENTRY_SIZE;
+                sges[1].lkey = mr_->lkey;
+
+                wrs[1].wr_id = make_repl_wr_id(mutation_id, ctx.generation);
+                wrs[1].opcode = IBV_WR_RDMA_WRITE;
+                wrs[1].sg_list = &sges[1];
+                wrs[1].num_sge = 1;
+                wrs[1].send_flags = IBV_SEND_INLINE;
+                wrs[1].wr.rdma.remote_addr = follower.remote_addr + lock_log_slot_offset(ctx.lock_id, ctx.append_slot);
+                wrs[1].wr.rdma.rkey = follower.rkey;
+                wrs[0].next = &wrs[1];
+                tail = &wrs[1];
+                wr_count = 2;
+            }
+
+            tail->send_flags |= should_signal ? IBV_SEND_SIGNALED : 0;
+
+            ibv_send_wr* bad_wr = nullptr;
+            if (ibv_post_send(follower.cm_id->qp, head, &bad_wr)) {
                 throw std::runtime_error("MuLeader: failed to replicate mutation");
             }
 
-            stats.replication_writes_posted++;
+            stats.replication_writes_posted += static_cast<uint64_t>(wr_count);
             if (should_signal) {
                 ctx.pending_followers++;
                 stats.replication_writes_signaled++;
@@ -351,6 +386,11 @@ void MuLeader::run() {
                 + " lock=" + std::to_string(ctx.lock_id)
                 + " slot=" + std::to_string(ctx.slot));
             handle_quorum(mutation_id);
+            auto& lock = locks[ctx.lock_id];
+            if ((ctx.kind == MutationKind::append_lock || ctx.kind == MutationKind::unlock_and_append)
+                && lock.append_inflight > 0) {
+                lock.append_inflight--;
+            }
             release_mutation(mutation_id);
         }
     };
@@ -383,24 +423,26 @@ void MuLeader::run() {
 
         auto& lock = locks[ctx.lock_id];
 
-        if (ctx.kind == MutationKind::append_lock) {
-            lock.committed_tail = std::max(lock.committed_tail, ctx.slot + 1);
+        if (ctx.kind == MutationKind::append_lock || ctx.kind == MutationKind::unlock_and_append) {
+            const uint32_t committed_slot = ctx.kind == MutationKind::append_lock ? ctx.slot : ctx.append_slot;
+            lock.committed_tail = std::max(lock.committed_tail, committed_slot + 1);
             mu_write_commit_index(mu_lock_base(local_buf, ctx.lock_id), lock.committed_tail);
             stats.append_quorums++;
             MuResponse resp{};
             resp.op = static_cast<uint8_t>(MuRpcOp::Lock);
             resp.status = static_cast<uint8_t>(MuRpcStatus::Ok);
-            resp.client_id = ctx.client_id;
+            resp.client_id = ctx.kind == MutationKind::append_lock ? ctx.client_id : ctx.append_client_id;
             resp.lock_id = ctx.lock_id;
-            resp.req_id = ctx.req_id;
-            resp.granted_slot = ctx.slot;
+            resp.req_id = ctx.kind == MutationKind::append_lock ? ctx.req_id : ctx.append_req_id;
+            resp.granted_slot = committed_slot;
             lock.committed_waiters.push_back(resp);
             debug(
                 "append quorum lock=" + std::to_string(ctx.lock_id)
-                + " slot=" + std::to_string(ctx.slot)
+                + " slot=" + std::to_string(committed_slot)
                 + " committed_tail=" + std::to_string(lock.committed_tail));
-            try_grant(ctx.lock_id);
-        } else {
+        }
+
+        if (ctx.kind == MutationKind::unlock_flip || ctx.kind == MutationKind::unlock_and_append) {
             if (lock.unlock_mutation == static_cast<int>(mutation_id)) {
                 lock.unlock_mutation = -1;
             }
@@ -423,8 +465,9 @@ void MuLeader::run() {
             lock.holder_slot = 0;
             lock.holder_client_id = 0;
             lock.holder_req_id = 0;
-            try_grant(ctx.lock_id);
         }
+
+        try_grant(ctx.lock_id);
 
         enqueue_ready(ctx.lock_id);
     };
@@ -490,6 +533,11 @@ void MuLeader::run() {
         if (!lock.pending_unlock.has_value() || lock.unlock_mutation != -1) return;
 
         const MuRequest req = *lock.pending_unlock;
+        const bool can_append_next = !lock.pending_locks.empty() && lock.next_append_slot < MAX_LOG_PER_LOCK;
+        MuRequest next_req{};
+        if (can_append_next) {
+            next_req = lock.pending_locks.front();
+        }
 
         if (!lock.holder_active
             || req.client_id != lock.holder_client_id
@@ -530,20 +578,39 @@ void MuLeader::run() {
         auto* lock_base = mu_lock_base(local_buf, lock_id);
         const uint64_t current_entry = mu_read_entry_word(lock_base, req.granted_slot);
         mu_write_entry_word(lock_base, req.granted_slot, mu_entry_mark_unlocked(current_entry));
+        uint32_t append_slot = 0;
+        if (can_append_next) {
+            append_slot = lock.next_append_slot++;
+            mu_write_entry_word(lock_base, append_slot, mu_make_entry(next_req.client_id, next_req.req_id, false));
+            lock.pending_locks.pop_front();
+        }
         debug(
             "unlock posted lock=" + std::to_string(lock_id)
             + " slot=" + std::to_string(req.granted_slot)
             + " client=" + std::to_string(req.client_id)
-            + " req=" + std::to_string(req.req_id));
+            + " req=" + std::to_string(req.req_id)
+            + (can_append_next
+                ? " append_slot=" + std::to_string(append_slot) + " append_req=" + std::to_string(next_req.req_id)
+                : ""));
 
         const uint32_t mutation_id = *mutation_id_opt;
         auto& ctx = mutations[mutation_id];
-        ctx.kind = MutationKind::unlock_flip;
+        ctx.kind = can_append_next ? MutationKind::unlock_and_append : MutationKind::unlock_flip;
         ctx.lock_id = lock_id;
         ctx.slot = req.granted_slot;
         ctx.client_id = req.client_id;
         ctx.req_id = req.req_id;
+        ctx.has_append = can_append_next;
+        ctx.append_slot = append_slot;
+        ctx.append_client_id = next_req.client_id;
+        ctx.append_req_id = next_req.req_id;
         lock.unlock_mutation = static_cast<int>(mutation_id);
+        if (can_append_next) {
+            lock.append_inflight++;
+            stats.append_inflight_high_watermark = std::max<uint64_t>(
+                stats.append_inflight_high_watermark,
+                lock.append_inflight);
+        }
 
         post_mutation_writes(mutation_id);
     };
@@ -727,7 +794,8 @@ void MuLeader::run() {
 
                 if (ctx.pending_followers == 0) {
                     auto& lock = locks[ctx.lock_id];
-                    if (ctx.kind == MutationKind::append_lock && lock.append_inflight > 0) {
+                    if ((ctx.kind == MutationKind::append_lock || ctx.kind == MutationKind::unlock_and_append)
+                        && lock.append_inflight > 0) {
                         lock.append_inflight--;
                     }
                     release_mutation(mutation_id);
