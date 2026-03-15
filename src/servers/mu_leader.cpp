@@ -123,7 +123,7 @@ bool is_resp_send_wr_id(const uint64_t wr_id) {
 
 void MuLeader::run() {
     const bool mu_debug = get_uint_env_or("MU_DEBUG", 0) != 0;
-    const bool mu_stats_enabled = get_uint_env_or("MU_STATS", 0) != 0;
+    const bool mu_stats_enabled = get_uint_env_or("MU_STATS", 1) != 0;
     const bool mu_quorum_only_signal =
         get_uint_env_or("MU_REPL_SIGNAL_QUORUM_ONLY", MU_REPL_SIGNAL_QUORUM_ONLY_DEFAULT) != 0;
     const int server_cq_batch = static_cast<int>(std::max<size_t>(1, get_uint_env_or("MU_SERVER_CQ_BATCH", MU_SERVER_CQ_BATCH_DEFAULT)));
