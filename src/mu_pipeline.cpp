@@ -158,7 +158,7 @@ void run_mu_pipeline(
     uint64_t* lock_counts,
     const MuPipelineConfig& config
 ) {
-    const bool mu_debug = get_uint_env_or("MU_DEBUG", 1) != 0;
+    const bool mu_debug = get_uint_env_or("MU_DEBUG", 0) != 0;
     auto debug = [&](const std::string& msg) {
         if (mu_debug) {
             std::cout << "[MuClient " << client.id() << "] " << msg << "\n";
