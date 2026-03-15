@@ -22,8 +22,13 @@ enum class MuOpPhase : uint8_t {
     wait_unlock_ack = 2,
 };
 
-constexpr uint64_t MU_RECV_WR_TAG = 0x4D55000000000000ULL;
-constexpr uint64_t MU_SEND_WR_TAG = 0x4D56000000000000ULL;
+constexpr uint64_t MU_RECV_WR_TAG = 0xA1ULL;
+constexpr uint64_t MU_SEND_WR_TAG = 0xA2ULL;
+constexpr uint64_t MU_WR_TAG_SHIFT = 56;
+constexpr uint64_t MU_WR_GEN_SHIFT = 24;
+constexpr uint64_t MU_WR_SLOT_SHIFT = 8;
+constexpr uint64_t MU_WR_GEN_MASK = 0xFFFFFFFFULL;
+constexpr uint64_t MU_WR_SLOT_MASK = 0xFFFFULL;
 
 struct MuClientBuffers {
     MuResponse* responses = nullptr;
@@ -43,33 +48,33 @@ struct MuOpCtx {
 };
 
 uint64_t make_recv_wr_id(const MuOpCtx& op, const MuOpPhase phase) {
-    return MU_RECV_WR_TAG
-         | ((static_cast<uint64_t>(op.generation) & 0xFFFFULL) << 32)
-         | (static_cast<uint64_t>(op.slot) << 8)
+    return (MU_RECV_WR_TAG << MU_WR_TAG_SHIFT)
+         | ((static_cast<uint64_t>(op.generation) & MU_WR_GEN_MASK) << MU_WR_GEN_SHIFT)
+         | ((static_cast<uint64_t>(op.slot) & MU_WR_SLOT_MASK) << MU_WR_SLOT_SHIFT)
          | static_cast<uint64_t>(phase);
 }
 
 uint64_t make_send_wr_id(const MuOpCtx& op, const MuOpPhase phase) {
-    return MU_SEND_WR_TAG
-         | ((static_cast<uint64_t>(op.generation) & 0xFFFFULL) << 32)
-         | (static_cast<uint64_t>(op.slot) << 8)
+    return (MU_SEND_WR_TAG << MU_WR_TAG_SHIFT)
+         | ((static_cast<uint64_t>(op.generation) & MU_WR_GEN_MASK) << MU_WR_GEN_SHIFT)
+         | ((static_cast<uint64_t>(op.slot) & MU_WR_SLOT_MASK) << MU_WR_SLOT_SHIFT)
          | static_cast<uint64_t>(phase);
 }
 
 bool is_recv_wr_id(const uint64_t wr_id) {
-    return (wr_id & 0xFFFF000000000000ULL) == MU_RECV_WR_TAG;
+    return (wr_id >> MU_WR_TAG_SHIFT) == MU_RECV_WR_TAG;
 }
 
 bool is_send_wr_id(const uint64_t wr_id) {
-    return (wr_id & 0xFFFF000000000000ULL) == MU_SEND_WR_TAG;
+    return (wr_id >> MU_WR_TAG_SHIFT) == MU_SEND_WR_TAG;
 }
 
 uint32_t wr_generation(const uint64_t wr_id) {
-    return static_cast<uint32_t>((wr_id >> 32) & 0xFFFFu);
+    return static_cast<uint32_t>((wr_id >> MU_WR_GEN_SHIFT) & MU_WR_GEN_MASK);
 }
 
 uint32_t wr_slot(const uint64_t wr_id) {
-    return static_cast<uint32_t>((wr_id >> 8) & 0xFFFFFFu);
+    return static_cast<uint32_t>((wr_id >> MU_WR_SLOT_SHIFT) & MU_WR_SLOT_MASK);
 }
 
 MuOpPhase wr_phase(const uint64_t wr_id) {
@@ -171,6 +176,9 @@ void run_mu_pipeline(
 
     if (config.active_window > static_cast<size_t>(std::numeric_limits<uint32_t>::max() >> 8)) {
         throw std::runtime_error("MU pipeline: active window too large");
+    }
+    if (config.active_window > MU_WR_SLOT_MASK) {
+        throw std::runtime_error("MU pipeline: active window exceeds wr_id slot capacity");
     }
 
     auto buffers = map_client_buffers(client.buffer(), client.buffer_size(), config.active_window);

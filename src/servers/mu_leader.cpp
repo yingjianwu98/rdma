@@ -21,9 +21,13 @@ enum class MutationKind : uint8_t {
     unlock_flip = 2,
 };
 
-constexpr uint64_t MU_RECV_WR_TAG = 0x4C52000000000000ULL;
-constexpr uint64_t MU_REPL_WR_TAG = 0x4C57000000000000ULL;
+constexpr uint64_t MU_RECV_WR_TAG = 0xB1ULL;
+constexpr uint64_t MU_REPL_WR_TAG = 0xB2ULL;
 constexpr uint64_t MU_RESP_WR_TAG = 0x4C53000000000000ULL;
+constexpr uint64_t MU_WR_TAG_SHIFT = 56;
+constexpr uint64_t MU_REPL_GEN_SHIFT = 24;
+constexpr uint64_t MU_REPL_GEN_MASK = 0xFFFFFFFFULL;
+constexpr uint64_t MU_REPL_ID_MASK = 0xFFFFFFULL;
 
 struct MutationCtx {
     bool in_use = false;
@@ -53,7 +57,7 @@ struct LockState {
 };
 
 uint64_t make_recv_wr_id(const uint16_t client_id, const uint16_t recv_slot) {
-    return MU_RECV_WR_TAG
+    return (MU_RECV_WR_TAG << MU_WR_TAG_SHIFT)
          | (static_cast<uint64_t>(client_id) << 16)
          | static_cast<uint64_t>(recv_slot);
 }
@@ -67,25 +71,25 @@ uint16_t recv_slot_index(const uint64_t wr_id) {
 }
 
 uint64_t make_repl_wr_id(const uint32_t mutation_id, const uint32_t generation) {
-    return MU_REPL_WR_TAG
-         | ((static_cast<uint64_t>(generation) & 0xFFFFULL) << 32)
-         | static_cast<uint64_t>(mutation_id);
+    return (MU_REPL_WR_TAG << MU_WR_TAG_SHIFT)
+         | ((static_cast<uint64_t>(generation) & MU_REPL_GEN_MASK) << MU_REPL_GEN_SHIFT)
+         | (static_cast<uint64_t>(mutation_id) & MU_REPL_ID_MASK);
 }
 
 uint32_t repl_generation(const uint64_t wr_id) {
-    return static_cast<uint32_t>((wr_id >> 32) & 0xFFFFu);
+    return static_cast<uint32_t>((wr_id >> MU_REPL_GEN_SHIFT) & MU_REPL_GEN_MASK);
 }
 
 uint32_t repl_mutation_id(const uint64_t wr_id) {
-    return static_cast<uint32_t>(wr_id & 0xFFFFFFFFu);
+    return static_cast<uint32_t>(wr_id & MU_REPL_ID_MASK);
 }
 
 bool is_repl_wr_id(const uint64_t wr_id) {
-    return (wr_id & 0xFFFF000000000000ULL) == MU_REPL_WR_TAG;
+    return (wr_id >> MU_WR_TAG_SHIFT) == MU_REPL_WR_TAG;
 }
 
 bool is_recv_wr_id(const uint64_t wr_id) {
-    return (wr_id & 0xFFFF000000000000ULL) == MU_RECV_WR_TAG;
+    return (wr_id >> MU_WR_TAG_SHIFT) == MU_RECV_WR_TAG;
 }
 
 }  // namespace
@@ -107,6 +111,9 @@ void MuLeader::run() {
     const size_t mutation_pool_size = std::max<size_t>(
         handled_locks * (MU_MAX_APPEND_INFLIGHT_PER_LOCK + 1),
         MU_MAX_APPEND_INFLIGHT_PER_LOCK + 1);
+    if (mutation_pool_size > MU_REPL_ID_MASK) {
+        throw std::runtime_error("MuLeader: mutation pool exceeds wr_id capacity");
+    }
 
     std::vector<MuRequest> recv_buffers(num_clients * MU_SERVER_RECV_RING);
     ibv_mr* recv_mr = ibv_reg_mr(
