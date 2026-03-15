@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <iostream>
 #include <limits>
 #include <random>
 #include <stdexcept>
@@ -157,6 +158,13 @@ void run_mu_pipeline(
     uint64_t* lock_counts,
     const MuPipelineConfig& config
 ) {
+    const bool mu_debug = get_uint_env_or("MU_DEBUG", 1) != 0;
+    auto debug = [&](const std::string& msg) {
+        if (mu_debug) {
+            std::cout << "[MuClient " << client.id() << "] " << msg << "\n";
+        }
+    };
+
     if (client.connections().empty()) {
         throw std::runtime_error("MU pipeline: missing leader connection");
     }
@@ -198,6 +206,10 @@ void run_mu_pipeline(
         req.lock_id = op.lock_id;
         req.req_id = op.req_id;
         req.granted_slot = 0;
+        debug(
+            "send lock lock=" + std::to_string(op.lock_id)
+            + " req=" + std::to_string(op.req_id)
+            + " slot=" + std::to_string(op.slot));
         post_request(
             client,
             op,
@@ -219,6 +231,11 @@ void run_mu_pipeline(
         req.lock_id = op.lock_id;
         req.req_id = op.req_id;
         req.granted_slot = op.granted_slot;
+        debug(
+            "send unlock lock=" + std::to_string(op.lock_id)
+            + " req=" + std::to_string(op.req_id)
+            + " granted_slot=" + std::to_string(op.granted_slot)
+            + " op_slot=" + std::to_string(op.slot));
         post_request(
             client,
             op,
@@ -282,6 +299,10 @@ void run_mu_pipeline(
                 if (resp.op != static_cast<uint8_t>(MuRpcOp::Lock)) {
                     throw std::runtime_error("MU pipeline: expected lock grant response");
                 }
+                debug(
+                    "recv grant lock=" + std::to_string(op.lock_id)
+                    + " req=" + std::to_string(op.req_id)
+                    + " granted_slot=" + std::to_string(resp.granted_slot));
                 op.granted_slot = resp.granted_slot;
                 latencies[op.latency_index] = std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now() - op.started_at).count();
@@ -292,6 +313,11 @@ void run_mu_pipeline(
             if (resp.op != static_cast<uint8_t>(MuRpcOp::Unlock)) {
                 throw std::runtime_error("MU pipeline: expected unlock ack response");
             }
+
+            debug(
+                "recv unlock ack lock=" + std::to_string(op.lock_id)
+                + " req=" + std::to_string(op.req_id)
+                + " granted_slot=" + std::to_string(op.granted_slot));
 
             lock_counts[op.lock_id]++;
             op.active = false;
