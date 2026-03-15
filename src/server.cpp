@@ -99,8 +99,8 @@ RemoteConnection Server::connect_to_node(const std::string& ip, uint16_t port) {
     rdma_conn_param param{};
     param.private_data = &priv;
     param.private_data_len = sizeof(priv);
-    param.responder_resources = 1;
-    param.initiator_depth = 1;
+    param.responder_resources = RDMA_RESPONDER_RESOURCES;
+    param.initiator_depth = RDMA_INITIATOR_DEPTH;
     param.rnr_retry_count = 7;
 
     if (rdma_connect(cm_id, &param))
@@ -247,8 +247,8 @@ void Server::start(uint16_t port) {
         rdma_conn_param accept_params{};
         accept_params.private_data     = &server_creds_;
         accept_params.private_data_len = sizeof(server_creds_);
-        accept_params.responder_resources = 1;
-        accept_params.initiator_depth     = 1;
+        accept_params.responder_resources = RDMA_RESPONDER_RESOURCES;
+        accept_params.initiator_depth     = RDMA_INITIATOR_DEPTH;
         accept_params.rnr_retry_count = 7;
 
         if (rdma_accept(new_id, &accept_params)) {

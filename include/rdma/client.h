@@ -15,7 +15,7 @@ class Client {
     friend class LockStrategyBase;
 
 public:
-    explicit Client(uint32_t id);
+    explicit Client(uint32_t id, size_t buffer_size = CLIENT_ALIGNED_SIZE);
     ~Client();
 
     Client(const Client&) = delete;
@@ -28,6 +28,7 @@ public:
     [[nodiscard]] ibv_cq* cq() const { return cq_; }
     [[nodiscard]] ibv_mr* mr() const { return mr_; }
     [[nodiscard]] void* buffer() const { return buf_; }
+    [[nodiscard]] size_t buffer_size() const { return buffer_size_; }
     [[nodiscard]] const std::vector<RemoteNode>& connections() const { return connections_; }
     [[nodiscard]] const std::vector<RemoteNode>& peers() const { return peers_; }
 
@@ -39,6 +40,7 @@ private:
     ibv_cq* cq_ = nullptr;
     ibv_mr* mr_ = nullptr;
     void* buf_ = nullptr;
+    size_t buffer_size_;
     std::vector<RemoteNode> connections_;
     std::vector<RemoteNode> peers_;
 

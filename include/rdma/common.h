@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -41,6 +42,8 @@ constexpr size_t QP_DEPTH = 2048;
 constexpr size_t MAX_INLINE_DEPTH = 64;
 constexpr size_t CLIENT_SLOT_SIZE = 1024;
 constexpr size_t MAX_REPLICAS = 10;
+constexpr uint8_t RDMA_RESPONDER_RESOURCES = 16;
+constexpr uint8_t RDMA_INITIATOR_DEPTH = 16;
 
 // ─── Benchmark constants ───
 
@@ -54,7 +57,7 @@ constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * TOTAL_CLIENTS;
 // ─── Lock table layout ───
 
 constexpr size_t MAX_LOCKS = 100;
-constexpr size_t MAX_LOG_PER_LOCK = (NUM_OPS / MAX_LOCKS) * 4;;
+constexpr size_t MAX_LOG_PER_LOCK = ((NUM_OPS + MAX_LOCKS - 1) / MAX_LOCKS) * 4;
 constexpr size_t LOCK_HEADER_SIZE = 8;
 constexpr size_t LOCK_LOG_SIZE = MAX_LOG_PER_LOCK * ENTRY_SIZE;
 constexpr size_t LOCK_REGION_SIZE = LOCK_HEADER_SIZE + LOCK_LOG_SIZE;
@@ -69,14 +72,15 @@ constexpr size_t CLIENT_STAGING_TOTAL = CLIENT_STAGING_SIZE * TOTAL_CLIENTS;
 // ─── Buffer sizing ───
 
 constexpr size_t METADATA_SIZE = 4096;
+constexpr size_t PAGE_SIZE = 4096;
 
 // Server: full lock table + staging + metadata
 constexpr size_t SERVER_POOL_SIZE = LOCK_TABLE_SIZE + CLIENT_STAGING_TOTAL + METADATA_SIZE;
-constexpr size_t SERVER_ALIGNED_SIZE = ((SERVER_POOL_SIZE + 4095) / 4096) * 4096;
+constexpr size_t SERVER_ALIGNED_SIZE = ((SERVER_POOL_SIZE + PAGE_SIZE - 1) / PAGE_SIZE) * PAGE_SIZE;
 
 // Client: just LocalState + padding (a few KB)
 constexpr size_t CLIENT_POOL_SIZE = 4096 * 2;  // 8KB — plenty for LocalState
-constexpr size_t CLIENT_ALIGNED_SIZE = ((CLIENT_POOL_SIZE + 4095) / 4096) * 4096;
+constexpr size_t CLIENT_ALIGNED_SIZE = ((CLIENT_POOL_SIZE + PAGE_SIZE - 1) / PAGE_SIZE) * PAGE_SIZE;
 
 static_assert(LOCK_TABLE_SIZE <= SERVER_ALIGNED_SIZE, "Lock table exceeds server buffer size");
 
@@ -98,6 +102,10 @@ inline constexpr size_t lock_log_slot_offset(const uint32_t lock_id, const uint6
 
 inline constexpr size_t client_staging_offset(const uint32_t client_id) {
     return CLIENT_STAGING_OFFSET + (client_id * CLIENT_STAGING_SIZE);
+}
+
+inline constexpr size_t align_up(const size_t value, const size_t alignment) {
+    return ((value + alignment - 1) / alignment) * alignment;
 }
 
 // ─── Sentinel values ───
@@ -173,8 +181,20 @@ inline unsigned int get_uint_env(const std::string& name) {
     return static_cast<unsigned int>(std::stoul(val));
 }
 
+inline unsigned int get_uint_env_or(const std::string& name, const unsigned int fallback) {
+    const char* val = std::getenv(name.c_str());
+    if (!val || std::string(val).empty()) return fallback;
+    return static_cast<unsigned int>(std::stoul(val));
+}
+
+inline double get_double_env_or(const std::string& name, const double fallback) {
+    const char* val = std::getenv(name.c_str());
+    if (!val || std::string(val).empty()) return fallback;
+    return std::stod(val);
+}
+
 inline void* allocate_server_buffer(size_t num_locks = MAX_LOCKS) {
-    void* ptr = aligned_alloc(4096, SERVER_ALIGNED_SIZE);
+    void* ptr = aligned_alloc(PAGE_SIZE, SERVER_ALIGNED_SIZE);
     if (!ptr) throw std::runtime_error("Could not allocate server RDMA buffer");
     std::memset(ptr, 0xFF, SERVER_ALIGNED_SIZE);
 
@@ -187,10 +207,11 @@ inline void* allocate_server_buffer(size_t num_locks = MAX_LOCKS) {
     return ptr;
 }
 
-inline void* allocate_client_buffer() {
-    void* ptr = aligned_alloc(4096, CLIENT_ALIGNED_SIZE);
+inline void* allocate_client_buffer(size_t requested_size = CLIENT_ALIGNED_SIZE) {
+    const size_t aligned_size = std::max(align_up(requested_size, PAGE_SIZE), PAGE_SIZE);
+    void* ptr = aligned_alloc(PAGE_SIZE, aligned_size);
     if (!ptr) throw std::runtime_error("Could not allocate client RDMA buffer");
-    std::memset(ptr, 0xFF, CLIENT_ALIGNED_SIZE);
+    std::memset(ptr, 0xFF, aligned_size);
     return ptr;
 }
 

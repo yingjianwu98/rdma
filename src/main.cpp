@@ -4,6 +4,7 @@
 #include "rdma/servers/mu_follower.h"
 #include "rdma/servers/synra_node.h"
 #include "rdma/client.h"
+#include "rdma/cas_pipeline.h"
 #include "rdma/lock_table.h"
 #include "rdma/strategies/cas_strategy.h"
 #include "rdma/strategies/faa_strategy.h"
@@ -21,7 +22,7 @@
 #include <thread>
 
 // ─── Configuration ───
-constexpr const char* STRATEGY = "mu";      // "mu", "faa", "cas", or "tas"
+constexpr const char* STRATEGY = "cas";      // "mu", "faa", "cas", or "tas"
 
 int main() {
     try {
@@ -52,23 +53,30 @@ int main() {
                         try {
                             pin_thread_to_cpu(pick_cpu_for_client(i));
 
+                            CasPipelineConfig cas_config{};
+                            if (is_cas) {
+                                cas_config = load_cas_pipeline_config();
+                            }
+
                             std::vector<std::unique_ptr<LockStrategy>> strategies;
                             LockTable table;
 
-                            for (size_t l = 0; l < MAX_LOCKS; ++l) {
-                                if (is_mu) {
-                                    strategies.push_back(std::make_unique<MuStrategy>());
-                                } else if (is_faa) {
-                                    strategies.push_back(std::make_unique<FaaStrategy>());
-                                } else if (is_cas) {
-                                    strategies.push_back(std::make_unique<CasStrategy>());
-                                } else if (is_tas) {
-                                    strategies.push_back(std::make_unique<TasStrategy>());
+                            if (!is_cas) {
+                                for (size_t l = 0; l < MAX_LOCKS; ++l) {
+                                    if (is_mu) {
+                                        strategies.push_back(std::make_unique<MuStrategy>());
+                                    } else if (is_faa) {
+                                        strategies.push_back(std::make_unique<FaaStrategy>());
+                                    } else if (is_tas) {
+                                        strategies.push_back(std::make_unique<TasStrategy>());
+                                    }
+                                    table.add(*strategies.back());
                                 }
-                                table.add(*strategies.back());
                             }
 
-                            auto client = std::make_unique<Client>(global_id);
+                            auto client = std::make_unique<Client>(
+                                global_id,
+                                is_cas ? cas_pipeline_client_buffer_size(cas_config) : CLIENT_ALIGNED_SIZE);
 
                             if (is_mu) {
                                 std::vector<std::string> leader_only = {CLUSTER_NODES[0]};
@@ -102,19 +110,27 @@ int main() {
 
                             uint64_t* latencies = &((*all_latencies)[i * NUM_OPS_PER_CLIENT]);
 
-                            for (size_t op = 0; op < NUM_OPS_PER_CLIENT; ++op) {
-                                auto [lock_id, lock] = table.random(*client);
+                            if (is_cas) {
+                                run_cas_pipeline(
+                                    *client,
+                                    latencies,
+                                    (*lock_counts)[global_id].data(),
+                                    cas_config);
+                            } else {
+                                for (size_t op = 0; op < NUM_OPS_PER_CLIENT; ++op) {
+                                    auto [lock_id, lock] = table.random(*client);
 
-                                auto t0 = std::chrono::steady_clock::now();
-                                lock.lock();
-                                auto t1 = std::chrono::steady_clock::now();
+                                    auto t0 = std::chrono::steady_clock::now();
+                                    lock.lock();
+                                    auto t1 = std::chrono::steady_clock::now();
 
-                                lock.unlock();
-                                lock.cleanup();
+                                    lock.unlock();
+                                    lock.cleanup();
 
-                                latencies[op] = std::chrono::duration_cast<
-                                    std::chrono::nanoseconds>(t1 - t0).count();
-                                (*lock_counts)[global_id][lock_id]++;
+                                    latencies[op] = std::chrono::duration_cast<
+                                        std::chrono::nanoseconds>(t1 - t0).count();
+                                    (*lock_counts)[global_id][lock_id]++;
+                                }
                             }
 
                             Client* expected = nullptr;

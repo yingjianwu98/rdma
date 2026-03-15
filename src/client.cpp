@@ -31,7 +31,9 @@ static rdma_cm_event* wait_for_event(
     return event;
 }
 
-Client::Client(const uint32_t id) : id_(id) {
+Client::Client(const uint32_t id, const size_t buffer_size)
+    : id_(id)
+    , buffer_size_(std::max(align_up(buffer_size, PAGE_SIZE), PAGE_SIZE)) {
 }
 
 Client::~Client() {
@@ -62,7 +64,7 @@ void Client::connect(const std::vector<std::string>& node_ips, const uint16_t po
     }
 
     if (!buf_) {
-        buf_ = allocate_client_buffer();
+        buf_ = allocate_client_buffer(buffer_size_);
     }
 
     for (size_t i = 0; i < node_ips.size(); ++i) {
@@ -106,12 +108,12 @@ void Client::connect(const std::vector<std::string>& node_ips, const uint16_t po
 
             cq_ = ibv_create_cq(
                 cm_id->verbs,
-                QP_DEPTH * static_cast<int>(MU_NUM_INSTANCES + TOTAL_CLIENTS),
+                QP_DEPTH * static_cast<int>(std::max<size_t>(node_ips.size() + TOTAL_CLIENTS + MU_NUM_INSTANCES, 32)),
                 nullptr, nullptr, 0);
             if (!cq_) throw std::runtime_error("ibv_create_cq failed");
 
             mr_ = ibv_reg_mr(
-                pd_, buf_, CLIENT_ALIGNED_SIZE,
+                pd_, buf_, buffer_size_,
                 IBV_ACCESS_LOCAL_WRITE |
                     IBV_ACCESS_REMOTE_WRITE |
                     IBV_ACCESS_REMOTE_READ |
@@ -143,8 +145,8 @@ void Client::connect(const std::vector<std::string>& node_ips, const uint16_t po
         rdma_conn_param param{};
         param.private_data = &priv;
         param.private_data_len = sizeof(priv);
-        param.responder_resources = 1;
-        param.initiator_depth = 1;
+        param.responder_resources = RDMA_RESPONDER_RESOURCES;
+        param.initiator_depth = RDMA_INITIATOR_DEPTH;
         param.rnr_retry_count = 10;
 
         if (rdma_connect(cm_id, &param)) {
@@ -272,8 +274,8 @@ void Client::connect_peers(uint16_t peer_port) {
                 rdma_conn_param param{};
                 param.private_data = &priv;
                 param.private_data_len = sizeof(priv);
-                param.responder_resources = 1;
-                param.initiator_depth = 1;
+                param.responder_resources = RDMA_RESPONDER_RESOURCES;
+                param.initiator_depth = RDMA_INITIATOR_DEPTH;
                 param.rnr_retry_count = 7;
 
                 if (rdma_connect(cm_id, &param))
@@ -361,8 +363,8 @@ void Client::connect_peers(uint16_t peer_port) {
         rdma_conn_param accept_params{};
         accept_params.private_data = &my_creds;
         accept_params.private_data_len = sizeof(my_creds);
-        accept_params.responder_resources = 1;
-        accept_params.initiator_depth = 1;
+        accept_params.responder_resources = RDMA_RESPONDER_RESOURCES;
+        accept_params.initiator_depth = RDMA_INITIATOR_DEPTH;
         accept_params.rnr_retry_count = 7;
 
         if (rdma_accept(new_id, &accept_params)) {
