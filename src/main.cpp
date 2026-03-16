@@ -280,6 +280,8 @@ int main() {
                           << " notify_hits=" << total_faa_stats.notify_hits
                           << " wait_retries=" << total_faa_stats.wait_round_retries
                           << " succ_quorum=" << total_faa_stats.successor_learn_quorum
+                          << " succ_while_waiting=" << total_faa_stats.successor_learned_while_waiting
+                          << " succ_on_unlock=" << total_faa_stats.successor_learned_on_unlock
                           << " retire_no_successor=" << total_faa_stats.retire_no_successor
                           << "\n";
                 std::cout << "[FaaStats combined] active"

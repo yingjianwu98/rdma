@@ -28,6 +28,8 @@ struct FaaPipelineStats {
     uint64_t successor_read_posts = 0;
     uint64_t successor_read_cqes = 0;
     uint64_t successor_learn_quorum = 0;
+    uint64_t successor_learned_while_waiting = 0;
+    uint64_t successor_learned_on_unlock = 0;
     uint64_t retire_no_successor = 0;
     uint64_t notify_posts = 0;
     uint64_t notify_cqes = 0;
@@ -53,6 +55,8 @@ inline FaaPipelineStats& operator+=(FaaPipelineStats& lhs, const FaaPipelineStat
     lhs.successor_read_posts += rhs.successor_read_posts;
     lhs.successor_read_cqes += rhs.successor_read_cqes;
     lhs.successor_learn_quorum += rhs.successor_learn_quorum;
+    lhs.successor_learned_while_waiting += rhs.successor_learned_while_waiting;
+    lhs.successor_learned_on_unlock += rhs.successor_learned_on_unlock;
     lhs.retire_no_successor += rhs.retire_no_successor;
     lhs.notify_posts += rhs.notify_posts;
     lhs.notify_cqes += rhs.notify_cqes;

@@ -664,6 +664,7 @@ void run_faa_pipeline(
                 const uint64_t next_waiter = learn_waiter_quorum(next_values, conns.size());
                 if (next_waiter != EMPTY_SLOT) {
                     stats.successor_learn_quorum++;
+                    stats.successor_learned_while_waiting++;
                     op.next_waiter_id = next_waiter;
                     op.successor_known = true;
                 }
@@ -721,6 +722,7 @@ void run_faa_pipeline(
                 const uint64_t next_waiter = learn_waiter_quorum(next_values, conns.size());
                 if (next_waiter != EMPTY_SLOT) {
                     stats.successor_learn_quorum++;
+                    stats.successor_learned_on_unlock++;
                     op.next_waiter_id = next_waiter;
                     op.successor_known = true;
                     debug(
