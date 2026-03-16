@@ -62,7 +62,7 @@ constexpr double TICKET_FAA_ZIPF_SKEW = 0.0;
 // ─── Lock table layout ───
 
 constexpr size_t MAX_LOCKS = 1000;
-constexpr size_t FAA_ACTIVE_WINDOW = 16;
+constexpr size_t FAA_ACTIVE_WINDOW = 32;
 constexpr size_t TICKET_FAA_ACTIVE_WINDOW = 16;
 constexpr size_t MU_ACTIVE_WINDOW = 32;
 constexpr size_t TAS_ACTIVE_WINDOW = 32;
