@@ -146,7 +146,8 @@ void Server::start(uint16_t port) {
 
     auto* base = static_cast<uint8_t*>(buf_);
     for (uint32_t i = 0; i < MAX_LOCKS; ++i) {
-        *reinterpret_cast<volatile uint64_t*>(base + i * LOCK_REGION_SIZE) = 0;
+        *reinterpret_cast<volatile uint64_t*>(base + lock_control_offset(i)) = 0;
+        *reinterpret_cast<volatile uint64_t*>(base + lock_turn_offset(i)) = 0;
     }
 
     const size_t num_nodes = CLUSTER_NODES.size();

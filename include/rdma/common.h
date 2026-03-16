@@ -49,22 +49,26 @@ constexpr uint8_t RDMA_INITIATOR_DEPTH = 16;
 // ─── Benchmark constants ───
 
 constexpr size_t NUM_OPS = 10000000;
-constexpr size_t NUM_CLIENTS_PER_MACHINE = 16;
+constexpr size_t NUM_CLIENTS_PER_MACHINE = 8;
 constexpr size_t TOTAL_MACHINES = 1;
 constexpr size_t TOTAL_CLIENTS = NUM_CLIENTS_PER_MACHINE * TOTAL_MACHINES;
 constexpr size_t NUM_OPS_PER_CLIENT = NUM_OPS / TOTAL_CLIENTS;
 constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * TOTAL_CLIENTS;
 constexpr bool FAA_REPLICATE_USE_CAS = false;
+constexpr bool TICKET_FAA_REPLICATE_USE_CAS = true;
+constexpr size_t TICKET_FAA_CQ_BATCH = 32;
+constexpr double TICKET_FAA_ZIPF_SKEW = 0.0;
 
 // ─── Lock table layout ───
 
 constexpr size_t MAX_LOCKS = 5000;
 constexpr size_t FAA_ACTIVE_WINDOW = 16;
+constexpr size_t TICKET_FAA_ACTIVE_WINDOW = 16;
 constexpr size_t MU_ACTIVE_WINDOW = 32;
 constexpr size_t TAS_ACTIVE_WINDOW = 32;
 constexpr size_t CAS_ACTIVE_CLIENTS = 32;
 constexpr size_t MAX_LOG_PER_LOCK = ((NUM_OPS + MAX_LOCKS - 1) / MAX_LOCKS) * 4;
-constexpr size_t LOCK_HEADER_SIZE = 8;
+constexpr size_t LOCK_HEADER_SIZE = 16;
 constexpr size_t LOCK_LOG_SIZE = MAX_LOG_PER_LOCK * ENTRY_SIZE;
 constexpr size_t LOCK_REGION_SIZE = LOCK_HEADER_SIZE + LOCK_LOG_SIZE;
 constexpr size_t LOCK_TABLE_SIZE = LOCK_REGION_SIZE * MAX_LOCKS;
@@ -98,6 +102,10 @@ inline constexpr size_t lock_base_offset(const uint32_t lock_id) {
 
 inline constexpr size_t lock_control_offset(const uint32_t lock_id) {
     return lock_base_offset(lock_id);
+}
+
+inline constexpr size_t lock_turn_offset(const uint32_t lock_id) {
+    return lock_base_offset(lock_id) + 8;
 }
 
 inline constexpr size_t lock_log_slot_offset(const uint32_t lock_id, const uint64_t slot) {
@@ -208,6 +216,7 @@ inline void* allocate_server_buffer(size_t num_locks = MAX_LOCKS) {
     auto* base = static_cast<char*>(ptr);
     for (size_t l = 0; l < num_locks; ++l) {
         *reinterpret_cast<uint64_t*>(base + lock_control_offset(l)) = 0;
+        *reinterpret_cast<uint64_t*>(base + lock_turn_offset(l)) = 0;
     }
 
     return ptr;
