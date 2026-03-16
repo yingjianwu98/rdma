@@ -48,7 +48,7 @@ constexpr uint8_t RDMA_INITIATOR_DEPTH = 16;
 
 // ─── Benchmark constants ───
 
-constexpr size_t NUM_OPS = 500000;
+constexpr size_t NUM_OPS = 1000000;
 constexpr size_t NUM_CLIENTS_PER_MACHINE = 1;
 constexpr size_t TOTAL_MACHINES = 1;
 constexpr size_t TOTAL_CLIENTS = NUM_CLIENTS_PER_MACHINE * TOTAL_MACHINES;
@@ -58,7 +58,7 @@ constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * TOTAL_CLIENTS;
 // ─── Lock table layout ───
 
 constexpr size_t MAX_LOCKS = 1;
-constexpr size_t FAA_ACTIVE_WINDOW = 1;
+constexpr size_t FAA_ACTIVE_WINDOW = 2;
 constexpr size_t MU_ACTIVE_WINDOW = 32;
 constexpr size_t TAS_ACTIVE_WINDOW = 32;
 constexpr size_t CAS_ACTIVE_CLIENTS = 32;
