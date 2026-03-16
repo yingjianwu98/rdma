@@ -55,7 +55,7 @@ constexpr size_t TOTAL_CLIENTS = NUM_CLIENTS_PER_MACHINE * TOTAL_MACHINES;
 constexpr size_t NUM_OPS_PER_CLIENT = NUM_OPS / TOTAL_CLIENTS;
 constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * TOTAL_CLIENTS;
 constexpr bool FAA_REPLICATE_USE_CAS = false;
-constexpr bool TICKET_FAA_REPLICATE_USE_CAS = true;
+constexpr bool TICKET_FAA_REPLICATE_USE_CAS = false;
 constexpr size_t TICKET_FAA_CQ_BATCH = 32;
 constexpr double TICKET_FAA_ZIPF_SKEW = 0.0;
 
