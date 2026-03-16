@@ -248,6 +248,7 @@ int main() {
                 for (const auto& worker_stats : *faa_stats) {
                     total_faa_stats += worker_stats;
                 }
+                const char* faa_replicate_mode = faa_config.replicate_with_cas ? "cas" : "write";
 
                 const uint64_t total_polls = total_faa_stats.empty_polls + total_faa_stats.nonempty_polls;
                 const double nonempty_poll_pct = total_polls == 0
@@ -255,7 +256,8 @@ int main() {
                     : 100.0 * static_cast<double>(total_faa_stats.nonempty_polls) / static_cast<double>(total_polls);
 
                 std::cout << "[FaaStats combined] posts"
-                          << " | ticket=" << total_faa_stats.faa_ticket_posts
+                          << " | replicate_mode=" << faa_replicate_mode
+                          << " ticket=" << total_faa_stats.faa_ticket_posts
                           << " replicate=" << total_faa_stats.replicate_posts
                           << " wait_round=" << total_faa_stats.wait_round_posts
                           << " mark_done=" << total_faa_stats.mark_done_posts
@@ -306,6 +308,8 @@ int main() {
                 std::cout << "Active Window:  " << std::setw(14) << faa_config.active_window << "\n";
                 std::cout << "Zipf Skew:      " << std::setw(14) << std::fixed << std::setprecision(2)
                           << faa_config.zipf_skew << "\n";
+                std::cout << "Replicate Mode: " << std::setw(14)
+                          << (faa_config.replicate_with_cas ? "cas" : "write") << "\n";
             } else if (is_mu) {
                 std::cout << "Active Window:  " << std::setw(14) << mu_config.active_window << "\n";
             } else if (is_tas) {

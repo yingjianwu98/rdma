@@ -240,7 +240,13 @@ void post_faa_ticket(Client& client, FaaOpCtx& op, const RegisteredFaaBuffers& b
 
 }
 
-void post_replicate_ticket(Client& client, FaaOpCtx& op, const RegisteredFaaBuffers& buffers, FaaPipelineStats& stats) {
+void post_replicate_ticket(
+    Client& client,
+    FaaOpCtx& op,
+    const RegisteredFaaBuffers& buffers,
+    const bool replicate_with_cas,
+    FaaPipelineStats& stats
+) {
     const auto& conns = client.connections();
     auto* mr = client.mr();
     auto* results = row_ptr(buffers.replicate_results, op.slot, conns.size());
@@ -252,7 +258,7 @@ void post_replicate_ticket(Client& client, FaaOpCtx& op, const RegisteredFaaBuff
     op.quorum_hits = 0;
 
     for (size_t i = 0; i < conns.size(); ++i) {
-        results[i] = EMPTY_SLOT - 1;
+        results[i] = replicate_with_cas ? (EMPTY_SLOT - 1) : op.waiter_id;
 
         ibv_sge sge{};
         sge.addr = reinterpret_cast<uintptr_t>(&results[i]);
@@ -261,14 +267,20 @@ void post_replicate_ticket(Client& client, FaaOpCtx& op, const RegisteredFaaBuff
 
         ibv_send_wr wr{}, *bad_wr = nullptr;
         wr.wr_id = encode_wr_id(op, FaaPhase::replicate_ticket, static_cast<uint8_t>(i));
-        wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
         wr.send_flags = IBV_SEND_SIGNALED;
         wr.sg_list = &sge;
         wr.num_sge = 1;
-        wr.wr.atomic.remote_addr = conns[i].addr + lock_log_slot_offset(op.lock_id, op.ticket);
-        wr.wr.atomic.rkey = conns[i].rkey;
-        wr.wr.atomic.compare_add = EMPTY_SLOT;
-        wr.wr.atomic.swap = op.waiter_id;
+        if (replicate_with_cas) {
+            wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
+            wr.wr.atomic.remote_addr = conns[i].addr + lock_log_slot_offset(op.lock_id, op.ticket);
+            wr.wr.atomic.rkey = conns[i].rkey;
+            wr.wr.atomic.compare_add = EMPTY_SLOT;
+            wr.wr.atomic.swap = op.waiter_id;
+        } else {
+            wr.opcode = IBV_WR_RDMA_WRITE;
+            wr.wr.rdma.remote_addr = conns[i].addr + lock_log_slot_offset(op.lock_id, op.ticket);
+            wr.wr.rdma.rkey = conns[i].rkey;
+        }
 
         if (ibv_post_send(conns[i].id->qp, &wr, &bad_wr)) {
             throw std::runtime_error("FAA pipeline: replicate ticket post failed");
@@ -489,6 +501,7 @@ FaaPipelineConfig load_faa_pipeline_config() {
     config.active_window = std::max<size_t>(1, FAA_ACTIVE_WINDOW);
     config.cq_batch = std::max<size_t>(1, get_uint_env_or("FAA_CQ_BATCH", 32));
     config.zipf_skew = get_double_env_or("FAA_ZIPF_SKEW", 0.0);
+    config.replicate_with_cas = FAA_REPLICATE_USE_CAS;
     return config;
 }
 
@@ -614,7 +627,7 @@ void run_faa_pipeline(
                     "faa ticket lock=" + std::to_string(op.lock_id)
                     + " req=" + std::to_string(op.req_id)
                     + " ticket=" + std::to_string(op.ticket));
-                post_replicate_ticket(client, op, buffers, stats);
+                post_replicate_ticket(client, op, buffers, config.replicate_with_cas, stats);
                 continue;
             }
 
@@ -624,7 +637,7 @@ void run_faa_pipeline(
                 stats.replicate_cqes++;
                 auto* results = row_ptr(buffers.replicate_results, op.slot, conns.size());
                 const uint8_t idx = wr_conn(wc.wr_id);
-                if (results[idx] == EMPTY_SLOT) {
+                if (!config.replicate_with_cas || results[idx] == EMPTY_SLOT) {
                     op.quorum_hits++;
                 }
                 const uint32_t remaining = op.response_target - op.responses;

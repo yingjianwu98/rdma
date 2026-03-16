@@ -10,6 +10,7 @@ struct FaaPipelineConfig {
     size_t active_window = 0;
     size_t cq_batch = 0;
     double zipf_skew = 0.0;
+    bool replicate_with_cas = true;
 };
 
 struct FaaPipelineStats {
