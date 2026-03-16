@@ -63,8 +63,8 @@ constexpr uint32_t CAS_RELEASE_SIGNAL_EVERY = 100;
 
 constexpr size_t FAA_CQ_BATCH = 32;
 constexpr double FAA_ZIPF_SKEW = 0.0;
-constexpr bool FAA_DEBUG = false;
-constexpr bool FAA_STATS = true;
+constexpr bool FAA_DEBUG = true;
+constexpr bool FAA_STATS = false;
 
 constexpr size_t MU_CQ_BATCH = 32;
 constexpr uint32_t MU_CLIENT_SEND_SIGNAL_EVERY = 64;
