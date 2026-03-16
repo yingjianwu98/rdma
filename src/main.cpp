@@ -237,56 +237,59 @@ int main() {
                           << " discover_odd_restart=" << total_tas_stats.discover_odd_restart
                           << " | fast_path%=" << fast_path_pct
                           << " slow_path%=" << slow_path_pct
-                          << "\n";
+                          << "\n";f
                 std::cout << "[TasStats combined] active"
                           << " | active_hwm=" << total_tas_stats.active_ops_hwm
                           << "\n";
             }
 
-            if (is_faa && get_uint_env_or("FAA_STATS", 1) != 0) {
-                FaaPipelineStats total_faa_stats{};
-                for (const auto& worker_stats : *faa_stats) {
-                    total_faa_stats += worker_stats;
+            if (is_faa && get_uint_env_or("FAA_STATS", 0) != 0) {
+                for (uint32_t i = 0; i < NUM_CLIENTS_PER_MACHINE; ++i) {
+                    const uint32_t global_id = machine_id * NUM_CLIENTS_PER_MACHINE + i;
+                    const auto& s = (*faa_stats)[i];
+                    const uint64_t total_polls = s.empty_polls + s.nonempty_polls;
+                    const double nonempty_poll_pct = total_polls == 0
+                        ? 0.0
+                        : 100.0 * static_cast<double>(s.nonempty_polls) / static_cast<double>(total_polls);
+
+                    std::cout << "[FaaStats client=" << global_id << "] posts"
+                              << " | ticket=" << s.faa_ticket_posts
+                              << " replicate=" << s.replicate_posts
+                              << " wait_round=" << s.wait_round_posts
+                              << " mark_done=" << s.mark_done_posts
+                              << " succ_read=" << s.successor_read_posts
+                              << " notify=" << s.notify_posts
+                              << "\n";
+                    std::cout << "[FaaStats client=" << global_id << "] cq"
+                              << " | ticket=" << s.faa_ticket_cqes
+                              << " replicate=" << s.replicate_cqes
+                              << " wait_round=" << s.wait_round_cqes
+                              << " mark_done=" << s.mark_done_cqes
+                              << " succ_read=" << s.successor_read_cqes
+                              << " notify=" << s.notify_cqes
+                              << " total=" << s.cqes_polled
+                              << " | polls empty=" << s.empty_polls
+                              << " nonempty=" << s.nonempty_polls
+                              << " nonempty%=" << std::fixed << std::setprecision(1) << nonempty_poll_pct
+                              << "\n";
+                    std::cout << "[FaaStats client=" << global_id << "] decisions"
+                              << " | replicate_quorum=" << s.replicate_quorum_wins
+                              << " pred_done=" << s.predecessor_quorum_done
+                              << " notify_hits=" << s.notify_hits
+                              << " notify_spin_entries=" << s.notify_spin_entries
+                              << " notify_spin_iterations=" << s.notify_spin_iterations
+                              << " notify_spin_hits=" << s.notify_spin_hits
+                              << " notify_spin_exhausted=" << s.notify_spin_exhausted
+                              << " wait_retries=" << s.wait_round_retries
+                              << " succ_quorum=" << s.successor_learn_quorum
+                              << " succ_while_waiting=" << s.successor_learned_while_waiting
+                              << " succ_on_unlock=" << s.successor_learned_on_unlock
+                              << " retire_no_successor=" << s.retire_no_successor
+                              << "\n";
+                    std::cout << "[FaaStats client=" << global_id << "] active"
+                              << " | active_hwm=" << s.active_ops_hwm
+                              << "\n";
                 }
-
-                const uint64_t total_polls = total_faa_stats.empty_polls + total_faa_stats.nonempty_polls;
-                const double nonempty_poll_pct = total_polls == 0
-                    ? 0.0
-                    : 100.0 * static_cast<double>(total_faa_stats.nonempty_polls) / static_cast<double>(total_polls);
-
-                std::cout << "[FaaStats combined] posts"
-                          << " | ticket=" << total_faa_stats.faa_ticket_posts
-                          << " replicate=" << total_faa_stats.replicate_posts
-                          << " wait_round=" << total_faa_stats.wait_round_posts
-                          << " mark_done=" << total_faa_stats.mark_done_posts
-                          << " succ_read=" << total_faa_stats.successor_read_posts
-                          << " notify=" << total_faa_stats.notify_posts
-                          << "\n";
-                std::cout << "[FaaStats combined] cq"
-                          << " | ticket=" << total_faa_stats.faa_ticket_cqes
-                          << " replicate=" << total_faa_stats.replicate_cqes
-                          << " wait_round=" << total_faa_stats.wait_round_cqes
-                          << " mark_done=" << total_faa_stats.mark_done_cqes
-                          << " succ_read=" << total_faa_stats.successor_read_cqes
-                          << " notify=" << total_faa_stats.notify_cqes
-                          << " total=" << total_faa_stats.cqes_polled
-                          << " | polls empty=" << total_faa_stats.empty_polls
-                          << " nonempty=" << total_faa_stats.nonempty_polls
-                          << " nonempty%=" << std::fixed << std::setprecision(1) << nonempty_poll_pct
-                          << "\n";
-                std::cout << "[FaaStats combined] decisions"
-                          << " | replicate_quorum=" << total_faa_stats.replicate_quorum_wins
-                          << " pred_done=" << total_faa_stats.predecessor_quorum_done
-                          << " notify_hits=" << total_faa_stats.notify_hits
-                          << " wait_retries=" << total_faa_stats.wait_round_retries
-                          << " succ_quorum=" << total_faa_stats.successor_learn_quorum
-                          << " succ_while_waiting=" << total_faa_stats.successor_learned_while_waiting
-                          << " succ_on_unlock=" << total_faa_stats.successor_learned_on_unlock
-                          << " retire_no_successor=" << total_faa_stats.retire_no_successor
-                          << "\n";
-                std::cout << "[FaaStats combined] active"
-                          << " | active_hwm=" << total_faa_stats.active_ops_hwm
-                          << "\n";
             }
 
             if (verify_client.load()) delete verify_client.load();

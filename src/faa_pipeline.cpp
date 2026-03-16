@@ -31,15 +31,18 @@ constexpr uint64_t FAA_ROUND_MASK = (1ULL << FAA_ROUND_BITS) - 1;
 constexpr uint64_t FAA_PHASE_MASK = (1ULL << FAA_PHASE_BITS) - 1;
 constexpr uint64_t FAA_SLOT_MASK = (1ULL << FAA_SLOT_BITS) - 1;
 constexpr uint64_t FAA_GENERATION_MASK = (1ULL << FAA_SLOT_SHIFT) - 1;
+constexpr uint32_t FAA_NOTIFY_SPIN_ROUNDS = 100000;
+constexpr uint32_t FAA_NOTIFY_SPIN_STEP = 64;
 
 enum class FaaPhase : uint8_t {
     idle = 0,
     faa_ticket = 1,
     replicate_ticket = 2,
-    wait_predecessor = 3,
-    mark_done = 4,
-    successor_read = 5,
-    notify_successor = 6,
+    wait_predecessor_read = 3,
+    wait_notify_spin = 4,
+    mark_done = 5,
+    successor_read = 6,
+    notify_successor = 7,
 };
 
 struct RegisteredFaaBuffers {
@@ -63,6 +66,7 @@ struct FaaOpCtx {
     uint64_t waiter_id = 0;
     uint64_t next_waiter_id = EMPTY_SLOT;
     bool successor_known = false;
+    uint32_t notify_spin_remaining = 0;
     FaaPhase phase = FaaPhase::idle;
     uint32_t responses = 0;
     uint32_t response_target = 0;
@@ -279,7 +283,7 @@ void post_replicate_ticket(Client& client, FaaOpCtx& op, const RegisteredFaaBuff
 
 }
 
-void post_wait_round(Client& client, FaaOpCtx& op, const RegisteredFaaBuffers& buffers, FaaPipelineStats& stats) {
+void post_wait_predecessor_read(Client& client, FaaOpCtx& op, const RegisteredFaaBuffers& buffers, FaaPipelineStats& stats) {
     const auto& conns = client.connections();
     auto* mr = client.mr();
     auto* prev_values = row_ptr(buffers.prev_reads, op.slot, conns.size());
@@ -288,49 +292,54 @@ void post_wait_round(Client& client, FaaOpCtx& op, const RegisteredFaaBuffers& b
     const uint64_t next_slot = op.ticket + 1;
 
     op.round++;
-    op.phase = FaaPhase::wait_predecessor;
+    op.phase = FaaPhase::wait_predecessor_read;
     op.responses = 0;
     op.response_target = static_cast<uint32_t>(conns.size());
 
     for (size_t i = 0; i < conns.size(); ++i) {
         prev_values[i] = EMPTY_SLOT;
-        next_values[i] = EMPTY_SLOT;
 
         ibv_sge prev_sge{};
         prev_sge.addr = reinterpret_cast<uintptr_t>(&prev_values[i]);
         prev_sge.length = sizeof(uint64_t);
         prev_sge.lkey = mr->lkey;
 
-        ibv_send_wr prev_wr{}, *bad_prev = nullptr;
-        prev_wr.wr_id = encode_wr_id(op, FaaPhase::wait_predecessor, static_cast<uint8_t>(i));
+        ibv_send_wr prev_wr{}, *bad_wr = nullptr;
+        prev_wr.wr_id = encode_wr_id(op, FaaPhase::wait_predecessor_read, static_cast<uint8_t>(i));
         prev_wr.opcode = IBV_WR_RDMA_READ;
-        prev_wr.send_flags = 0;
+        prev_wr.send_flags = IBV_SEND_SIGNALED;
         prev_wr.sg_list = &prev_sge;
         prev_wr.num_sge = 1;
         prev_wr.wr.rdma.remote_addr = conns[i].addr + lock_log_slot_offset(op.lock_id, prev_slot);
         prev_wr.wr.rdma.rkey = conns[i].rkey;
 
-        ibv_sge next_sge{};
-        next_sge.addr = reinterpret_cast<uintptr_t>(&next_values[i]);
-        next_sge.length = sizeof(uint64_t);
-        next_sge.lkey = mr->lkey;
+        if (!op.successor_known) {
+            next_values[i] = EMPTY_SLOT;
 
-        ibv_send_wr next_wr{}, *bad_next = nullptr;
-        next_wr.wr_id = encode_wr_id(op, FaaPhase::wait_predecessor, static_cast<uint8_t>(i));
-        next_wr.opcode = IBV_WR_RDMA_READ;
-        next_wr.send_flags = IBV_SEND_SIGNALED;
-        next_wr.sg_list = &next_sge;
-        next_wr.num_sge = 1;
-        next_wr.wr.rdma.remote_addr = conns[i].addr + lock_log_slot_offset(op.lock_id, next_slot);
-        next_wr.wr.rdma.rkey = conns[i].rkey;
-        prev_wr.next = &next_wr;
+            ibv_sge next_sge{};
+            next_sge.addr = reinterpret_cast<uintptr_t>(&next_values[i]);
+            next_sge.length = sizeof(uint64_t);
+            next_sge.lkey = mr->lkey;
 
-        if (ibv_post_send(conns[i].id->qp, &prev_wr, &bad_prev)) {
+            ibv_send_wr next_wr{};
+            next_wr.wr_id = encode_wr_id(op, FaaPhase::wait_predecessor_read, static_cast<uint8_t>(i));
+            next_wr.opcode = IBV_WR_RDMA_READ;
+            next_wr.send_flags = 0;
+            next_wr.sg_list = &next_sge;
+            next_wr.num_sge = 1;
+            next_wr.wr.rdma.remote_addr = conns[i].addr + lock_log_slot_offset(op.lock_id, next_slot);
+            next_wr.wr.rdma.rkey = conns[i].rkey;
+            next_wr.next = &prev_wr;
+
+            if (ibv_post_send(conns[i].id->qp, &next_wr, &bad_wr)) {
+                throw std::runtime_error("FAA pipeline: wait round post failed");
+            }
+        } else if (ibv_post_send(conns[i].id->qp, &prev_wr, &bad_wr)) {
             throw std::runtime_error("FAA pipeline: wait round post failed");
         }
     }
 
-    stats.wait_round_posts += conns.size() * 2;
+    stats.wait_round_posts += op.successor_known ? conns.size() : conns.size() * 2;
 
 }
 
@@ -506,7 +515,7 @@ void run_faa_pipeline(
     const FaaPipelineConfig& config,
     FaaPipelineStats* out_stats
 ) {
-    const bool faa_debug = get_uint_env_or("FAA_DEBUG", 0) != 0;
+    const bool faa_debug = get_uint_env_or("FAA_DEBUG", 1) != 0;
     auto debug = [&](const std::string& msg) {
         if (faa_debug) {
             std::cout << "[FaaClient " << client.id() << "] " << msg << "\n";
@@ -551,6 +560,7 @@ void run_faa_pipeline(
         op.waiter_id = encode_waiter(static_cast<uint16_t>(client.id()), static_cast<uint16_t>(op.slot), op.req_id, false);
         op.next_waiter_id = EMPTY_SLOT;
         op.successor_known = false;
+        op.notify_spin_remaining = 0;
         op.responses = 0;
         op.response_target = 0;
         op.quorum_hits = 0;
@@ -574,11 +584,25 @@ void run_faa_pipeline(
 
     while (completed < NUM_OPS_PER_CLIENT) {
         for (auto& op : ops) {
-            if (!op.active || op.phase != FaaPhase::wait_predecessor) continue;
+            if (!op.active || op.phase != FaaPhase::wait_notify_spin) continue;
+            stats.notify_spin_iterations++;
             if (buffers.notify_slots[op.slot] == op.waiter_id) {
-                stats.notify_hits++;
                 buffers.notify_slots[op.slot] = FAA_NOTIFY_CLEAR;
+                stats.notify_spin_hits++;
                 begin_release(op);
+                continue;
+            }
+
+            const uint32_t step = std::min<uint32_t>(FAA_NOTIFY_SPIN_STEP, op.notify_spin_remaining);
+            op.notify_spin_remaining -= step;
+            if (op.notify_spin_remaining == 0) {
+                stats.notify_spin_exhausted++;
+                stats.wait_round_retries++;
+                debug(
+                    "wait round retry lock=" + std::to_string(op.lock_id)
+                    + " req=" + std::to_string(op.req_id)
+                    + " ticket=" + std::to_string(op.ticket));
+                post_wait_predecessor_read(client, op, buffers, stats);
             }
         }
 
@@ -637,7 +661,7 @@ void run_faa_pipeline(
                     if (op.ticket == 0) {
                         begin_release(op);
                     } else {
-                        post_wait_round(client, op, buffers, stats);
+                        post_wait_predecessor_read(client, op, buffers, stats);
                     }
                     continue;
                 }
@@ -651,27 +675,28 @@ void run_faa_pipeline(
                 if (op.ticket == 0) {
                     begin_release(op);
                 } else {
-                    post_wait_round(client, op, buffers, stats);
+                    post_wait_predecessor_read(client, op, buffers, stats);
                 }
                 continue;
             }
 
-            if (phase == FaaPhase::wait_predecessor) {
+            if (phase == FaaPhase::wait_predecessor_read) {
                 stats.wait_round_cqes++;
                 auto* prev_values = row_ptr(buffers.prev_reads, op.slot, conns.size());
                 auto* next_values = row_ptr(buffers.next_reads, op.slot, conns.size());
 
-                const uint64_t next_waiter = learn_waiter_quorum(next_values, conns.size());
-                if (next_waiter != EMPTY_SLOT) {
-                    stats.successor_learn_quorum++;
-                    stats.successor_learned_while_waiting++;
-                    op.next_waiter_id = next_waiter;
-                    op.successor_known = true;
+                if (!op.successor_known) {
+                    const uint64_t next_waiter = learn_waiter_quorum(next_values, conns.size());
+                    if (next_waiter != EMPTY_SLOT) {
+                        stats.successor_learn_quorum++;
+                        stats.successor_learned_while_waiting++;
+                        op.next_waiter_id = next_waiter;
+                        op.successor_known = true;
+                    }
                 }
 
-                if (quorum_waiter_done(prev_values, conns.size()) || buffers.notify_slots[op.slot] == op.waiter_id) {
+                if (quorum_waiter_done(prev_values, conns.size())) {
                     stats.predecessor_quorum_done++;
-                    buffers.notify_slots[op.slot] = FAA_NOTIFY_CLEAR;
                     debug(
                         "predecessor cleared lock=" + std::to_string(op.lock_id)
                         + " req=" + std::to_string(op.req_id)
@@ -679,12 +704,13 @@ void run_faa_pipeline(
                         + " successor_known=" + std::to_string(op.successor_known));
                     begin_release(op);
                 } else if (op.responses >= op.response_target) {
-                    stats.wait_round_retries++;
                     debug(
-                        "wait round retry lock=" + std::to_string(op.lock_id)
+                        "wait notify spin lock=" + std::to_string(op.lock_id)
                         + " req=" + std::to_string(op.req_id)
                         + " ticket=" + std::to_string(op.ticket));
-                    post_wait_round(client, op, buffers, stats);
+                    op.notify_spin_remaining = FAA_NOTIFY_SPIN_ROUNDS;
+                    op.phase = FaaPhase::wait_notify_spin;
+                    stats.notify_spin_entries++;
                 } else {
                     continue;
                 }
