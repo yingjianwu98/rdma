@@ -48,6 +48,7 @@ int main() {
             auto lock_counts = std::make_unique<
                 std::array<std::array<uint64_t, MAX_LOCKS>, TOTAL_CLIENTS>>();
             for (auto& client_counts : *lock_counts) client_counts.fill(0);
+            auto faa_stats = std::make_unique<std::array<FaaPipelineStats, NUM_CLIENTS_PER_MACHINE>>();
             auto tas_stats = std::make_unique<std::array<TasPipelineStats, NUM_CLIENTS_PER_MACHINE>>();
 
             std::atomic<Client*> verify_client{nullptr};
@@ -57,7 +58,7 @@ int main() {
 
                 workers.emplace_back(
                     [i, global_id, is_mu, is_faa, is_cas, is_tas,
-                     &start_latch, &all_latencies, &lock_counts, &tas_stats, &verify_client, &cas_config, &faa_config, &mu_config, &tas_config]() {
+                     &start_latch, &all_latencies, &lock_counts, &faa_stats, &tas_stats, &verify_client, &cas_config, &faa_config, &mu_config, &tas_config]() {
                         try {
                             pin_thread_to_cpu(pick_cpu_for_client(i));
 
@@ -117,7 +118,8 @@ int main() {
                                     *client,
                                     latencies,
                                     (*lock_counts)[global_id].data(),
-                                    faa_config);
+                                    faa_config,
+                                    &(*faa_stats)[i]);
                             } else if (is_mu) {
                                 run_mu_pipeline(
                                     *client,
@@ -241,9 +243,47 @@ int main() {
                           << "\n";
             }
 
-            if (is_faa) {
-                std::cout << "[FaaPipeline] active_window=" << faa_config.active_window
-                          << " zipf_skew=" << std::fixed << std::setprecision(2) << faa_config.zipf_skew
+            if (is_faa && get_uint_env_or("FAA_STATS", 0) != 0) {
+                FaaPipelineStats total_faa_stats{};
+                for (const auto& worker_stats : *faa_stats) {
+                    total_faa_stats += worker_stats;
+                }
+
+                const uint64_t total_polls = total_faa_stats.empty_polls + total_faa_stats.nonempty_polls;
+                const double nonempty_poll_pct = total_polls == 0
+                    ? 0.0
+                    : 100.0 * static_cast<double>(total_faa_stats.nonempty_polls) / static_cast<double>(total_polls);
+
+                std::cout << "[FaaStats combined] posts"
+                          << " | ticket=" << total_faa_stats.faa_ticket_posts
+                          << " replicate=" << total_faa_stats.replicate_posts
+                          << " wait_round=" << total_faa_stats.wait_round_posts
+                          << " mark_done=" << total_faa_stats.mark_done_posts
+                          << " succ_read=" << total_faa_stats.successor_read_posts
+                          << " notify=" << total_faa_stats.notify_posts
+                          << "\n";
+                std::cout << "[FaaStats combined] cq"
+                          << " | ticket=" << total_faa_stats.faa_ticket_cqes
+                          << " replicate=" << total_faa_stats.replicate_cqes
+                          << " wait_round=" << total_faa_stats.wait_round_cqes
+                          << " mark_done=" << total_faa_stats.mark_done_cqes
+                          << " succ_read=" << total_faa_stats.successor_read_cqes
+                          << " notify=" << total_faa_stats.notify_cqes
+                          << " total=" << total_faa_stats.cqes_polled
+                          << " | polls empty=" << total_faa_stats.empty_polls
+                          << " nonempty=" << total_faa_stats.nonempty_polls
+                          << " nonempty%=" << std::fixed << std::setprecision(1) << nonempty_poll_pct
+                          << "\n";
+                std::cout << "[FaaStats combined] decisions"
+                          << " | replicate_quorum=" << total_faa_stats.replicate_quorum_wins
+                          << " pred_done=" << total_faa_stats.predecessor_quorum_done
+                          << " notify_hits=" << total_faa_stats.notify_hits
+                          << " wait_retries=" << total_faa_stats.wait_round_retries
+                          << " succ_quorum=" << total_faa_stats.successor_learn_quorum
+                          << " retire_no_successor=" << total_faa_stats.retire_no_successor
+                          << "\n";
+                std::cout << "[FaaStats combined] active"
+                          << " | active_hwm=" << total_faa_stats.active_ops_hwm
                           << "\n";
             }
 

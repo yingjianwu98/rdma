@@ -206,7 +206,7 @@ RegisteredFaaBuffers map_buffers(
     return buffers;
 }
 
-void post_faa_ticket(Client& client, FaaOpCtx& op, const RegisteredFaaBuffers& buffers) {
+void post_faa_ticket(Client& client, FaaOpCtx& op, const RegisteredFaaBuffers& buffers, FaaPipelineStats& stats) {
     const auto& conns = client.connections();
     auto* mr = client.mr();
     auto* result = &buffers.faa_results[op.slot];
@@ -236,9 +236,11 @@ void post_faa_ticket(Client& client, FaaOpCtx& op, const RegisteredFaaBuffers& b
         throw std::runtime_error("FAA pipeline: FAA ticket post failed");
     }
 
+    stats.faa_ticket_posts++;
+
 }
 
-void post_replicate_ticket(Client& client, FaaOpCtx& op, const RegisteredFaaBuffers& buffers) {
+void post_replicate_ticket(Client& client, FaaOpCtx& op, const RegisteredFaaBuffers& buffers, FaaPipelineStats& stats) {
     const auto& conns = client.connections();
     auto* mr = client.mr();
     auto* results = row_ptr(buffers.replicate_results, op.slot, conns.size());
@@ -273,9 +275,11 @@ void post_replicate_ticket(Client& client, FaaOpCtx& op, const RegisteredFaaBuff
         }
     }
 
+    stats.replicate_posts += conns.size();
+
 }
 
-void post_wait_round(Client& client, FaaOpCtx& op, const RegisteredFaaBuffers& buffers) {
+void post_wait_round(Client& client, FaaOpCtx& op, const RegisteredFaaBuffers& buffers, FaaPipelineStats& stats) {
     const auto& conns = client.connections();
     auto* mr = client.mr();
     auto* prev_values = row_ptr(buffers.prev_reads, op.slot, conns.size());
@@ -326,9 +330,11 @@ void post_wait_round(Client& client, FaaOpCtx& op, const RegisteredFaaBuffers& b
         }
     }
 
+    stats.wait_round_posts += conns.size() * 2;
+
 }
 
-void post_mark_done(Client& client, FaaOpCtx& op, const RegisteredFaaBuffers& buffers) {
+void post_mark_done(Client& client, FaaOpCtx& op, const RegisteredFaaBuffers& buffers, FaaPipelineStats& stats) {
     const auto& conns = client.connections();
     auto* mr = client.mr();
     auto* value = &buffers.release_values[op.slot];
@@ -359,9 +365,11 @@ void post_mark_done(Client& client, FaaOpCtx& op, const RegisteredFaaBuffers& bu
         }
     }
 
+    stats.mark_done_posts += conns.size();
+
 }
 
-void post_successor_read(Client& client, FaaOpCtx& op, const RegisteredFaaBuffers& buffers) {
+void post_successor_read(Client& client, FaaOpCtx& op, const RegisteredFaaBuffers& buffers, FaaPipelineStats& stats) {
     const auto& conns = client.connections();
     auto* mr = client.mr();
     auto* next_values = row_ptr(buffers.next_reads, op.slot, conns.size());
@@ -394,9 +402,11 @@ void post_successor_read(Client& client, FaaOpCtx& op, const RegisteredFaaBuffer
         }
     }
 
+    stats.successor_read_posts += conns.size();
+
 }
 
-bool post_notify_successor(Client& client, FaaOpCtx& op, const RegisteredFaaBuffers& buffers, const size_t active_window) {
+bool post_notify_successor(Client& client, FaaOpCtx& op, const RegisteredFaaBuffers& buffers, const size_t active_window, FaaPipelineStats& stats) {
     if (!op.successor_known) {
         return false;
     }
@@ -409,6 +419,7 @@ bool post_notify_successor(Client& client, FaaOpCtx& op, const RegisteredFaaBuff
 
     if (next_client == client.id()) {
         buffers.notify_slots[next_slot] = op.next_waiter_id;
+        stats.notify_hits++;
         return false;
     }
 
@@ -438,6 +449,8 @@ bool post_notify_successor(Client& client, FaaOpCtx& op, const RegisteredFaaBuff
     if (ibv_post_send(peers[next_client].id->qp, &wr, &bad_wr)) {
         throw std::runtime_error("FAA pipeline: notify post failed");
     }
+
+    stats.notify_posts++;
 
     return true;
 }
@@ -490,7 +503,8 @@ void run_faa_pipeline(
     Client& client,
     uint64_t* latencies,
     uint64_t* lock_counts,
-    const FaaPipelineConfig& config
+    const FaaPipelineConfig& config,
+    FaaPipelineStats* out_stats
 ) {
     const bool faa_debug = get_uint_env_or("FAA_DEBUG", 0) != 0;
     auto debug = [&](const std::string& msg) {
@@ -522,7 +536,7 @@ void run_faa_pipeline(
             + " successor_known=" + std::to_string(op.successor_known));
         latencies[op.latency_index] = std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - op.started_at).count();
-        post_mark_done(client, op, buffers);
+        post_mark_done(client, op, buffers, stats);
     };
 
     auto submit_op = [&](const size_t slot) {
@@ -546,7 +560,8 @@ void run_faa_pipeline(
             "submit lock=" + std::to_string(op.lock_id)
             + " req=" + std::to_string(op.req_id)
             + " slot=" + std::to_string(op.slot));
-        post_faa_ticket(client, op, buffers);
+        stats.active_ops_hwm = std::max<uint64_t>(stats.active_ops_hwm, active + 1);
+        post_faa_ticket(client, op, buffers, stats);
         submitted++;
         active++;
     };
@@ -559,6 +574,7 @@ void run_faa_pipeline(
         for (auto& op : ops) {
             if (!op.active || op.phase != FaaPhase::wait_predecessor) continue;
             if (buffers.notify_slots[op.slot] == op.waiter_id) {
+                stats.notify_hits++;
                 buffers.notify_slots[op.slot] = FAA_NOTIFY_CLEAR;
                 begin_release(op);
             }
@@ -566,7 +582,12 @@ void run_faa_pipeline(
 
         const int polled = ibv_poll_cq(client.cq(), static_cast<int>(completions.size()), completions.data());
         if (polled < 0) throw std::runtime_error("FAA pipeline: CQ poll failed");
-        if (polled == 0) continue;
+        if (polled == 0) {
+            stats.empty_polls++;
+            continue;
+        }
+        stats.nonempty_polls++;
+        stats.cqes_polled += static_cast<uint64_t>(polled);
 
         for (int i = 0; i < polled; ++i) {
             const ibv_wc& wc = completions[static_cast<size_t>(i)];
@@ -585,18 +606,20 @@ void run_faa_pipeline(
             if (wr_round(wc.wr_id) != op.round) continue;
 
             if (phase == FaaPhase::faa_ticket) {
+                stats.faa_ticket_cqes++;
                 op.ticket = buffers.faa_results[op.slot];
                 debug(
                     "faa ticket lock=" + std::to_string(op.lock_id)
                     + " req=" + std::to_string(op.req_id)
                     + " ticket=" + std::to_string(op.ticket));
-                post_replicate_ticket(client, op, buffers);
+                post_replicate_ticket(client, op, buffers, stats);
                 continue;
             }
 
             op.responses++;
 
             if (phase == FaaPhase::replicate_ticket) {
+                stats.replicate_cqes++;
                 auto* results = row_ptr(buffers.replicate_results, op.slot, conns.size());
                 const uint8_t idx = wr_conn(wc.wr_id);
                 if (results[idx] == EMPTY_SLOT) {
@@ -604,6 +627,7 @@ void run_faa_pipeline(
                 }
                 const uint32_t remaining = op.response_target - op.responses;
                 if (op.quorum_hits >= QUORUM) {
+                    stats.replicate_quorum_wins++;
                     debug(
                         "replicate quorum lock=" + std::to_string(op.lock_id)
                         + " req=" + std::to_string(op.req_id)
@@ -611,7 +635,7 @@ void run_faa_pipeline(
                     if (op.ticket == 0) {
                         begin_release(op);
                     } else {
-                        post_wait_round(client, op, buffers);
+                        post_wait_round(client, op, buffers, stats);
                     }
                     continue;
                 }
@@ -625,22 +649,25 @@ void run_faa_pipeline(
                 if (op.ticket == 0) {
                     begin_release(op);
                 } else {
-                    post_wait_round(client, op, buffers);
+                    post_wait_round(client, op, buffers, stats);
                 }
                 continue;
             }
 
             if (phase == FaaPhase::wait_predecessor) {
+                stats.wait_round_cqes++;
                 auto* prev_values = row_ptr(buffers.prev_reads, op.slot, conns.size());
                 auto* next_values = row_ptr(buffers.next_reads, op.slot, conns.size());
 
                 const uint64_t next_waiter = learn_waiter_quorum(next_values, conns.size());
                 if (next_waiter != EMPTY_SLOT) {
+                    stats.successor_learn_quorum++;
                     op.next_waiter_id = next_waiter;
                     op.successor_known = true;
                 }
 
                 if (quorum_waiter_done(prev_values, conns.size()) || buffers.notify_slots[op.slot] == op.waiter_id) {
+                    stats.predecessor_quorum_done++;
                     buffers.notify_slots[op.slot] = FAA_NOTIFY_CLEAR;
                     debug(
                         "predecessor cleared lock=" + std::to_string(op.lock_id)
@@ -649,11 +676,12 @@ void run_faa_pipeline(
                         + " successor_known=" + std::to_string(op.successor_known));
                     begin_release(op);
                 } else if (op.responses >= op.response_target) {
+                    stats.wait_round_retries++;
                     debug(
                         "wait round retry lock=" + std::to_string(op.lock_id)
                         + " req=" + std::to_string(op.req_id)
                         + " ticket=" + std::to_string(op.ticket));
-                    post_wait_round(client, op, buffers);
+                    post_wait_round(client, op, buffers, stats);
                 } else {
                     continue;
                 }
@@ -661,13 +689,14 @@ void run_faa_pipeline(
             }
 
             if (phase == FaaPhase::mark_done) {
+                stats.mark_done_cqes++;
                 if (op.responses < QUORUM) continue;
                 debug(
                     "mark done quorum lock=" + std::to_string(op.lock_id)
                     + " req=" + std::to_string(op.req_id)
                     + " successor_known=" + std::to_string(op.successor_known));
                 if (op.successor_known) {
-                    if (!post_notify_successor(client, op, buffers, config.active_window)) {
+                    if (!post_notify_successor(client, op, buffers, config.active_window, stats)) {
                         debug(
                             "retire after local/no notify lock=" + std::to_string(op.lock_id)
                             + " req=" + std::to_string(op.req_id));
@@ -679,15 +708,17 @@ void run_faa_pipeline(
                         if (submitted < NUM_OPS_PER_CLIENT) submit_op(slot);
                     }
                 } else {
-                    post_successor_read(client, op, buffers);
+                    post_successor_read(client, op, buffers, stats);
                 }
                 continue;
             }
 
             if (phase == FaaPhase::successor_read) {
+                stats.successor_read_cqes++;
                 auto* next_values = row_ptr(buffers.next_reads, op.slot, conns.size());
                 const uint64_t next_waiter = learn_waiter_quorum(next_values, conns.size());
                 if (next_waiter != EMPTY_SLOT) {
+                    stats.successor_learn_quorum++;
                     op.next_waiter_id = next_waiter;
                     op.successor_known = true;
                     debug(
@@ -695,7 +726,7 @@ void run_faa_pipeline(
                         + " req=" + std::to_string(op.req_id)
                         + " next_client=" + std::to_string(decode_waiter_client(next_waiter))
                         + " next_slot=" + std::to_string(decode_waiter_slot(next_waiter)));
-                    if (!post_notify_successor(client, op, buffers, config.active_window)) {
+                    if (!post_notify_successor(client, op, buffers, config.active_window, stats)) {
                         debug(
                             "retire after successor local/no notify lock=" + std::to_string(op.lock_id)
                             + " req=" + std::to_string(op.req_id));
@@ -707,6 +738,7 @@ void run_faa_pipeline(
                         if (submitted < NUM_OPS_PER_CLIENT) submit_op(slot);
                     }
                 } else if (op.responses >= op.response_target) {
+                    stats.retire_no_successor++;
                     debug(
                         "retire no successor lock=" + std::to_string(op.lock_id)
                         + " req=" + std::to_string(op.req_id));
@@ -723,6 +755,7 @@ void run_faa_pipeline(
             }
 
             if (phase == FaaPhase::notify_successor) {
+                stats.notify_cqes++;
                 if (op.responses < 1) continue;
                 debug(
                     "notify successor completed lock=" + std::to_string(op.lock_id)
@@ -735,5 +768,9 @@ void run_faa_pipeline(
                 if (submitted < NUM_OPS_PER_CLIENT) submit_op(slot);
             }
         }
+    }
+
+    if (out_stats) {
+        *out_stats = stats;
     }
 }
