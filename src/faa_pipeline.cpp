@@ -486,6 +486,13 @@ void run_faa_pipeline(
     uint64_t* lock_counts,
     const FaaPipelineConfig& config
 ) {
+    const bool faa_debug = get_uint_env_or("FAA_DEBUG", 1) != 0;
+    auto debug = [&](const std::string& msg) {
+        if (faa_debug) {
+            std::cout << "[FaaClient " << client.id() << "] " << msg << "\n";
+        }
+    };
+
     const auto& conns = client.connections();
     if (conns.empty()) throw std::runtime_error("FAA pipeline: no server connections");
     if (config.active_window > 0x7FFFu) throw std::runtime_error("FAA pipeline: active window too large");
@@ -502,6 +509,11 @@ void run_faa_pipeline(
     uint32_t next_req_id = 1;
 
     auto begin_release = [&](FaaOpCtx& op) {
+        debug(
+            "begin release lock=" + std::to_string(op.lock_id)
+            + " ticket=" + std::to_string(op.ticket)
+            + " slot=" + std::to_string(op.slot)
+            + " successor_known=" + std::to_string(op.successor_known));
         latencies[op.latency_index] = std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - op.started_at).count();
         post_mark_done(client, op, buffers);
@@ -524,6 +536,10 @@ void run_faa_pipeline(
         op.latency_index = submitted;
         op.started_at = std::chrono::steady_clock::now();
         buffers.notify_slots[slot] = FAA_NOTIFY_CLEAR;
+        debug(
+            "submit lock=" + std::to_string(op.lock_id)
+            + " req=" + std::to_string(op.req_id)
+            + " slot=" + std::to_string(op.slot));
         post_faa_ticket(client, op, buffers);
         submitted++;
         active++;
@@ -564,6 +580,10 @@ void run_faa_pipeline(
 
             if (phase == FaaPhase::faa_ticket) {
                 op.ticket = buffers.faa_results[op.slot];
+                debug(
+                    "faa ticket lock=" + std::to_string(op.lock_id)
+                    + " req=" + std::to_string(op.req_id)
+                    + " ticket=" + std::to_string(op.ticket));
                 post_replicate_ticket(client, op, buffers);
                 continue;
             }
@@ -578,6 +598,10 @@ void run_faa_pipeline(
                 }
                 const uint32_t remaining = op.response_target - op.responses;
                 if (op.quorum_hits >= QUORUM) {
+                    debug(
+                        "replicate quorum lock=" + std::to_string(op.lock_id)
+                        + " req=" + std::to_string(op.req_id)
+                        + " ticket=" + std::to_string(op.ticket));
                     if (op.ticket == 0) {
                         begin_release(op);
                     } else {
@@ -612,8 +636,17 @@ void run_faa_pipeline(
 
                 if (quorum_waiter_done(prev_values, conns.size()) || buffers.notify_slots[op.slot] == op.waiter_id) {
                     buffers.notify_slots[op.slot] = FAA_NOTIFY_CLEAR;
+                    debug(
+                        "predecessor cleared lock=" + std::to_string(op.lock_id)
+                        + " req=" + std::to_string(op.req_id)
+                        + " ticket=" + std::to_string(op.ticket)
+                        + " successor_known=" + std::to_string(op.successor_known));
                     begin_release(op);
                 } else if (op.responses >= op.response_target) {
+                    debug(
+                        "wait round retry lock=" + std::to_string(op.lock_id)
+                        + " req=" + std::to_string(op.req_id)
+                        + " ticket=" + std::to_string(op.ticket));
                     post_wait_round(client, op, buffers);
                 } else {
                     continue;
@@ -623,8 +656,15 @@ void run_faa_pipeline(
 
             if (phase == FaaPhase::mark_done) {
                 if (op.responses < QUORUM) continue;
+                debug(
+                    "mark done quorum lock=" + std::to_string(op.lock_id)
+                    + " req=" + std::to_string(op.req_id)
+                    + " successor_known=" + std::to_string(op.successor_known));
                 if (op.successor_known) {
                     if (!post_notify_successor(client, op, buffers, config.active_window)) {
+                        debug(
+                            "retire after local/no notify lock=" + std::to_string(op.lock_id)
+                            + " req=" + std::to_string(op.req_id));
                         lock_counts[op.lock_id]++;
                         op.active = false;
                         op.phase = FaaPhase::idle;
@@ -644,7 +684,15 @@ void run_faa_pipeline(
                 if (next_waiter != EMPTY_SLOT) {
                     op.next_waiter_id = next_waiter;
                     op.successor_known = true;
+                    debug(
+                        "successor learned lock=" + std::to_string(op.lock_id)
+                        + " req=" + std::to_string(op.req_id)
+                        + " next_client=" + std::to_string(decode_waiter_client(next_waiter))
+                        + " next_slot=" + std::to_string(decode_waiter_slot(next_waiter)));
                     if (!post_notify_successor(client, op, buffers, config.active_window)) {
+                        debug(
+                            "retire after successor local/no notify lock=" + std::to_string(op.lock_id)
+                            + " req=" + std::to_string(op.req_id));
                         lock_counts[op.lock_id]++;
                         op.active = false;
                         op.phase = FaaPhase::idle;
@@ -653,6 +701,9 @@ void run_faa_pipeline(
                         if (submitted < NUM_OPS_PER_CLIENT) submit_op(slot);
                     }
                 } else if (op.responses >= op.response_target) {
+                    debug(
+                        "retire no successor lock=" + std::to_string(op.lock_id)
+                        + " req=" + std::to_string(op.req_id));
                     lock_counts[op.lock_id]++;
                     op.active = false;
                     op.phase = FaaPhase::idle;
@@ -667,6 +718,9 @@ void run_faa_pipeline(
 
             if (phase == FaaPhase::notify_successor) {
                 if (op.responses < 1) continue;
+                debug(
+                    "notify successor completed lock=" + std::to_string(op.lock_id)
+                    + " req=" + std::to_string(op.req_id));
                 lock_counts[op.lock_id]++;
                 op.active = false;
                 op.phase = FaaPhase::idle;
