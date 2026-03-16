@@ -280,6 +280,7 @@ int main() {
                               << " notify_spin_iterations=" << s.notify_spin_iterations
                               << " notify_spin_hits=" << s.notify_spin_hits
                               << " notify_spin_exhausted=" << s.notify_spin_exhausted
+                              << " local_direct_handoffs=" << s.local_direct_handoffs
                               << " wait_retries=" << s.wait_round_retries
                               << " succ_quorum=" << s.successor_learn_quorum
                               << " succ_while_waiting=" << s.successor_learned_while_waiting

@@ -31,8 +31,6 @@ constexpr uint64_t FAA_ROUND_MASK = (1ULL << FAA_ROUND_BITS) - 1;
 constexpr uint64_t FAA_PHASE_MASK = (1ULL << FAA_PHASE_BITS) - 1;
 constexpr uint64_t FAA_SLOT_MASK = (1ULL << FAA_SLOT_BITS) - 1;
 constexpr uint64_t FAA_GENERATION_MASK = (1ULL << FAA_SLOT_SHIFT) - 1;
-constexpr uint32_t FAA_NOTIFY_SPIN_ROUNDS = 100000;
-constexpr uint32_t FAA_NOTIFY_SPIN_STEP = 64;
 
 enum class FaaPhase : uint8_t {
     idle = 0,
@@ -67,6 +65,7 @@ struct FaaOpCtx {
     uint64_t next_waiter_id = EMPTY_SLOT;
     bool successor_known = false;
     uint32_t notify_spin_remaining = 0;
+    bool local_handoff_ready = false;
     FaaPhase phase = FaaPhase::idle;
     uint32_t responses = 0;
     uint32_t response_target = 0;
@@ -115,6 +114,10 @@ uint16_t decode_waiter_client(const uint64_t waiter) {
 
 uint16_t decode_waiter_slot(const uint64_t waiter) {
     return static_cast<uint16_t>((waiter >> 32) & 0x7FFFu);
+}
+
+uint32_t decode_waiter_req(const uint64_t waiter) {
+    return static_cast<uint32_t>(waiter & 0xFFFFFFFFu);
 }
 
 bool waiter_done(const uint64_t waiter) {
@@ -415,7 +418,14 @@ void post_successor_read(Client& client, FaaOpCtx& op, const RegisteredFaaBuffer
 
 }
 
-bool post_notify_successor(Client& client, FaaOpCtx& op, const RegisteredFaaBuffers& buffers, const size_t active_window, FaaPipelineStats& stats) {
+bool post_notify_successor(
+    Client& client,
+    FaaOpCtx& op,
+    std::vector<FaaOpCtx>& ops,
+    const RegisteredFaaBuffers& buffers,
+    const size_t active_window,
+    FaaPipelineStats& stats
+) {
     if (!op.successor_known) {
         return false;
     }
@@ -427,8 +437,15 @@ bool post_notify_successor(Client& client, FaaOpCtx& op, const RegisteredFaaBuff
     *value = op.next_waiter_id;
 
     if (next_client == client.id()) {
-        buffers.notify_slots[next_slot] = op.next_waiter_id;
-        stats.notify_hits++;
+        if (next_slot < ops.size()) {
+            auto& target = ops[next_slot];
+            if (target.active
+                && target.waiter_id == op.next_waiter_id
+                && target.req_id == decode_waiter_req(op.next_waiter_id)) {
+                target.local_handoff_ready = true;
+                stats.local_direct_handoffs++;
+            }
+        }
         return false;
     }
 
@@ -561,6 +578,7 @@ void run_faa_pipeline(
         op.next_waiter_id = EMPTY_SLOT;
         op.successor_known = false;
         op.notify_spin_remaining = 0;
+        op.local_handoff_ready = false;
         op.responses = 0;
         op.response_target = 0;
         op.quorum_hits = 0;
@@ -584,8 +602,15 @@ void run_faa_pipeline(
 
     while (completed < NUM_OPS_PER_CLIENT) {
         for (auto& op : ops) {
-            if (!op.active || op.phase != FaaPhase::wait_notify_spin) continue;
-            stats.notify_spin_iterations++;
+            if (!op.active) continue;
+            if (op.local_handoff_ready
+                && (op.phase == FaaPhase::wait_predecessor_read || op.phase == FaaPhase::wait_notify_spin)) {
+                op.local_handoff_ready = false;
+                begin_release(op);
+                continue;
+            }
+
+            if (op.phase != FaaPhase::wait_notify_spin) continue;
             if (buffers.notify_slots[op.slot] == op.waiter_id) {
                 buffers.notify_slots[op.slot] = FAA_NOTIFY_CLEAR;
                 stats.notify_spin_hits++;
@@ -593,8 +618,10 @@ void run_faa_pipeline(
                 continue;
             }
 
-            const uint32_t step = std::min<uint32_t>(FAA_NOTIFY_SPIN_STEP, op.notify_spin_remaining);
-            op.notify_spin_remaining -= step;
+            stats.notify_spin_iterations++;
+            if (op.notify_spin_remaining > 0) {
+                --op.notify_spin_remaining;
+            }
             if (op.notify_spin_remaining == 0) {
                 stats.notify_spin_exhausted++;
                 stats.wait_round_retries++;
@@ -660,6 +687,9 @@ void run_faa_pipeline(
                         + " ticket=" + std::to_string(op.ticket));
                     if (op.ticket == 0) {
                         begin_release(op);
+                    } else if (op.local_handoff_ready) {
+                        op.local_handoff_ready = false;
+                        begin_release(op);
                     } else {
                         post_wait_predecessor_read(client, op, buffers, stats);
                     }
@@ -674,6 +704,9 @@ void run_faa_pipeline(
                 }
                 if (op.ticket == 0) {
                     begin_release(op);
+                } else if (op.local_handoff_ready) {
+                    op.local_handoff_ready = false;
+                    begin_release(op);
                 } else {
                     post_wait_predecessor_read(client, op, buffers, stats);
                 }
@@ -684,6 +717,12 @@ void run_faa_pipeline(
                 stats.wait_round_cqes++;
                 auto* prev_values = row_ptr(buffers.prev_reads, op.slot, conns.size());
                 auto* next_values = row_ptr(buffers.next_reads, op.slot, conns.size());
+
+                if (op.local_handoff_ready) {
+                    op.local_handoff_ready = false;
+                    begin_release(op);
+                    continue;
+                }
 
                 if (!op.successor_known) {
                     const uint64_t next_waiter = learn_waiter_quorum(next_values, conns.size());
@@ -725,7 +764,7 @@ void run_faa_pipeline(
                     + " req=" + std::to_string(op.req_id)
                     + " successor_known=" + std::to_string(op.successor_known));
                 if (op.successor_known) {
-                    if (!post_notify_successor(client, op, buffers, config.active_window, stats)) {
+                    if (!post_notify_successor(client, op, ops, buffers, config.active_window, stats)) {
                         debug(
                             "retire after local/no notify lock=" + std::to_string(op.lock_id)
                             + " req=" + std::to_string(op.req_id));
@@ -756,7 +795,7 @@ void run_faa_pipeline(
                         + " req=" + std::to_string(op.req_id)
                         + " next_client=" + std::to_string(decode_waiter_client(next_waiter))
                         + " next_slot=" + std::to_string(decode_waiter_slot(next_waiter)));
-                    if (!post_notify_successor(client, op, buffers, config.active_window, stats)) {
+                    if (!post_notify_successor(client, op, ops, buffers, config.active_window, stats)) {
                         debug(
                             "retire after successor local/no notify lock=" + std::to_string(op.lock_id)
                             + " req=" + std::to_string(op.req_id));

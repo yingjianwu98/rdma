@@ -27,6 +27,7 @@ struct FaaPipelineStats {
     uint64_t notify_spin_iterations = 0;
     uint64_t notify_spin_hits = 0;
     uint64_t notify_spin_exhausted = 0;
+    uint64_t local_direct_handoffs = 0;
     uint64_t mark_done_posts = 0;
     uint64_t mark_done_cqes = 0;
     uint64_t successor_read_posts = 0;
@@ -58,6 +59,7 @@ inline FaaPipelineStats& operator+=(FaaPipelineStats& lhs, const FaaPipelineStat
     lhs.notify_spin_iterations += rhs.notify_spin_iterations;
     lhs.notify_spin_hits += rhs.notify_spin_hits;
     lhs.notify_spin_exhausted += rhs.notify_spin_exhausted;
+    lhs.local_direct_handoffs += rhs.local_direct_handoffs;
     lhs.mark_done_posts += rhs.mark_done_posts;
     lhs.mark_done_cqes += rhs.mark_done_cqes;
     lhs.successor_read_posts += rhs.successor_read_posts;
