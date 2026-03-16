@@ -80,8 +80,8 @@ constexpr bool TAS_STATS = false;
 
 // ─── Lock table layout ───
 
-constexpr size_t MAX_LOCKS = 30;
-constexpr size_t FAA_ACTIVE_WINDOW = 16;
+constexpr size_t MAX_LOCKS = 1;
+constexpr size_t FAA_ACTIVE_WINDOW = 4;
 constexpr size_t MU_ACTIVE_WINDOW = 32;
 constexpr size_t TAS_ACTIVE_WINDOW = 32;
 constexpr size_t CAS_ACTIVE_CLIENTS = 32;
