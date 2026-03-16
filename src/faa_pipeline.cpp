@@ -217,6 +217,11 @@ void post_faa_ticket(Client& client, FaaOpCtx& op, const RegisteredFaaBuffers& b
     sge.length = sizeof(uint64_t);
     sge.lkey = mr->lkey;
 
+    op.round++;
+    op.phase = FaaPhase::faa_ticket;
+    op.responses = 0;
+    op.response_target = 1;
+
     ibv_send_wr wr{}, *bad_wr = nullptr;
     wr.wr_id = encode_wr_id(op, FaaPhase::faa_ticket, 0);
     wr.opcode = IBV_WR_ATOMIC_FETCH_AND_ADD;
@@ -231,16 +236,18 @@ void post_faa_ticket(Client& client, FaaOpCtx& op, const RegisteredFaaBuffers& b
         throw std::runtime_error("FAA pipeline: FAA ticket post failed");
     }
 
-    op.round++;
-    op.phase = FaaPhase::faa_ticket;
-    op.responses = 0;
-    op.response_target = 1;
 }
 
 void post_replicate_ticket(Client& client, FaaOpCtx& op, const RegisteredFaaBuffers& buffers) {
     const auto& conns = client.connections();
     auto* mr = client.mr();
     auto* results = row_ptr(buffers.replicate_results, op.slot, conns.size());
+
+    op.round++;
+    op.phase = FaaPhase::replicate_ticket;
+    op.responses = 0;
+    op.response_target = static_cast<uint32_t>(conns.size());
+    op.quorum_hits = 0;
 
     for (size_t i = 0; i < conns.size(); ++i) {
         results[i] = EMPTY_SLOT - 1;
@@ -266,11 +273,6 @@ void post_replicate_ticket(Client& client, FaaOpCtx& op, const RegisteredFaaBuff
         }
     }
 
-    op.round++;
-    op.phase = FaaPhase::replicate_ticket;
-    op.responses = 0;
-    op.response_target = static_cast<uint32_t>(conns.size());
-    op.quorum_hits = 0;
 }
 
 void post_wait_round(Client& client, FaaOpCtx& op, const RegisteredFaaBuffers& buffers) {
@@ -280,6 +282,11 @@ void post_wait_round(Client& client, FaaOpCtx& op, const RegisteredFaaBuffers& b
     auto* next_values = row_ptr(buffers.next_reads, op.slot, conns.size());
     const uint64_t prev_slot = op.ticket - 1;
     const uint64_t next_slot = op.ticket + 1;
+
+    op.round++;
+    op.phase = FaaPhase::wait_predecessor;
+    op.responses = 0;
+    op.response_target = static_cast<uint32_t>(conns.size());
 
     for (size_t i = 0; i < conns.size(); ++i) {
         prev_values[i] = EMPTY_SLOT;
@@ -319,10 +326,6 @@ void post_wait_round(Client& client, FaaOpCtx& op, const RegisteredFaaBuffers& b
         }
     }
 
-    op.round++;
-    op.phase = FaaPhase::wait_predecessor;
-    op.responses = 0;
-    op.response_target = static_cast<uint32_t>(conns.size());
 }
 
 void post_mark_done(Client& client, FaaOpCtx& op, const RegisteredFaaBuffers& buffers) {
@@ -335,6 +338,11 @@ void post_mark_done(Client& client, FaaOpCtx& op, const RegisteredFaaBuffers& bu
     sge.addr = reinterpret_cast<uintptr_t>(value);
     sge.length = sizeof(uint64_t);
     sge.lkey = mr->lkey;
+
+    op.round++;
+    op.phase = FaaPhase::mark_done;
+    op.responses = 0;
+    op.response_target = static_cast<uint32_t>(QUORUM);
 
     for (size_t i = 0; i < conns.size(); ++i) {
         ibv_send_wr wr{}, *bad_wr = nullptr;
@@ -351,10 +359,6 @@ void post_mark_done(Client& client, FaaOpCtx& op, const RegisteredFaaBuffers& bu
         }
     }
 
-    op.round++;
-    op.phase = FaaPhase::mark_done;
-    op.responses = 0;
-    op.response_target = static_cast<uint32_t>(QUORUM);
 }
 
 void post_successor_read(Client& client, FaaOpCtx& op, const RegisteredFaaBuffers& buffers) {
@@ -362,6 +366,11 @@ void post_successor_read(Client& client, FaaOpCtx& op, const RegisteredFaaBuffer
     auto* mr = client.mr();
     auto* next_values = row_ptr(buffers.next_reads, op.slot, conns.size());
     const uint64_t next_slot = op.ticket + 1;
+
+    op.round++;
+    op.phase = FaaPhase::successor_read;
+    op.responses = 0;
+    op.response_target = static_cast<uint32_t>(conns.size());
 
     for (size_t i = 0; i < conns.size(); ++i) {
         next_values[i] = EMPTY_SLOT;
@@ -385,10 +394,6 @@ void post_successor_read(Client& client, FaaOpCtx& op, const RegisteredFaaBuffer
         }
     }
 
-    op.round++;
-    op.phase = FaaPhase::successor_read;
-    op.responses = 0;
-    op.response_target = static_cast<uint32_t>(conns.size());
 }
 
 bool post_notify_successor(Client& client, FaaOpCtx& op, const RegisteredFaaBuffers& buffers, const size_t active_window) {
@@ -411,6 +416,11 @@ bool post_notify_successor(Client& client, FaaOpCtx& op, const RegisteredFaaBuff
         return false;
     }
 
+    op.round++;
+    op.phase = FaaPhase::notify_successor;
+    op.responses = 0;
+    op.response_target = 1;
+
     ibv_sge sge{};
     sge.addr = reinterpret_cast<uintptr_t>(value);
     sge.length = sizeof(uint64_t);
@@ -429,10 +439,6 @@ bool post_notify_successor(Client& client, FaaOpCtx& op, const RegisteredFaaBuff
         throw std::runtime_error("FAA pipeline: notify post failed");
     }
 
-    op.round++;
-    op.phase = FaaPhase::notify_successor;
-    op.responses = 0;
-    op.response_target = 1;
     return true;
 }
 
