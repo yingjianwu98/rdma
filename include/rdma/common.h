@@ -58,7 +58,7 @@ constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * TOTAL_CLIENTS;
 // ─── Lock table layout ───
 
 constexpr size_t MAX_LOCKS = 8;
-constexpr size_t FAA_ACTIVE_WINDOW = 4;
+constexpr size_t FAA_ACTIVE_WINDOW = 8;
 constexpr size_t MU_ACTIVE_WINDOW = 32;
 constexpr size_t TAS_ACTIVE_WINDOW = 32;
 constexpr size_t CAS_ACTIVE_CLIENTS = 32;
