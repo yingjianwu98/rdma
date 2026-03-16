@@ -1,7 +1,0 @@
-CAS benchmark summary for skew=0.00
-
-locks=1: best_window=1, goodput=167,920 ops/s, p99=5.69 us, p99.9=8.93 us
-locks=5: best_window=8, goodput=550,993 ops/s, p99=66.83 us, p99.9=103.31 us
-locks=16: best_window=8, goodput=784,584 ops/s, p99=30.62 us, p99.9=45.73 us
-locks=100: best_window=8, goodput=946,817 ops/s, p99=16.05 us, p99.9=23.25 us
-locks=1000: best_window=16, goodput=984,441 ops/s, p99=24.02 us, p99.9=32.52 us
