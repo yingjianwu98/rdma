@@ -492,7 +492,7 @@ void run_faa_pipeline(
     uint64_t* lock_counts,
     const FaaPipelineConfig& config
 ) {
-    const bool faa_debug = get_uint_env_or("FAA_DEBUG", 1) != 0;
+    const bool faa_debug = get_uint_env_or("FAA_DEBUG", 0) != 0;
     auto debug = [&](const std::string& msg) {
         if (faa_debug) {
             std::cout << "[FaaClient " << client.id() << "] " << msg << "\n";
