@@ -512,6 +512,7 @@ void run_faa_pipeline(
             std::cout << "[FaaClient " << client.id() << "] " << msg << "\n";
         }
     };
+    FaaPipelineStats stats{};
 
     const auto& conns = client.connections();
     if (conns.empty()) throw std::runtime_error("FAA pipeline: no server connections");
@@ -564,6 +565,7 @@ void run_faa_pipeline(
         post_faa_ticket(client, op, buffers, stats);
         submitted++;
         active++;
+        stats.active_ops_hwm = std::max<uint64_t>(stats.active_ops_hwm, active);
     };
 
     while (active < config.active_window && submitted < NUM_OPS_PER_CLIENT) {
