@@ -243,7 +243,7 @@ int main() {
                           << "\n";
             }
 
-            if (is_faa && get_uint_env_or("FAA_STATS", 0) != 0) {
+            if (is_faa && get_uint_env_or("FAA_STATS", 1) != 0) {
                 FaaPipelineStats total_faa_stats{};
                 for (const auto& worker_stats : *faa_stats) {
                     total_faa_stats += worker_stats;
