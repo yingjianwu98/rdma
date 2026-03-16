@@ -496,8 +496,8 @@ uint64_t learn_waiter_quorum(const uint64_t* values, const size_t replica_count)
 FaaPipelineConfig load_faa_pipeline_config() {
     FaaPipelineConfig config{};
     config.active_window = std::max<size_t>(1, FAA_ACTIVE_WINDOW);
-    config.cq_batch = std::max<size_t>(1, FAA_CQ_BATCH);
-    config.zipf_skew = FAA_ZIPF_SKEW;
+    config.cq_batch = std::max<size_t>(1, get_uint_env_or("FAA_CQ_BATCH", 32));
+    config.zipf_skew = get_double_env_or("FAA_ZIPF_SKEW", 0.0);
     return config;
 }
 
@@ -515,7 +515,7 @@ void run_faa_pipeline(
     const FaaPipelineConfig& config,
     FaaPipelineStats* out_stats
 ) {
-    const bool faa_debug = FAA_DEBUG;
+    const bool faa_debug = get_uint_env_or("FAA_DEBUG", 1) != 0;
     auto debug = [&](const std::string& msg) {
         if (faa_debug) {
             std::cout << "[FaaClient " << client.id() << "] " << msg << "\n";

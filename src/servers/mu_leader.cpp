@@ -123,10 +123,11 @@ bool is_resp_send_wr_id(const uint64_t wr_id) {
 }  // namespace
 
 void MuLeader::run() {
-    const bool mu_debug = MU_DEBUG;
-    const bool mu_stats_enabled = MU_STATS;
-    const bool mu_stats_print_idle = MU_STATS_PRINT_IDLE;
-    const bool mu_quorum_only_signal = MU_REPL_SIGNAL_QUORUM_ONLY;
+    const bool mu_debug = get_uint_env_or("MU_DEBUG", 0) != 0;
+    const bool mu_stats_enabled = get_uint_env_or("MU_STATS", 1) != 0;
+    const bool mu_stats_print_idle = get_uint_env_or("MU_STATS_PRINT_IDLE", 0) != 0;
+    const bool mu_quorum_only_signal =
+        get_uint_env_or("MU_REPL_SIGNAL_QUORUM_ONLY", MU_REPL_SIGNAL_QUORUM_ONLY_DEFAULT) != 0;
     auto debug = [&](const std::string& msg) {
         if (mu_debug) {
             std::cout << "[MuLeader " << node_id_ << "] " << msg << "\n";

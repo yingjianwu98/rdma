@@ -234,9 +234,9 @@ void post_release(
 CasPipelineConfig load_cas_pipeline_config() {
     CasPipelineConfig config{};
     config.active_window = CAS_ACTIVE_CLIENTS;
-    config.cq_batch = std::max<size_t>(1, CAS_CQ_BATCH);
-    config.zipf_skew = CAS_ZIPF_SKEW;
-    config.release_signal_every = std::max<uint32_t>(1, CAS_RELEASE_SIGNAL_EVERY);
+    config.cq_batch = std::max<size_t>(1, get_uint_env_or("CAS_CQ_BATCH", 32));
+    config.zipf_skew = get_double_env_or("CAS_ZIPF_SKEW", 0.0);
+    config.release_signal_every = std::max<uint32_t>(1, get_uint_env_or("CAS_RELEASE_SIGNAL_EVERY", 100));
     return config;
 }
 
