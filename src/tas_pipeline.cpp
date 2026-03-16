@@ -8,11 +8,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <iomanip>
-#include <iostream>
 #include <limits>
 #include <random>
-#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -44,6 +41,7 @@ struct TasOpCtx {
     uint32_t generation = 0;
     uint32_t slot = 0;
     uint32_t lock_id = 0;
+    uint32_t local_lock_index = 0;
     uint32_t req_id = 0;
     uint64_t proposer_id = 0;
     TasPhase phase = TasPhase::idle;
@@ -59,36 +57,15 @@ struct TasOpCtx {
     std::chrono::steady_clock::time_point started_at{};
 };
 
-struct TasPipelineStats {
-    uint64_t discover_posts = 0;
-    uint64_t discover_cqes = 0;
-    uint64_t commit_posts = 0;
-    uint64_t commit_cqes = 0;
-    uint64_t commit_superquorum_wins = 0;
-    uint64_t learn_posts = 0;
-    uint64_t learn_cqes = 0;
-    uint64_t learn_quorum_winner = 0;
-    uint64_t learn_lowest_id_winner = 0;
-    uint64_t learn_empty_restart = 0;
-    uint64_t discover_odd_restart = 0;
-    uint64_t advance_acquire_posts = 0;
-    uint64_t advance_release_posts = 0;
-    uint64_t advance_acquire_cqes = 0;
-    uint64_t advance_release_cqes = 0;
-    uint64_t empty_polls = 0;
-    uint64_t nonempty_polls = 0;
-    uint64_t cqes_polled = 0;
-    uint64_t active_ops_hwm = 0;
-};
-
 class ZipfLockPicker {
 public:
-    explicit ZipfLockPicker(const double skew)
+    ZipfLockPicker(const double skew, const uint32_t start, const uint32_t count)
         : skew_(std::max(skew, 0.0))
-        , uniform_(0, MAX_LOCKS - 1) {
+        , start_(start)
+        , uniform_(0, count - 1) {
         if (skew_ > 0.0) {
-            std::vector<double> weights(MAX_LOCKS);
-            for (size_t i = 0; i < MAX_LOCKS; ++i) {
+            std::vector<double> weights(count);
+            for (size_t i = 0; i < count; ++i) {
                 weights[i] = 1.0 / std::pow(static_cast<double>(i + 1), skew_);
             }
             zipf_ = std::discrete_distribution<uint32_t>(weights.begin(), weights.end());
@@ -97,12 +74,14 @@ public:
     }
 
     uint32_t next() {
-        return use_zipf_ ? zipf_(rng_) : uniform_(rng_);
+        const uint32_t offset = use_zipf_ ? zipf_(rng_) : uniform_(rng_);
+        return start_ + offset;
     }
 
 private:
     double skew_;
     bool use_zipf_ = false;
+    uint32_t start_ = 0;
     std::mt19937 rng_{std::random_device{}()};
     std::uniform_int_distribution<uint32_t> uniform_;
     std::discrete_distribution<uint32_t> zipf_;
@@ -402,10 +381,9 @@ void run_tas_pipeline(
     Client& client,
     uint64_t* latencies,
     uint64_t* lock_counts,
-    const TasPipelineConfig& config
+    const TasPipelineConfig& config,
+    TasPipelineStats* out_stats
 ) {
-    const bool tas_stats_enabled = get_uint_env_or("TAS_STATS", 1) != 0;
-    const bool tas_stats_print_idle = get_uint_env_or("TAS_STATS_PRINT_IDLE", 0) != 0;
     const auto& conns = client.connections();
     if (conns.empty()) {
         throw std::runtime_error("TAS pipeline: no server connections");
@@ -414,73 +392,62 @@ void run_tas_pipeline(
         throw std::runtime_error("TAS pipeline: active window exceeds wr_id slot capacity");
     }
 
+    const uint32_t range_start = static_cast<uint32_t>((static_cast<uint64_t>(client.id()) * MAX_LOCKS) / TOTAL_CLIENTS);
+    const uint32_t range_end = static_cast<uint32_t>((static_cast<uint64_t>(client.id() + 1) * MAX_LOCKS) / TOTAL_CLIENTS);
+    const uint32_t range_size = range_end - range_start;
+    if (range_size == 0) {
+        throw std::runtime_error("TAS pipeline: client has empty lock range");
+    }
+    if (config.active_window > range_size) {
+        throw std::runtime_error("TAS pipeline: active window exceeds per-thread lock range");
+    }
+
     auto buffers = map_buffers(client.buffer(), client.buffer_size(), config.active_window, conns.size());
     std::vector<TasOpCtx> ops(config.active_window);
     std::vector<ibv_wc> completions(config.cq_batch);
-    ZipfLockPicker picker(config.zipf_skew);
+    ZipfLockPicker picker(config.zipf_skew, range_start, range_size);
     TasPipelineStats stats{};
-    TasPipelineStats prev_stats{};
-    auto last_stats_at = std::chrono::steady_clock::now();
+    std::vector<uint8_t> active_lock_flags(range_size, 0);
 
     size_t submitted = 0;
     size_t completed = 0;
     size_t active = 0;
     uint32_t next_req_id = 1;
 
-    auto print_stats = [&](const TasPipelineStats& delta, const double interval_s) {
-        const uint64_t total_polls = delta.empty_polls + delta.nonempty_polls;
-        const double nonempty_poll_pct = total_polls == 0
-            ? 0.0
-            : 100.0 * static_cast<double>(delta.nonempty_polls) / static_cast<double>(total_polls);
-
-        std::ostringstream line1;
-        line1 << std::fixed << std::setprecision(2)
-              << "[TasStats client=" << client.id() << "] interval=" << interval_s << "s"
-              << " | posts: discover=" << delta.discover_posts
-              << " commit=" << delta.commit_posts
-              << " learn=" << delta.learn_posts
-              << " adv_acq=" << delta.advance_acquire_posts
-              << " adv_rel=" << delta.advance_release_posts;
-
-        std::ostringstream line2;
-        line2 << std::fixed << std::setprecision(0)
-              << "[TasStats client=" << client.id() << "] cq"
-              << " | discover=" << delta.discover_cqes
-              << " commit=" << delta.commit_cqes
-              << " learn=" << delta.learn_cqes
-              << " adv_acq=" << delta.advance_acquire_cqes
-              << " adv_rel=" << delta.advance_release_cqes
-              << " total=" << delta.cqes_polled
-              << " | polls empty=" << delta.empty_polls
-              << " nonempty=" << delta.nonempty_polls
-              << " nonempty%=" << std::fixed << std::setprecision(1) << nonempty_poll_pct;
-
-        std::ostringstream line3;
-        line3 << std::fixed << std::setprecision(0)
-              << "[TasStats client=" << client.id() << "] decisions"
-              << " | superq_wins=" << delta.commit_superquorum_wins
-              << " learn_quorum=" << delta.learn_quorum_winner
-              << " learn_lowest=" << delta.learn_lowest_id_winner
-              << " learn_empty_restart=" << delta.learn_empty_restart
-              << " discover_odd_restart=" << delta.discover_odd_restart;
-
-        std::ostringstream line4;
-        line4 << "[TasStats client=" << client.id() << "] active"
-              << " | current=" << active
-              << " interval_hwm=" << stats.active_ops_hwm;
-
-        std::cout << line1.str() << "\n"
-                  << line2.str() << "\n"
-                  << line3.str() << "\n"
-                  << line4.str() << "\n";
-    };
-
     auto submit_op = [&](const size_t slot) {
         auto& op = ops[slot];
+        uint32_t lock_id = picker.next();
+        uint32_t local_lock_index = lock_id - range_start;
+        if (active_lock_flags[local_lock_index] != 0) {
+            bool found = false;
+            for (uint32_t attempts = 0; attempts < range_size; ++attempts) {
+                lock_id = picker.next();
+                local_lock_index = lock_id - range_start;
+                if (active_lock_flags[local_lock_index] == 0) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                for (uint32_t probe = 0; probe < range_size; ++probe) {
+                    if (active_lock_flags[probe] == 0) {
+                        lock_id = range_start + probe;
+                        local_lock_index = probe;
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if (!found) {
+                throw std::runtime_error("TAS pipeline: no inactive lock available in thread range");
+            }
+        }
+
         op.active = true;
         op.generation++;
         op.slot = static_cast<uint32_t>(slot);
-        op.lock_id = picker.next();
+        op.lock_id = lock_id;
+        op.local_lock_index = local_lock_index;
         op.req_id = next_req_id++;
         op.proposer_id = make_proposer_id(static_cast<uint16_t>(client.id()), static_cast<uint16_t>(op.slot), op.req_id);
         op.frontier = 0;
@@ -493,6 +460,7 @@ void run_tas_pipeline(
         op.advance_release_pending = 0;
         op.latency_index = submitted;
         op.started_at = std::chrono::steady_clock::now();
+        active_lock_flags[local_lock_index] = 1;
         post_discover(client, op, buffers, stats);
         submitted++;
         active++;
@@ -510,39 +478,6 @@ void run_tas_pipeline(
         }
         if (polled == 0) {
             stats.empty_polls++;
-            if (tas_stats_enabled) {
-                const auto now = std::chrono::steady_clock::now();
-                if (now - last_stats_at >= std::chrono::seconds(1)) {
-                    TasPipelineStats delta{};
-                    delta.discover_posts = stats.discover_posts - prev_stats.discover_posts;
-                    delta.discover_cqes = stats.discover_cqes - prev_stats.discover_cqes;
-                    delta.commit_posts = stats.commit_posts - prev_stats.commit_posts;
-                    delta.commit_cqes = stats.commit_cqes - prev_stats.commit_cqes;
-                    delta.commit_superquorum_wins = stats.commit_superquorum_wins - prev_stats.commit_superquorum_wins;
-                    delta.learn_posts = stats.learn_posts - prev_stats.learn_posts;
-                    delta.learn_cqes = stats.learn_cqes - prev_stats.learn_cqes;
-                    delta.learn_quorum_winner = stats.learn_quorum_winner - prev_stats.learn_quorum_winner;
-                    delta.learn_lowest_id_winner = stats.learn_lowest_id_winner - prev_stats.learn_lowest_id_winner;
-                    delta.learn_empty_restart = stats.learn_empty_restart - prev_stats.learn_empty_restart;
-                    delta.discover_odd_restart = stats.discover_odd_restart - prev_stats.discover_odd_restart;
-                    delta.advance_acquire_posts = stats.advance_acquire_posts - prev_stats.advance_acquire_posts;
-                    delta.advance_release_posts = stats.advance_release_posts - prev_stats.advance_release_posts;
-                    delta.advance_acquire_cqes = stats.advance_acquire_cqes - prev_stats.advance_acquire_cqes;
-                    delta.advance_release_cqes = stats.advance_release_cqes - prev_stats.advance_release_cqes;
-                    delta.empty_polls = stats.empty_polls - prev_stats.empty_polls;
-                    delta.nonempty_polls = stats.nonempty_polls - prev_stats.nonempty_polls;
-                    delta.cqes_polled = stats.cqes_polled - prev_stats.cqes_polled;
-                    const bool active_interval = delta.discover_posts != 0 || delta.commit_posts != 0 || delta.learn_posts != 0
-                        || delta.advance_acquire_posts != 0 || delta.advance_release_posts != 0
-                        || delta.cqes_polled != 0;
-                    if (active_interval || tas_stats_print_idle) {
-                        const double interval_s = std::chrono::duration_cast<std::chrono::duration<double>>(now - last_stats_at).count();
-                        print_stats(delta, interval_s);
-                    }
-                    prev_stats = stats;
-                    last_stats_at = now;
-                }
-            }
             continue;
         }
         stats.nonempty_polls++;
@@ -590,6 +525,7 @@ void run_tas_pipeline(
                 }
                 op.advance_release_pending--;
                 if (op.advance_release_pending == 0) {
+                    active_lock_flags[op.local_lock_index] = 0;
                     lock_counts[op.lock_id]++;
                     op.active = false;
                     op.phase = TasPhase::idle;
@@ -678,43 +614,14 @@ void run_tas_pipeline(
                         std::chrono::steady_clock::now() - op.started_at).count();
                     post_advance_acquire(client, op, buffers, stats);
                 } else {
-                    stats.learn_empty_restart++;
+                    stats.learn_loser_restart++;
                     post_discover(client, op, buffers, stats);
                 }
             }
         }
+    }
 
-        if (tas_stats_enabled) {
-            const auto now = std::chrono::steady_clock::now();
-            if (now - last_stats_at >= std::chrono::seconds(1)) {
-                TasPipelineStats delta{};
-                delta.discover_posts = stats.discover_posts - prev_stats.discover_posts;
-                delta.discover_cqes = stats.discover_cqes - prev_stats.discover_cqes;
-                delta.commit_posts = stats.commit_posts - prev_stats.commit_posts;
-                delta.commit_cqes = stats.commit_cqes - prev_stats.commit_cqes;
-                delta.commit_superquorum_wins = stats.commit_superquorum_wins - prev_stats.commit_superquorum_wins;
-                delta.learn_posts = stats.learn_posts - prev_stats.learn_posts;
-                delta.learn_cqes = stats.learn_cqes - prev_stats.learn_cqes;
-                delta.learn_quorum_winner = stats.learn_quorum_winner - prev_stats.learn_quorum_winner;
-                delta.learn_lowest_id_winner = stats.learn_lowest_id_winner - prev_stats.learn_lowest_id_winner;
-                delta.learn_empty_restart = stats.learn_empty_restart - prev_stats.learn_empty_restart;
-                delta.discover_odd_restart = stats.discover_odd_restart - prev_stats.discover_odd_restart;
-                delta.advance_acquire_posts = stats.advance_acquire_posts - prev_stats.advance_acquire_posts;
-                delta.advance_release_posts = stats.advance_release_posts - prev_stats.advance_release_posts;
-                delta.advance_acquire_cqes = stats.advance_acquire_cqes - prev_stats.advance_acquire_cqes;
-                delta.advance_release_cqes = stats.advance_release_cqes - prev_stats.advance_release_cqes;
-                delta.empty_polls = stats.empty_polls - prev_stats.empty_polls;
-                delta.nonempty_polls = stats.nonempty_polls - prev_stats.nonempty_polls;
-                delta.cqes_polled = stats.cqes_polled - prev_stats.cqes_polled;
-                const bool active_interval = delta.discover_posts != 0 || delta.commit_posts != 0 || delta.learn_posts != 0
-                    || delta.advance_acquire_posts != 0 || delta.advance_release_posts != 0 || delta.cqes_polled != 0;
-                if (active_interval || tas_stats_print_idle) {
-                    const double interval_s = std::chrono::duration_cast<std::chrono::duration<double>>(now - last_stats_at).count();
-                    print_stats(delta, interval_s);
-                }
-                prev_stats = stats;
-                last_stats_at = now;
-            }
-        }
+    if (out_stats) {
+        *out_stats = stats;
     }
 }

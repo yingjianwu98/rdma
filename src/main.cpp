@@ -46,6 +46,7 @@ int main() {
             auto lock_counts = std::make_unique<
                 std::array<std::array<uint64_t, MAX_LOCKS>, TOTAL_CLIENTS>>();
             for (auto& client_counts : *lock_counts) client_counts.fill(0);
+            auto tas_stats = std::make_unique<std::array<TasPipelineStats, NUM_CLIENTS_PER_MACHINE>>();
 
             std::atomic<Client*> verify_client{nullptr};
 
@@ -54,7 +55,7 @@ int main() {
 
                 workers.emplace_back(
                     [i, global_id, is_mu, is_faa, is_cas, is_tas,
-                     &start_latch, &all_latencies, &lock_counts, &verify_client, &cas_config, &mu_config, &tas_config]() {
+                     &start_latch, &all_latencies, &lock_counts, &tas_stats, &verify_client, &cas_config, &mu_config, &tas_config]() {
                         try {
                             pin_thread_to_cpu(pick_cpu_for_client(i));
 
@@ -122,7 +123,8 @@ int main() {
                                     *client,
                                     latencies,
                                     (*lock_counts)[global_id].data(),
-                                    tas_config);
+                                    tas_config,
+                                    &(*tas_stats)[i]);
                             } else {
                                 for (size_t op = 0; op < NUM_OPS_PER_CLIENT; ++op) {
                                     auto [lock_id, lock] = table.random(*client);
@@ -183,6 +185,55 @@ int main() {
             double std_dev = std::sqrt(sq_sum / local_total_ops);
 
             const double goodput = local_total_ops / wall_s;
+
+            if (is_tas && get_uint_env_or("TAS_STATS", 0) != 0) {
+                TasPipelineStats total_tas_stats{};
+                for (const auto& worker_stats : *tas_stats) {
+                    total_tas_stats += worker_stats;
+                }
+
+                const uint64_t total_polls = total_tas_stats.empty_polls + total_tas_stats.nonempty_polls;
+                const double nonempty_poll_pct = total_polls == 0
+                    ? 0.0
+                    : 100.0 * static_cast<double>(total_tas_stats.nonempty_polls) / static_cast<double>(total_polls);
+                const double fast_path_pct = total_tas_stats.commit_posts == 0
+                    ? 0.0
+                    : 100.0 * static_cast<double>(total_tas_stats.commit_superquorum_wins)
+                        / static_cast<double>(total_tas_stats.commit_posts);
+                const double slow_path_pct = 100.0 - fast_path_pct;
+
+                std::cout << "[TasStats combined] posts"
+                          << " | discover=" << total_tas_stats.discover_posts
+                          << " commit=" << total_tas_stats.commit_posts
+                          << " learn=" << total_tas_stats.learn_posts
+                          << " adv_acq=" << total_tas_stats.advance_acquire_posts
+                          << " adv_rel=" << total_tas_stats.advance_release_posts
+                          << "\n";
+                std::cout << "[TasStats combined] cq"
+                          << " | discover=" << total_tas_stats.discover_cqes
+                          << " commit=" << total_tas_stats.commit_cqes
+                          << " learn=" << total_tas_stats.learn_cqes
+                          << " adv_acq=" << total_tas_stats.advance_acquire_cqes
+                          << " adv_rel=" << total_tas_stats.advance_release_cqes
+                          << " total=" << total_tas_stats.cqes_polled
+                          << " | polls empty=" << total_tas_stats.empty_polls
+                          << " nonempty=" << total_tas_stats.nonempty_polls
+                          << " nonempty%=" << std::fixed << std::setprecision(1) << nonempty_poll_pct
+                          << "\n";
+                std::cout << "[TasStats combined] decisions"
+                          << " | superq_wins=" << total_tas_stats.commit_superquorum_wins
+                          << " learn_quorum=" << total_tas_stats.learn_quorum_winner
+                          << " learn_lowest=" << total_tas_stats.learn_lowest_id_winner
+                          << " learn_empty_restart=" << total_tas_stats.learn_empty_restart
+                          << " learn_loser_restart=" << total_tas_stats.learn_loser_restart
+                          << " discover_odd_restart=" << total_tas_stats.discover_odd_restart
+                          << " | fast_path%=" << fast_path_pct
+                          << " slow_path%=" << slow_path_pct
+                          << "\n";
+                std::cout << "[TasStats combined] active"
+                          << " | active_hwm=" << total_tas_stats.active_ops_hwm
+                          << "\n";
+            }
 
             if (verify_client.load()) delete verify_client.load();
 
