@@ -366,8 +366,8 @@ uint64_t select_winner(const uint64_t* values, const size_t replica_count) {
 TasPipelineConfig load_tas_pipeline_config() {
     TasPipelineConfig config{};
     config.active_window = std::max<size_t>(1, TAS_ACTIVE_WINDOW);
-    config.cq_batch = std::max<size_t>(1, get_uint_env_or("TAS_CQ_BATCH", 32));
-    config.zipf_skew = get_double_env_or("TAS_ZIPF_SKEW", 0.0);
+    config.cq_batch = std::max<size_t>(1, TAS_CQ_BATCH);
+    config.zipf_skew = TAS_ZIPF_SKEW;
     return config;
 }
 

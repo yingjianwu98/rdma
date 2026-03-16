@@ -55,6 +55,28 @@ constexpr size_t TOTAL_CLIENTS = NUM_CLIENTS_PER_MACHINE * TOTAL_MACHINES;
 constexpr size_t NUM_OPS_PER_CLIENT = NUM_OPS / TOTAL_CLIENTS;
 constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * TOTAL_CLIENTS;
 
+// ─── Pipeline/debug constants ───
+
+constexpr size_t CAS_CQ_BATCH = 32;
+constexpr double CAS_ZIPF_SKEW = 0.0;
+constexpr uint32_t CAS_RELEASE_SIGNAL_EVERY = 100;
+
+constexpr size_t FAA_CQ_BATCH = 32;
+constexpr double FAA_ZIPF_SKEW = 0.0;
+constexpr bool FAA_DEBUG = true;
+constexpr bool FAA_STATS = false;
+
+constexpr size_t MU_CQ_BATCH = 32;
+constexpr uint32_t MU_CLIENT_SEND_SIGNAL_EVERY = 64;
+constexpr bool MU_DEBUG = false;
+constexpr bool MU_STATS = true;
+constexpr bool MU_STATS_PRINT_IDLE = false;
+constexpr bool MU_REPL_SIGNAL_QUORUM_ONLY = true;
+
+constexpr size_t TAS_CQ_BATCH = 32;
+constexpr double TAS_ZIPF_SKEW = 0.0;
+constexpr bool TAS_STATS = false;
+
 // ─── Lock table layout ───
 
 constexpr size_t MAX_LOCKS = 1;

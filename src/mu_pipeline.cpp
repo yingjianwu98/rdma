@@ -150,10 +150,10 @@ void post_request(
 MuPipelineConfig load_mu_pipeline_config() {
     MuPipelineConfig config{};
     config.active_window = std::max<size_t>(1, MU_ACTIVE_WINDOW);
-    config.cq_batch = std::max<size_t>(1, get_uint_env_or("MU_CQ_BATCH", MU_CLIENT_CQ_BATCH_DEFAULT));
+    config.cq_batch = std::max<size_t>(1, MU_CQ_BATCH);
     config.client_send_signal_every = std::max<uint32_t>(
         1,
-        get_uint_env_or("MU_CLIENT_SEND_SIGNAL_EVERY", MU_CLIENT_SEND_SIGNAL_EVERY_DEFAULT));
+        MU_CLIENT_SEND_SIGNAL_EVERY);
     return config;
 }
 
@@ -169,7 +169,7 @@ void run_mu_pipeline(
     uint64_t* lock_counts,
     const MuPipelineConfig& config
 ) {
-    const bool mu_debug = get_uint_env_or("MU_DEBUG", 0) != 0;
+    const bool mu_debug = MU_DEBUG;
     auto debug = [&](const std::string& msg) {
         if (mu_debug) {
             std::cout << "[MuClient " << client.id() << "] " << msg << "\n";

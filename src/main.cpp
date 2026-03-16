@@ -194,7 +194,7 @@ int main() {
 
             const double goodput = local_total_ops / wall_s;
 
-            if (is_tas && get_uint_env_or("TAS_STATS", 0) != 0) {
+            if (is_tas && TAS_STATS) {
                 TasPipelineStats total_tas_stats{};
                 for (const auto& worker_stats : *tas_stats) {
                     total_tas_stats += worker_stats;
@@ -237,13 +237,13 @@ int main() {
                           << " discover_odd_restart=" << total_tas_stats.discover_odd_restart
                           << " | fast_path%=" << fast_path_pct
                           << " slow_path%=" << slow_path_pct
-                          << "\n";f
+                          << "\n";
                 std::cout << "[TasStats combined] active"
                           << " | active_hwm=" << total_tas_stats.active_ops_hwm
                           << "\n";
             }
 
-            if (is_faa && get_uint_env_or("FAA_STATS", 0) != 0) {
+            if (is_faa && FAA_STATS) {
                 for (uint32_t i = 0; i < NUM_CLIENTS_PER_MACHINE; ++i) {
                     const uint32_t global_id = machine_id * NUM_CLIENTS_PER_MACHINE + i;
                     const auto& s = (*faa_stats)[i];
