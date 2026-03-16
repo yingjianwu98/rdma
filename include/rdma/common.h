@@ -58,7 +58,7 @@ constexpr bool FAA_REPLICATE_USE_CAS = false;
 
 // ─── Lock table layout ───
 
-constexpr size_t MAX_LOCKS = 10000;
+constexpr size_t MAX_LOCKS = 5000;
 constexpr size_t FAA_ACTIVE_WINDOW = 16;
 constexpr size_t MU_ACTIVE_WINDOW = 32;
 constexpr size_t TAS_ACTIVE_WINDOW = 32;
