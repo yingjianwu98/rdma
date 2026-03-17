@@ -46,6 +46,7 @@ struct RegisteredTicketFaaBuffers {
     uint64_t* replicate_results = nullptr;
     uint64_t* turn_reads = nullptr;
     uint64_t* mark_done_values = nullptr;
+    uint64_t* mark_done_results = nullptr;
     uint64_t* release_results = nullptr;
 };
 
@@ -65,6 +66,7 @@ struct TicketFaaOpCtx {
     uint32_t responses = 0;
     uint32_t response_target = 0;
     uint32_t quorum_hits = 0;
+    uint32_t release_mark_done_responses = 0;
     uint32_t release_mark_done_quorum = 0;
     bool release_turn_done = false;
     size_t latency_index = 0;
@@ -171,6 +173,8 @@ RegisteredTicketFaaBuffers map_buffers(
     offset += scalar_bytes;
     buffers.mark_done_values = reinterpret_cast<uint64_t*>(base + offset);
     offset += scalar_bytes;
+    buffers.mark_done_results = reinterpret_cast<uint64_t*>(base + offset);
+    offset += matrix_bytes;
     buffers.release_results = reinterpret_cast<uint64_t*>(base + offset);
     offset += scalar_bytes;
 
@@ -290,19 +294,20 @@ void post_turn_read(Client& client, TicketFaaOpCtx& op, const RegisteredTicketFa
     }
 }
 
-void post_release_parallel(Client& client, TicketFaaOpCtx& op, const RegisteredTicketFaaBuffers& buffers) {
+void post_release_parallel(
+    Client& client,
+    TicketFaaOpCtx& op,
+    const RegisteredTicketFaaBuffers& buffers,
+    const bool replicate_with_cas
+) {
     const auto& conns = client.connections();
     auto* mr = client.mr();
     const auto& owner = conns[op.owner_node];
     auto* mark_done_value = &buffers.mark_done_values[op.slot];
+    auto* mark_done_results = row_ptr(buffers.mark_done_results, op.slot, conns.size());
     *mark_done_value = waiter_mark_done(op.waiter_id);
     auto* turn_result = &buffers.release_results[op.slot];
     *turn_result = 0;
-
-    ibv_sge mark_done_sge{};
-    mark_done_sge.addr = reinterpret_cast<uintptr_t>(mark_done_value);
-    mark_done_sge.length = sizeof(uint64_t);
-    mark_done_sge.lkey = mr->lkey;
 
     ibv_sge turn_sge{};
     turn_sge.addr = reinterpret_cast<uintptr_t>(turn_result);
@@ -313,18 +318,35 @@ void post_release_parallel(Client& client, TicketFaaOpCtx& op, const RegisteredT
     op.phase = TicketFaaPhase::release_parallel;
     op.responses = 0;
     op.response_target = static_cast<uint32_t>(conns.size() + 1);
+    op.release_mark_done_responses = 0;
     op.release_mark_done_quorum = 0;
     op.release_turn_done = false;
 
     for (size_t i = 0; i < conns.size(); ++i) {
+        mark_done_results[i] = 0;
+
+        ibv_sge mark_done_sge{};
+        mark_done_sge.length = sizeof(uint64_t);
+        mark_done_sge.lkey = mr->lkey;
+
         ibv_send_wr wr{}, *bad_wr = nullptr;
         wr.wr_id = encode_wr_id(op, TicketFaaPhase::release_parallel, static_cast<uint8_t>(i));
-        wr.opcode = IBV_WR_RDMA_WRITE;
         wr.send_flags = IBV_SEND_SIGNALED;
         wr.sg_list = &mark_done_sge;
         wr.num_sge = 1;
-        wr.wr.rdma.remote_addr = conns[i].addr + lock_log_slot_offset(op.lock_id, op.ticket);
-        wr.wr.rdma.rkey = conns[i].rkey;
+        if (replicate_with_cas) {
+            mark_done_sge.addr = reinterpret_cast<uintptr_t>(&mark_done_results[i]);
+            wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
+            wr.wr.atomic.remote_addr = conns[i].addr + lock_log_slot_offset(op.lock_id, op.ticket);
+            wr.wr.atomic.rkey = conns[i].rkey;
+            wr.wr.atomic.compare_add = op.waiter_id;
+            wr.wr.atomic.swap = waiter_mark_done(op.waiter_id);
+        } else {
+            mark_done_sge.addr = reinterpret_cast<uintptr_t>(mark_done_value);
+            wr.opcode = IBV_WR_RDMA_WRITE;
+            wr.wr.rdma.remote_addr = conns[i].addr + lock_log_slot_offset(op.lock_id, op.ticket);
+            wr.wr.rdma.rkey = conns[i].rkey;
+        }
 
         if (ibv_post_send(conns[i].id->qp, &wr, &bad_wr)) {
             throw std::runtime_error("ticket_faa pipeline: mark done post failed");
@@ -362,7 +384,7 @@ size_t ticket_faa_lock_pipeline_client_buffer_size(const TicketFaaLockPipelineCo
     const size_t replica_count = CLUSTER_NODES.size();
     const size_t scalar_bytes = align_up(config.active_window * sizeof(uint64_t), 64);
     const size_t matrix_bytes = align_up(config.active_window * replica_count * sizeof(uint64_t), 64);
-    return align_up(scalar_bytes * 4 + matrix_bytes + PAGE_SIZE, PAGE_SIZE);
+    return align_up(scalar_bytes * 4 + matrix_bytes * 2 + PAGE_SIZE, PAGE_SIZE);
 }
 
 void run_ticket_faa_lock_pipeline(
@@ -388,7 +410,7 @@ void run_ticket_faa_lock_pipeline(
     auto begin_release = [&](TicketFaaOpCtx& op) {
         latencies[op.latency_index] = std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - op.started_at).count();
-        post_release_parallel(client, op, buffers);
+        post_release_parallel(client, op, buffers, config.replicate_with_cas);
     };
 
     auto submit_op = [&](const size_t slot) {
@@ -408,6 +430,7 @@ void run_ticket_faa_lock_pipeline(
         op.responses = 0;
         op.response_target = 0;
         op.quorum_hits = 0;
+        op.release_mark_done_responses = 0;
         op.release_mark_done_quorum = 0;
         op.release_turn_done = false;
         op.latency_index = submitted;
@@ -514,7 +537,15 @@ void run_ticket_faa_lock_pipeline(
                 if (idx == kReleaseTurnConnIndex) {
                     op.release_turn_done = true;
                 } else {
-                    op.release_mark_done_quorum++;
+                    auto* mark_done_results = row_ptr(buffers.mark_done_results, op.slot, conns.size());
+                    op.release_mark_done_responses++;
+                    if (!config.replicate_with_cas || mark_done_results[idx] == op.waiter_id) {
+                        op.release_mark_done_quorum++;
+                    }
+                    const uint32_t remaining = static_cast<uint32_t>(conns.size()) - op.release_mark_done_responses;
+                    if (op.release_mark_done_quorum + remaining < QUORUM) {
+                        throw std::runtime_error("ticket_faa pipeline: mark done failed to reach quorum");
+                    }
                 }
                 if (!op.release_turn_done || op.release_mark_done_quorum < QUORUM) continue;
                 lock_counts[op.lock_id]++;
