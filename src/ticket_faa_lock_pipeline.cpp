@@ -34,8 +34,9 @@ enum class TicketFaaPhase : uint8_t {
     idle = 0,
     faa_ticket = 1,
     replicate_ticket = 2,
-    wait_turn = 3,
-    release_turn = 4,
+    wait_turn_read = 3,
+    wait_turn_spin = 4,
+    release_turn = 5,
 };
 
 struct RegisteredTicketFaaBuffers {
@@ -54,6 +55,8 @@ struct TicketFaaOpCtx {
     uint8_t round = 0;
     uint64_t ticket = 0;
     uint64_t waiter_id = 0;
+    uint64_t last_turn = 0;
+    uint32_t turn_spin_remaining = 0;
     TicketFaaPhase phase = TicketFaaPhase::idle;
     uint32_t responses = 0;
     uint32_t response_target = 0;
@@ -129,6 +132,13 @@ size_t row_offset(const uint32_t slot, const size_t replica_count) {
 
 uint64_t* row_ptr(uint64_t* base, const uint32_t slot, const size_t replica_count) {
     return base + row_offset(slot, replica_count);
+}
+
+uint32_t spin_budget_for_distance(const uint64_t distance) {
+    if (distance <= 1) return TICKET_FAA_TURN_SPIN_VERY_NEAR;
+    if (distance <= 2) return TICKET_FAA_TURN_SPIN_NEAR;
+    if (distance <= 4) return TICKET_FAA_TURN_SPIN_MID;
+    return TICKET_FAA_TURN_SPIN_FAR;
 }
 
 RegisteredTicketFaaBuffers map_buffers(
@@ -248,12 +258,12 @@ void post_turn_read(Client& client, TicketFaaOpCtx& op, const RegisteredTicketFa
     sge.lkey = mr->lkey;
 
     op.round++;
-    op.phase = TicketFaaPhase::wait_turn;
+    op.phase = TicketFaaPhase::wait_turn_read;
     op.responses = 0;
     op.response_target = 1;
 
     ibv_send_wr wr{}, *bad_wr = nullptr;
-    wr.wr_id = encode_wr_id(op, TicketFaaPhase::wait_turn, 0);
+    wr.wr_id = encode_wr_id(op, TicketFaaPhase::wait_turn_read, 0);
     wr.opcode = IBV_WR_RDMA_READ;
     wr.send_flags = IBV_SEND_SIGNALED;
     wr.sg_list = &sge;
@@ -351,6 +361,8 @@ void run_ticket_faa_lock_pipeline(
         op.round = 0;
         op.ticket = 0;
         op.waiter_id = encode_waiter(static_cast<uint16_t>(client.id()), static_cast<uint16_t>(slot), op.req_id);
+        op.last_turn = 0;
+        op.turn_spin_remaining = 0;
         op.phase = TicketFaaPhase::idle;
         op.responses = 0;
         op.response_target = 0;
@@ -367,6 +379,16 @@ void run_ticket_faa_lock_pipeline(
     }
 
     while (completed < NUM_OPS_PER_CLIENT) {
+        for (auto& op : ops) {
+            if (!op.active || op.phase != TicketFaaPhase::wait_turn_spin) continue;
+            if (op.turn_spin_remaining > 0) {
+                --op.turn_spin_remaining;
+            }
+            if (op.turn_spin_remaining == 0) {
+                post_turn_read(client, op, buffers);
+            }
+        }
+
         const int polled = ibv_poll_cq(client.cq(), static_cast<int>(completions.size()), completions.data());
         if (polled < 0) throw std::runtime_error("ticket_faa pipeline: CQ poll failed");
         if (polled == 0) {
@@ -427,11 +449,19 @@ void run_ticket_faa_lock_pipeline(
                 continue;
             }
 
-            if (phase == TicketFaaPhase::wait_turn) {
-                if (buffers.turn_reads[op.slot] == op.ticket) {
+            if (phase == TicketFaaPhase::wait_turn_read) {
+                op.last_turn = buffers.turn_reads[op.slot];
+                if (op.last_turn == op.ticket) {
                     begin_release(op);
                 } else {
-                    post_turn_read(client, op, buffers);
+                    const uint64_t distance = op.ticket > op.last_turn ? (op.ticket - op.last_turn) : 0;
+                    const uint32_t spin_budget = spin_budget_for_distance(distance);
+                    if (spin_budget == 0) {
+                        post_turn_read(client, op, buffers);
+                    } else {
+                        op.turn_spin_remaining = spin_budget;
+                        op.phase = TicketFaaPhase::wait_turn_spin;
+                    }
                 }
                 continue;
             }

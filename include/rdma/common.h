@@ -58,6 +58,10 @@ constexpr bool FAA_REPLICATE_USE_CAS = false;
 constexpr bool TICKET_FAA_REPLICATE_USE_CAS = false;
 constexpr size_t TICKET_FAA_CQ_BATCH = 32;
 constexpr double TICKET_FAA_ZIPF_SKEW = 0.0;
+constexpr uint32_t TICKET_FAA_TURN_SPIN_VERY_NEAR = 0;
+constexpr uint32_t TICKET_FAA_TURN_SPIN_NEAR = 32;
+constexpr uint32_t TICKET_FAA_TURN_SPIN_MID = 128;
+constexpr uint32_t TICKET_FAA_TURN_SPIN_FAR = 512;
 
 // ─── Lock table layout ───
 
