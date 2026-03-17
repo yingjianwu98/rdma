@@ -51,6 +51,7 @@ struct TicketFaaOpCtx {
     uint32_t generation = 0;
     uint32_t slot = 0;
     uint32_t lock_id = 0;
+    uint32_t owner_node = 0;
     uint32_t req_id = 0;
     uint8_t round = 0;
     uint64_t ticket = 0;
@@ -173,6 +174,7 @@ void post_ticket_faa(Client& client, TicketFaaOpCtx& op, const RegisteredTicketF
     auto* mr = client.mr();
     auto* result = &buffers.ticket_results[op.slot];
     *result = 0;
+    const auto& owner = conns[op.owner_node];
 
     ibv_sge sge{};
     sge.addr = reinterpret_cast<uintptr_t>(result);
@@ -185,16 +187,16 @@ void post_ticket_faa(Client& client, TicketFaaOpCtx& op, const RegisteredTicketF
     op.response_target = 1;
 
     ibv_send_wr wr{}, *bad_wr = nullptr;
-    wr.wr_id = encode_wr_id(op, TicketFaaPhase::faa_ticket, 0);
+    wr.wr_id = encode_wr_id(op, TicketFaaPhase::faa_ticket, static_cast<uint8_t>(op.owner_node));
     wr.opcode = IBV_WR_ATOMIC_FETCH_AND_ADD;
     wr.send_flags = IBV_SEND_SIGNALED;
     wr.sg_list = &sge;
     wr.num_sge = 1;
-    wr.wr.atomic.remote_addr = conns[0].addr + lock_control_offset(op.lock_id);
-    wr.wr.atomic.rkey = conns[0].rkey;
+    wr.wr.atomic.remote_addr = owner.addr + lock_control_offset(op.lock_id);
+    wr.wr.atomic.rkey = owner.rkey;
     wr.wr.atomic.compare_add = 1;
 
-    if (ibv_post_send(conns[0].id->qp, &wr, &bad_wr)) {
+    if (ibv_post_send(owner.id->qp, &wr, &bad_wr)) {
         throw std::runtime_error("ticket_faa pipeline: FAA ticket post failed");
     }
 }
@@ -251,6 +253,7 @@ void post_turn_read(Client& client, TicketFaaOpCtx& op, const RegisteredTicketFa
     auto* mr = client.mr();
     auto* result = &buffers.turn_reads[op.slot];
     *result = EMPTY_SLOT;
+    const auto& owner = conns[op.owner_node];
 
     ibv_sge sge{};
     sge.addr = reinterpret_cast<uintptr_t>(result);
@@ -263,15 +266,15 @@ void post_turn_read(Client& client, TicketFaaOpCtx& op, const RegisteredTicketFa
     op.response_target = 1;
 
     ibv_send_wr wr{}, *bad_wr = nullptr;
-    wr.wr_id = encode_wr_id(op, TicketFaaPhase::wait_turn_read, 0);
+    wr.wr_id = encode_wr_id(op, TicketFaaPhase::wait_turn_read, static_cast<uint8_t>(op.owner_node));
     wr.opcode = IBV_WR_RDMA_READ;
     wr.send_flags = IBV_SEND_SIGNALED;
     wr.sg_list = &sge;
     wr.num_sge = 1;
-    wr.wr.rdma.remote_addr = conns[0].addr + lock_turn_offset(op.lock_id);
-    wr.wr.rdma.rkey = conns[0].rkey;
+    wr.wr.rdma.remote_addr = owner.addr + lock_turn_offset(op.lock_id);
+    wr.wr.rdma.rkey = owner.rkey;
 
-    if (ibv_post_send(conns[0].id->qp, &wr, &bad_wr)) {
+    if (ibv_post_send(owner.id->qp, &wr, &bad_wr)) {
         throw std::runtime_error("ticket_faa pipeline: turn read post failed");
     }
 }
@@ -281,6 +284,7 @@ void post_release_turn(Client& client, TicketFaaOpCtx& op, const RegisteredTicke
     auto* mr = client.mr();
     auto* result = &buffers.release_results[op.slot];
     *result = 0;
+    const auto& owner = conns[op.owner_node];
 
     ibv_sge sge{};
     sge.addr = reinterpret_cast<uintptr_t>(result);
@@ -293,16 +297,16 @@ void post_release_turn(Client& client, TicketFaaOpCtx& op, const RegisteredTicke
     op.response_target = 1;
 
     ibv_send_wr wr{}, *bad_wr = nullptr;
-    wr.wr_id = encode_wr_id(op, TicketFaaPhase::release_turn, 0);
+    wr.wr_id = encode_wr_id(op, TicketFaaPhase::release_turn, static_cast<uint8_t>(op.owner_node));
     wr.opcode = IBV_WR_ATOMIC_FETCH_AND_ADD;
     wr.send_flags = IBV_SEND_SIGNALED;
     wr.sg_list = &sge;
     wr.num_sge = 1;
-    wr.wr.atomic.remote_addr = conns[0].addr + lock_turn_offset(op.lock_id);
-    wr.wr.atomic.rkey = conns[0].rkey;
+    wr.wr.atomic.remote_addr = owner.addr + lock_turn_offset(op.lock_id);
+    wr.wr.atomic.rkey = owner.rkey;
     wr.wr.atomic.compare_add = 1;
 
-    if (ibv_post_send(conns[0].id->qp, &wr, &bad_wr)) {
+    if (ibv_post_send(owner.id->qp, &wr, &bad_wr)) {
         throw std::runtime_error("ticket_faa pipeline: release turn post failed");
     }
 }
@@ -315,6 +319,7 @@ TicketFaaLockPipelineConfig load_ticket_faa_lock_pipeline_config() {
     config.cq_batch = std::max<size_t>(1, TICKET_FAA_CQ_BATCH);
     config.zipf_skew = TICKET_FAA_ZIPF_SKEW;
     config.replicate_with_cas = TICKET_FAA_REPLICATE_USE_CAS;
+    config.shard_owner = TICKET_FAA_SHARD_OWNER;
     return config;
 }
 
@@ -357,6 +362,7 @@ void run_ticket_faa_lock_pipeline(
         op.generation++;
         op.slot = static_cast<uint32_t>(slot);
         op.lock_id = picker.next();
+        op.owner_node = config.shard_owner ? (op.lock_id % static_cast<uint32_t>(conns.size())) : 0;
         op.req_id = next_req_id++;
         op.round = 0;
         op.ticket = 0;

@@ -339,6 +339,8 @@ int main() {
                           << ticket_faa_config.zipf_skew << "\n";
                 std::cout << "Replicate Mode: " << std::setw(14)
                           << (ticket_faa_config.replicate_with_cas ? "cas" : "write") << "\n";
+                std::cout << "Owner Mode:     " << std::setw(14)
+                          << (ticket_faa_config.shard_owner ? "sharded" : "leader") << "\n";
             } else if (is_local_ticket_faa) {
                 std::cout << "Active Window:  " << std::setw(14) << local_ticket_faa_config.active_window << "\n";
                 std::cout << "Zipf Skew:      " << std::setw(14) << std::fixed << std::setprecision(2)
