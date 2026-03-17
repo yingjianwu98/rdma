@@ -2,6 +2,7 @@
 
 #include "rdma/client.h"
 #include "rdma/common.h"
+#include "rdma/zipf_lock_picker.h"
 
 #include <algorithm>
 #include <chrono>
@@ -56,33 +57,6 @@ bool is_release_wr_id(const uint64_t wr_id) {
 uint64_t make_release_wr_id(uint64_t seq, const uint8_t conn_index) {
     return kReleaseWrTag | (seq << 8) | static_cast<uint64_t>(conn_index);
 }
-
-class ZipfLockPicker {
-public:
-    explicit ZipfLockPicker(const double skew)
-        : skew_(std::max(skew, 0.0))
-        , uniform_(0, MAX_LOCKS - 1) {
-        if (skew_ > 0.0) {
-            std::vector<double> weights(MAX_LOCKS);
-            for (size_t i = 0; i < MAX_LOCKS; ++i) {
-                weights[i] = 1.0 / std::pow(static_cast<double>(i + 1), skew_);
-            }
-            zipf_ = std::discrete_distribution<uint32_t>(weights.begin(), weights.end());
-            use_zipf_ = true;
-        }
-    }
-
-    uint32_t next() {
-        return use_zipf_ ? zipf_(rng_) : uniform_(rng_);
-    }
-
-private:
-    double skew_;
-    bool use_zipf_ = false;
-    std::mt19937 rng_{std::random_device{}()};
-    std::uniform_int_distribution<uint32_t> uniform_;
-    std::discrete_distribution<uint32_t> zipf_;
-};
 
 uint64_t encode_wr_id(const CasOpCtx& op, const OpPhase phase, const uint8_t conn_index) {
     return (static_cast<uint64_t>(op.generation) << 32)

@@ -2,6 +2,7 @@
 
 #include "rdma/client.h"
 #include "rdma/common.h"
+#include "rdma/zipf_lock_picker.h"
 
 #include <algorithm>
 #include <chrono>
@@ -55,36 +56,6 @@ struct TasOpCtx {
     uint32_t advance_release_pending = 0;
     size_t latency_index = 0;
     std::chrono::steady_clock::time_point started_at{};
-};
-
-class ZipfLockPicker {
-public:
-    ZipfLockPicker(const double skew, const uint32_t start, const uint32_t count)
-        : skew_(std::max(skew, 0.0))
-        , start_(start)
-        , uniform_(0, count - 1) {
-        if (skew_ > 0.0) {
-            std::vector<double> weights(count);
-            for (size_t i = 0; i < count; ++i) {
-                weights[i] = 1.0 / std::pow(static_cast<double>(i + 1), skew_);
-            }
-            zipf_ = std::discrete_distribution<uint32_t>(weights.begin(), weights.end());
-            use_zipf_ = true;
-        }
-    }
-
-    uint32_t next() {
-        const uint32_t offset = use_zipf_ ? zipf_(rng_) : uniform_(rng_);
-        return start_ + offset;
-    }
-
-private:
-    double skew_;
-    bool use_zipf_ = false;
-    uint32_t start_ = 0;
-    std::mt19937 rng_{std::random_device{}()};
-    std::uniform_int_distribution<uint32_t> uniform_;
-    std::discrete_distribution<uint32_t> zipf_;
 };
 
 uint64_t make_proposer_id(const uint16_t client_id, const uint16_t active_slot, const uint32_t req_id) {

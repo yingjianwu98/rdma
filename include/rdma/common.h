@@ -56,6 +56,9 @@ constexpr size_t TOTAL_CLIENTS = NUM_CLIENTS_PER_MACHINE * TOTAL_MACHINES;
 constexpr size_t NUM_OPS_PER_CLIENT = NUM_OPS / TOTAL_CLIENTS;
 constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * TOTAL_CLIENTS;
 constexpr bool FAA_REPLICATE_USE_CAS = false;
+constexpr bool SIMPLE_CAS_SHARD_OWNER = true;
+constexpr size_t SIMPLE_CAS_CQ_BATCH = 32;
+constexpr double SIMPLE_CAS_ZIPF_SKEW = 0.0;
 constexpr bool TICKET_FAA_REPLICATE_USE_CAS = false;
 constexpr bool TICKET_FAA_SHARD_OWNER = true;
 constexpr size_t TICKET_FAA_CQ_BATCH = 32;
@@ -72,6 +75,7 @@ constexpr double LOCAL_TICKET_FAA_ZIPF_SKEW = 0.0;
 // ─── Lock table layout ───
 
 constexpr size_t MAX_LOCKS = 1000;
+constexpr size_t SIMPLE_CAS_ACTIVE_WINDOW = 32;
 constexpr size_t FAA_ACTIVE_WINDOW = 32;
 constexpr size_t TICKET_FAA_ACTIVE_WINDOW = 32;
 constexpr size_t LOCAL_TICKET_FAA_ACTIVE_WINDOW = 16;
