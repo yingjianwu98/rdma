@@ -48,4 +48,5 @@ private:
     rdma_event_channel* peer_ec_ = nullptr;
     rdma_cm_id* peer_listener_ = nullptr;
     std::vector<rdma_event_channel*> peer_conn_ecs_;
+    std::vector<rdma_cm_id*> peer_aux_ids_;
 };

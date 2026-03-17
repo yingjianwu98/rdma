@@ -37,6 +37,10 @@ Client::Client(const uint32_t id, const size_t buffer_size)
 }
 
 Client::~Client() {
+    for (auto* id : peer_aux_ids_) {
+        if (id && id->qp) rdma_destroy_qp(id);
+        if (id) rdma_destroy_id(id);
+    }
     for (const auto& conn : peers_) {
         if (conn.id && conn.id->qp) rdma_destroy_qp(conn.id);
         if (conn.id) rdma_destroy_id(conn.id);
@@ -312,6 +316,132 @@ void Client::connect_peers(uint16_t peer_port) {
 
     peer_conn_ecs_.push_back(outbound_ec);
 
+    // Self loopback so local client-owned state can still be accessed via RDMA.
+    {
+        rdma_cm_id* self_cm_id = nullptr;
+        if (rdma_create_id(outbound_ec, &self_cm_id, nullptr, RDMA_PS_TCP)) {
+            throw std::runtime_error("create_id failed for self peer");
+        }
+
+        sockaddr_in src_addr{};
+        src_addr.sin_family = AF_INET;
+        src_addr.sin_addr = local_in->sin_addr;
+        src_addr.sin_port = 0;
+
+        sockaddr_in dst_addr{};
+        dst_addr.sin_family = AF_INET;
+        dst_addr.sin_port = htons(peer_port + id_);
+        dst_addr.sin_addr = local_in->sin_addr;
+
+        if (rdma_resolve_addr(self_cm_id,
+                              reinterpret_cast<sockaddr*>(&src_addr),
+                              reinterpret_cast<sockaddr*>(&dst_addr), 2000)) {
+            throw std::runtime_error("resolve_addr failed for self peer: " + std::string(strerror(errno)));
+        }
+        auto* ev = wait_for_event(outbound_ec, RDMA_CM_EVENT_ADDR_RESOLVED, "SELF_PEER_ADDR");
+        rdma_ack_cm_event(ev);
+
+        if (rdma_resolve_route(self_cm_id, 2000)) {
+            throw std::runtime_error("resolve_route failed for self peer: " + std::string(strerror(errno)));
+        }
+        ev = wait_for_event(outbound_ec, RDMA_CM_EVENT_ROUTE_RESOLVED, "SELF_PEER_ROUTE");
+        rdma_ack_cm_event(ev);
+
+        ibv_qp_init_attr qp_attr{};
+        qp_attr.qp_type = IBV_QPT_RC;
+        qp_attr.send_cq = cq_;
+        qp_attr.recv_cq = cq_;
+        qp_attr.cap.max_send_wr = QP_DEPTH;
+        qp_attr.cap.max_recv_wr = QP_DEPTH;
+        qp_attr.cap.max_send_sge = 1;
+        qp_attr.cap.max_recv_sge = 1;
+        qp_attr.cap.max_inline_data = MAX_INLINE_DEPTH;
+
+        if (rdma_create_qp(self_cm_id, pd_, &qp_attr)) {
+            throw std::runtime_error("create_qp failed for self peer: " + std::string(strerror(errno)));
+        }
+
+        ConnPrivateData priv{};
+        priv.node_id = id_;
+        priv.type = ConnType::CLIENT;
+        priv.addr = reinterpret_cast<uintptr_t>(buf_);
+        priv.rkey = mr_->rkey;
+
+        rdma_conn_param param{};
+        param.private_data = &priv;
+        param.private_data_len = sizeof(priv);
+        param.responder_resources = RDMA_RESPONDER_RESOURCES;
+        param.initiator_depth = RDMA_INITIATOR_DEPTH;
+        param.rnr_retry_count = 7;
+
+        if (rdma_connect(self_cm_id, &param)) {
+            throw std::runtime_error("connect failed for self peer: " + std::string(strerror(errno)));
+        }
+
+        rdma_cm_event* req_event = nullptr;
+        while (true) {
+            if (rdma_get_cm_event(peer_ec_, &req_event)) {
+                throw std::runtime_error("rdma_get_cm_event failed for self peer accept");
+            }
+            if (req_event->event == RDMA_CM_EVENT_CONNECT_REQUEST) break;
+            rdma_ack_cm_event(req_event);
+        }
+
+        rdma_cm_id* accept_id = req_event->id;
+        auto* incoming = static_cast<const ConnPrivateData*>(req_event->param.conn.private_data);
+        if (!incoming || req_event->param.conn.private_data_len < sizeof(ConnPrivateData)) {
+            rdma_reject(accept_id, nullptr, 0);
+            rdma_ack_cm_event(req_event);
+            throw std::runtime_error("self peer missing private data");
+        }
+
+        ibv_qp_init_attr accept_qp_attr{};
+        accept_qp_attr.qp_type = IBV_QPT_RC;
+        accept_qp_attr.send_cq = cq_;
+        accept_qp_attr.recv_cq = cq_;
+        accept_qp_attr.cap.max_send_wr = QP_DEPTH;
+        accept_qp_attr.cap.max_recv_wr = QP_DEPTH;
+        accept_qp_attr.cap.max_send_sge = 1;
+        accept_qp_attr.cap.max_recv_sge = 1;
+        accept_qp_attr.cap.max_inline_data = MAX_INLINE_DEPTH;
+
+        if (rdma_create_qp(accept_id, pd_, &accept_qp_attr)) {
+            rdma_reject(accept_id, nullptr, 0);
+            rdma_ack_cm_event(req_event);
+            throw std::runtime_error("create_qp failed for self peer accept: " + std::string(strerror(errno)));
+        }
+
+        ConnPrivateData my_creds{};
+        my_creds.node_id = id_;
+        my_creds.type = ConnType::CLIENT;
+        my_creds.addr = reinterpret_cast<uintptr_t>(buf_);
+        my_creds.rkey = mr_->rkey;
+
+        rdma_conn_param accept_params{};
+        accept_params.private_data = &my_creds;
+        accept_params.private_data_len = sizeof(my_creds);
+        accept_params.responder_resources = RDMA_RESPONDER_RESOURCES;
+        accept_params.initiator_depth = RDMA_INITIATOR_DEPTH;
+        accept_params.rnr_retry_count = 7;
+
+        if (rdma_accept(accept_id, &accept_params)) {
+            rdma_destroy_qp(accept_id);
+            rdma_ack_cm_event(req_event);
+            throw std::runtime_error("rdma_accept failed for self peer: " + std::string(strerror(errno)));
+        }
+        rdma_ack_cm_event(req_event);
+
+        ev = wait_for_event(outbound_ec, RDMA_CM_EVENT_ESTABLISHED, "SELF_PEER_ESTABLISHED");
+        auto* remote = static_cast<const ConnPrivateData*>(ev->param.conn.private_data);
+        peers_[id_] = {
+            .id = self_cm_id,
+            .addr = remote ? remote->addr : reinterpret_cast<uintptr_t>(buf_),
+            .rkey = remote ? remote->rkey : mr_->rkey,
+        };
+        rdma_ack_cm_event(ev);
+        peer_aux_ids_.push_back(accept_id);
+    }
+
     // ── Phase 2: Accept from all higher-id clients ──
     const uint32_t expect_higher = TOTAL_CLIENTS - 1 - id_;
 
@@ -389,5 +519,5 @@ void Client::connect_peers(uint16_t peer_port) {
                   << " (accepted " << remote_id << ")\n";
     }
 
-    std::cout << "[Client " << id_ << "] All " << (TOTAL_CLIENTS - 1) << " peer connections ready\n";
+    std::cout << "[Client " << id_ << "] All " << TOTAL_CLIENTS << " peer connections ready\n";
 }
