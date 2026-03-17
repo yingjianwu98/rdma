@@ -94,7 +94,7 @@ int main() {
                                 client->connect(leader_only, RDMA_PORT);
                             } else {
                                 client->connect(CLUSTER_NODES, RDMA_PORT);
-                                if (is_faa || is_local_ticket_faa) {
+                                if (is_faa) {
                                     client->connect_peers(7000);
                                 }
                             }
