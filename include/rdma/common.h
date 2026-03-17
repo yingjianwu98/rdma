@@ -48,7 +48,7 @@ constexpr uint8_t RDMA_INITIATOR_DEPTH = 16;
 
 // ─── Benchmark constants ───
 
-constexpr size_t NUM_OPS = 500000;
+constexpr size_t NUM_OPS = 20000000;
 constexpr size_t NUM_CLIENTS_PER_MACHINE = 16;
 constexpr size_t TOTAL_MACHINES = 1;
 constexpr size_t TOTAL_CLIENTS = NUM_CLIENTS_PER_MACHINE * TOTAL_MACHINES;
@@ -70,7 +70,7 @@ constexpr double LOCAL_TICKET_FAA_ZIPF_SKEW = 0.0;
 // ─── Lock table layout ───
 
 constexpr size_t MAX_LOCKS = 1000;
-constexpr size_t FAA_ACTIVE_WINDOW = 16;
+constexpr size_t FAA_ACTIVE_WINDOW = 32;
 constexpr size_t TICKET_FAA_ACTIVE_WINDOW = 32;
 constexpr size_t LOCAL_TICKET_FAA_ACTIVE_WINDOW = 16;
 constexpr size_t MU_ACTIVE_WINDOW = 32;
