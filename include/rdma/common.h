@@ -65,7 +65,7 @@ constexpr uint32_t TICKET_FAA_TURN_SPIN_FAR = 1024;
 
 // ─── Lock table layout ───
 
-constexpr size_t MAX_LOCKS = 500;
+constexpr size_t MAX_LOCKS = 5000;
 constexpr size_t FAA_ACTIVE_WINDOW = 32;
 constexpr size_t TICKET_FAA_ACTIVE_WINDOW = 32;
 constexpr size_t MU_ACTIVE_WINDOW = 32;
