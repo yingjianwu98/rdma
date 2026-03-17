@@ -29,6 +29,8 @@ constexpr uint64_t kRoundMask = (1ULL << kRoundBits) - 1;
 constexpr uint64_t kPhaseMask = (1ULL << kPhaseBits) - 1;
 constexpr uint64_t kSlotMask = (1ULL << kSlotBits) - 1;
 constexpr uint64_t kGenerationMask = (1ULL << kSlotShift) - 1;
+constexpr uint64_t TICKET_FAA_DONE_BIT = 1ULL << 63;
+constexpr uint8_t kReleaseTurnConnIndex = 0xFF;
 
 enum class TicketFaaPhase : uint8_t {
     idle = 0,
@@ -36,13 +38,14 @@ enum class TicketFaaPhase : uint8_t {
     replicate_ticket = 2,
     wait_turn_read = 3,
     wait_turn_spin = 4,
-    release_turn = 5,
+    release_parallel = 5,
 };
 
 struct RegisteredTicketFaaBuffers {
     uint64_t* ticket_results = nullptr;
     uint64_t* replicate_results = nullptr;
     uint64_t* turn_reads = nullptr;
+    uint64_t* mark_done_values = nullptr;
     uint64_t* release_results = nullptr;
 };
 
@@ -62,6 +65,8 @@ struct TicketFaaOpCtx {
     uint32_t responses = 0;
     uint32_t response_target = 0;
     uint32_t quorum_hits = 0;
+    uint32_t release_mark_done_quorum = 0;
+    bool release_turn_done = false;
     size_t latency_index = 0;
     std::chrono::steady_clock::time_point started_at{};
 };
@@ -135,6 +140,10 @@ uint64_t* row_ptr(uint64_t* base, const uint32_t slot, const size_t replica_coun
     return base + row_offset(slot, replica_count);
 }
 
+uint64_t waiter_mark_done(const uint64_t waiter) {
+    return waiter | TICKET_FAA_DONE_BIT;
+}
+
 uint32_t spin_budget_for_distance(const uint64_t distance) {
     if (distance <= 1) return TICKET_FAA_TURN_SPIN_VERY_NEAR;
     if (distance <= 2) return TICKET_FAA_TURN_SPIN_NEAR;
@@ -159,6 +168,8 @@ RegisteredTicketFaaBuffers map_buffers(
     buffers.replicate_results = reinterpret_cast<uint64_t*>(base + offset);
     offset += matrix_bytes;
     buffers.turn_reads = reinterpret_cast<uint64_t*>(base + offset);
+    offset += scalar_bytes;
+    buffers.mark_done_values = reinterpret_cast<uint64_t*>(base + offset);
     offset += scalar_bytes;
     buffers.release_results = reinterpret_cast<uint64_t*>(base + offset);
     offset += scalar_bytes;
@@ -279,28 +290,52 @@ void post_turn_read(Client& client, TicketFaaOpCtx& op, const RegisteredTicketFa
     }
 }
 
-void post_release_turn(Client& client, TicketFaaOpCtx& op, const RegisteredTicketFaaBuffers& buffers) {
+void post_release_parallel(Client& client, TicketFaaOpCtx& op, const RegisteredTicketFaaBuffers& buffers) {
     const auto& conns = client.connections();
     auto* mr = client.mr();
-    auto* result = &buffers.release_results[op.slot];
-    *result = 0;
     const auto& owner = conns[op.owner_node];
+    auto* mark_done_value = &buffers.mark_done_values[op.slot];
+    *mark_done_value = waiter_mark_done(op.waiter_id);
+    auto* turn_result = &buffers.release_results[op.slot];
+    *turn_result = 0;
 
-    ibv_sge sge{};
-    sge.addr = reinterpret_cast<uintptr_t>(result);
-    sge.length = sizeof(uint64_t);
-    sge.lkey = mr->lkey;
+    ibv_sge mark_done_sge{};
+    mark_done_sge.addr = reinterpret_cast<uintptr_t>(mark_done_value);
+    mark_done_sge.length = sizeof(uint64_t);
+    mark_done_sge.lkey = mr->lkey;
+
+    ibv_sge turn_sge{};
+    turn_sge.addr = reinterpret_cast<uintptr_t>(turn_result);
+    turn_sge.length = sizeof(uint64_t);
+    turn_sge.lkey = mr->lkey;
 
     op.round++;
-    op.phase = TicketFaaPhase::release_turn;
+    op.phase = TicketFaaPhase::release_parallel;
     op.responses = 0;
-    op.response_target = 1;
+    op.response_target = static_cast<uint32_t>(conns.size() + 1);
+    op.release_mark_done_quorum = 0;
+    op.release_turn_done = false;
+
+    for (size_t i = 0; i < conns.size(); ++i) {
+        ibv_send_wr wr{}, *bad_wr = nullptr;
+        wr.wr_id = encode_wr_id(op, TicketFaaPhase::release_parallel, static_cast<uint8_t>(i));
+        wr.opcode = IBV_WR_RDMA_WRITE;
+        wr.send_flags = IBV_SEND_SIGNALED;
+        wr.sg_list = &mark_done_sge;
+        wr.num_sge = 1;
+        wr.wr.rdma.remote_addr = conns[i].addr + lock_log_slot_offset(op.lock_id, op.ticket);
+        wr.wr.rdma.rkey = conns[i].rkey;
+
+        if (ibv_post_send(conns[i].id->qp, &wr, &bad_wr)) {
+            throw std::runtime_error("ticket_faa pipeline: mark done post failed");
+        }
+    }
 
     ibv_send_wr wr{}, *bad_wr = nullptr;
-    wr.wr_id = encode_wr_id(op, TicketFaaPhase::release_turn, static_cast<uint8_t>(op.owner_node));
+    wr.wr_id = encode_wr_id(op, TicketFaaPhase::release_parallel, kReleaseTurnConnIndex);
     wr.opcode = IBV_WR_ATOMIC_FETCH_AND_ADD;
     wr.send_flags = IBV_SEND_SIGNALED;
-    wr.sg_list = &sge;
+    wr.sg_list = &turn_sge;
     wr.num_sge = 1;
     wr.wr.atomic.remote_addr = owner.addr + lock_turn_offset(op.lock_id);
     wr.wr.atomic.rkey = owner.rkey;
@@ -327,7 +362,7 @@ size_t ticket_faa_lock_pipeline_client_buffer_size(const TicketFaaLockPipelineCo
     const size_t replica_count = CLUSTER_NODES.size();
     const size_t scalar_bytes = align_up(config.active_window * sizeof(uint64_t), 64);
     const size_t matrix_bytes = align_up(config.active_window * replica_count * sizeof(uint64_t), 64);
-    return align_up(scalar_bytes * 3 + matrix_bytes + PAGE_SIZE, PAGE_SIZE);
+    return align_up(scalar_bytes * 4 + matrix_bytes + PAGE_SIZE, PAGE_SIZE);
 }
 
 void run_ticket_faa_lock_pipeline(
@@ -353,7 +388,7 @@ void run_ticket_faa_lock_pipeline(
     auto begin_release = [&](TicketFaaOpCtx& op) {
         latencies[op.latency_index] = std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - op.started_at).count();
-        post_release_turn(client, op, buffers);
+        post_release_parallel(client, op, buffers);
     };
 
     auto submit_op = [&](const size_t slot) {
@@ -373,6 +408,8 @@ void run_ticket_faa_lock_pipeline(
         op.responses = 0;
         op.response_target = 0;
         op.quorum_hits = 0;
+        op.release_mark_done_quorum = 0;
+        op.release_turn_done = false;
         op.latency_index = submitted;
         op.started_at = std::chrono::steady_clock::now();
         post_ticket_faa(client, op, buffers);
@@ -472,8 +509,14 @@ void run_ticket_faa_lock_pipeline(
                 continue;
             }
 
-            if (phase == TicketFaaPhase::release_turn) {
-                if (op.responses < 1) continue;
+            if (phase == TicketFaaPhase::release_parallel) {
+                const uint8_t idx = wr_conn(wc.wr_id);
+                if (idx == kReleaseTurnConnIndex) {
+                    op.release_turn_done = true;
+                } else {
+                    op.release_mark_done_quorum++;
+                }
+                if (!op.release_turn_done || op.release_mark_done_quorum < QUORUM) continue;
                 lock_counts[op.lock_id]++;
                 op.active = false;
                 op.phase = TicketFaaPhase::idle;
