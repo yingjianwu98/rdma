@@ -120,6 +120,16 @@ uint64_t waiter_mark_done(const uint64_t waiter) {
     return waiter | TICKET_FAA_DONE_BIT;
 }
 
+void ensure_log_slot_in_bounds(const uint32_t lock_id, const uint64_t slot, const char* context) {
+    if (slot >= MAX_LOG_PER_LOCK) {
+        throw std::runtime_error(
+            std::string("ticket_faa pipeline: log overflow during ") + context
+            + " lock=" + std::to_string(lock_id)
+            + " slot=" + std::to_string(slot)
+            + " max_log_per_lock=" + std::to_string(MAX_LOG_PER_LOCK));
+    }
+}
+
 uint32_t spin_budget_for_distance(const uint64_t distance) {
     if (distance <= 1) return TICKET_FAA_TURN_SPIN_VERY_NEAR;
     if (distance <= 2) return TICKET_FAA_TURN_SPIN_NEAR;
@@ -200,6 +210,8 @@ void post_replicate_ticket(
     auto* mr = client.mr();
     auto* results = row_ptr(buffers.replicate_results, op.slot, conns.size());
 
+    ensure_log_slot_in_bounds(op.lock_id, op.ticket, "replicate_ticket");
+
     op.round++;
     op.phase = TicketFaaPhase::replicate_ticket;
     op.responses = 0;
@@ -279,6 +291,9 @@ void post_release_parallel(
     const auto& owner = conns[op.owner_node];
     auto* mark_done_value = &buffers.mark_done_values[op.slot];
     auto* mark_done_results = row_ptr(buffers.mark_done_results, op.slot, conns.size());
+
+    ensure_log_slot_in_bounds(op.lock_id, op.ticket, "release_parallel");
+
     *mark_done_value = waiter_mark_done(op.waiter_id);
     auto* turn_result = &buffers.release_results[op.slot];
     *turn_result = 0;
