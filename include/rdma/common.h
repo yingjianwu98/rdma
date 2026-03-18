@@ -63,7 +63,7 @@ constexpr size_t TICKET_FAA_ACTIVE_WINDOW = 2;
 constexpr bool TICKET_FAA_REPLICATE_USE_CAS = false;
 constexpr bool TICKET_FAA_SHARD_OWNER = true;
 constexpr size_t TICKET_FAA_CQ_BATCH = 32;
-constexpr double TICKET_FAA_ZIPF_SKEW = 0.0;
+constexpr double TICKET_FAA_ZIPF_SKEW = 0.5;
 constexpr uint32_t TICKET_FAA_TURN_SPIN_VERY_NEAR = 0;
 constexpr uint32_t TICKET_FAA_TURN_SPIN_NEAR = 32;
 constexpr uint32_t TICKET_FAA_TURN_SPIN_MID = 128;
@@ -107,7 +107,7 @@ constexpr size_t TAS_ACTIVE_WINDOW = 32;
 
 // ─── Lock table layout ───
 
-constexpr size_t MAX_LOG_PER_LOCK = ((NUM_OPS + MAX_LOCKS - 1) / MAX_LOCKS) * 4;
+constexpr size_t MAX_LOG_PER_LOCK = ((NUM_OPS + MAX_LOCKS - 1) / MAX_LOCKS) * 8;
 constexpr size_t LOCK_HEADER_SIZE = 16;
 constexpr size_t LOCK_LOG_SIZE = MAX_LOG_PER_LOCK * ENTRY_SIZE;
 constexpr size_t LOCK_REGION_SIZE = LOCK_HEADER_SIZE + LOCK_LOG_SIZE;
