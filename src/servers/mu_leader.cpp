@@ -370,7 +370,7 @@ void MuLeader::run() {
             wr.sg_list = &sge;
             wr.num_sge = 1;
             wr.send_flags = IBV_SEND_SIGNALED;
-            wr.wr.atomic.remote_addr = follower.remote_addr + lock_log_slot_offset(ctx.lock_id, ctx.logical_slot);
+            wr.wr.atomic.remote_addr = follower.remote_addr + lock_log_slot_offset(ctx.lock_id, mu_physical_slot(ctx.logical_slot));
             wr.wr.atomic.rkey = follower.rkey;
             wr.wr.atomic.compare_add = ctx.expected_old;
             wr.wr.atomic.swap = ctx.desired_new;
@@ -806,6 +806,15 @@ void MuLeader::run() {
                 ctx.pending_followers--;
                 if (observed_old == ctx.expected_old) {
                     ctx.ack_count++;
+                } else {
+                    debug(
+                        "replication mismatch kind=" + std::to_string(static_cast<int>(ctx.kind))
+                        + " lock=" + std::to_string(ctx.lock_id)
+                        + " logical_slot=" + std::to_string(ctx.logical_slot)
+                        + " physical_slot=" + std::to_string(mu_physical_slot(ctx.logical_slot))
+                        + " follower_pos=" + std::to_string(follower_pos)
+                        + " expected_old=" + std::to_string(ctx.expected_old)
+                        + " observed_old=" + std::to_string(observed_old));
                 }
                 stats.replication_cqes++;
                 debug(
@@ -819,7 +828,7 @@ void MuLeader::run() {
                     handle_quorum(mutation_id);
                 }
 
-                if (!ctx.quorum_done && ctx.ack_count + ctx.pending_followers < QUORUM) {
+                if (!ctx.quorum_done && ctx.ack_count + ctx.pending_followers < QUORUM) {   
                     throw std::runtime_error("MuLeader: mutation failed to reach quorum");
                 }
 
