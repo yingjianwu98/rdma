@@ -191,7 +191,7 @@ void post_acquire(const Client& client, CasOpCtx& op) {
     wr.sg_list = &sge;
     wr.num_sge = 1;
     wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
-    wr.send_flags = IBV_SEND_SIGNALED;
+    wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE;
     wr.wr.atomic.remote_addr = conns[op.owner_node].addr + lock_control_offset(op.lock_id);
     wr.wr.atomic.rkey = conns[op.owner_node].rkey;
     wr.wr.atomic.compare_add = op.target_slot - 1;
@@ -228,7 +228,7 @@ void post_replicate(const Client& client, CasOpCtx& op, const RegisteredCasBuffe
         wr.sg_list = &sge;
         wr.num_sge = 1;
         wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
-        wr.send_flags = IBV_SEND_SIGNALED;
+        wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE;
         wr.wr.atomic.remote_addr = conns[i].addr + lock_log_slot_offset(op.lock_id, op.physical_log_slot);
         wr.wr.atomic.rkey = conns[i].rkey;
         wr.wr.atomic.compare_add = compare_value;
@@ -276,7 +276,7 @@ void post_release(
     control_wr.sg_list = &control_sge;
     control_wr.num_sge = 1;
     control_wr.send_flags = 0;
-    control_wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
+    control_wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP | IBV_SEND_INLINE;
     control_wr.wr.atomic.remote_addr = owner.addr + lock_control_offset(op.lock_id);
     control_wr.wr.atomic.rkey = owner.rkey;
     control_wr.wr.atomic.compare_add = op.held_slot;
@@ -299,8 +299,8 @@ void post_release(
         log_wr.wr_id = encode_wr_id(op, OpPhase::release, static_cast<uint8_t>(kReleaseLogConnFlag | i));
         log_wr.sg_list = &log_sge;
         log_wr.num_sge = 1;
-        log_wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
-        log_wr.send_flags = IBV_SEND_SIGNALED;
+        log_wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP ;
+        log_wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE;
         log_wr.wr.atomic.remote_addr = conns[i].addr + lock_log_slot_offset(op.lock_id, op.physical_log_slot);
         log_wr.wr.atomic.rkey = conns[i].rkey;
         log_wr.wr.atomic.compare_add = live_value;
