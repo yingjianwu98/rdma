@@ -327,7 +327,7 @@ void post_release(
 
 CasPipelineConfig load_cas_pipeline_config() {
     CasPipelineConfig config{};
-    config.active_window = CAS_ACTIVE_CLIENTS;
+    config.active_window = CAS_ACTIVE_WINDOW;
     config.cq_batch = std::max<size_t>(1, CAS_CQ_BATCH);
     config.zipf_skew = CAS_ZIPF_SKEW;
     config.shard_owner = CAS_SHARD_OWNER;
