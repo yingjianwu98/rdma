@@ -77,10 +77,13 @@ constexpr double SIMPLE_CAS_ZIPF_SKEW = 0.0;
 // ─── Ticket FAA config ───
 
 constexpr size_t TICKET_FAA_ACTIVE_WINDOW = 2;
-constexpr bool TICKET_FAA_REPLICATE_USE_CAS = false;
 constexpr bool TICKET_FAA_SHARD_OWNER = true;
+constexpr size_t TICKET_FAA_LOG_CAPACITY = TOTAL_CLIENTS * TICKET_FAA_ACTIVE_WINDOW * 4;
 constexpr size_t TICKET_FAA_CQ_BATCH = 32;
 constexpr double TICKET_FAA_ZIPF_SKEW = 0.0;
+constexpr uint32_t TICKET_FAA_REPLICATE_RETRY_SPIN = 64;
+constexpr bool TICKET_FAA_RELEASE_LOG_USE_CAS = true;
+constexpr uint32_t TICKET_FAA_RELEASE_TURN_MODE = 2; // 0=write, 1=cas, 2=faa
 constexpr uint32_t TICKET_FAA_TURN_SPIN_VERY_NEAR = 0;
 constexpr uint32_t TICKET_FAA_TURN_SPIN_NEAR = 32;
 constexpr uint32_t TICKET_FAA_TURN_SPIN_MID = 128;
@@ -119,6 +122,7 @@ constexpr size_t CLIENT_ALIGNED_SIZE = ((CLIENT_POOL_SIZE + PAGE_SIZE - 1) / PAG
 
 static_assert(LOCK_TABLE_SIZE <= SERVER_ALIGNED_SIZE, "Lock table exceeds server buffer size");
 static_assert(CAS_LOG_CAPACITY <= MAX_LOG_PER_LOCK, "CAS log capacity exceeds allocated per-lock log size");
+static_assert(TICKET_FAA_LOG_CAPACITY <= MAX_LOG_PER_LOCK, "Ticket FAA log capacity exceeds allocated per-lock log size");
 
 // ─── Per-lock offset helpers ───
 

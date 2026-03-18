@@ -79,7 +79,7 @@ RegisteredSimpleCasBuffers map_buffers(void* raw_buffer, const size_t buffer_siz
     return buffers;
 }
 
-void post_acquire(Client& client, SimpleCasOpCtx& op) {
+ void post_acquire(Client& client, SimpleCasOpCtx& op) {
     const auto& conns = client.connections();
     auto* mr = client.mr();
     const auto& owner = conns[op.owner_node];

@@ -6,10 +6,8 @@
 
 #include <algorithm>
 #include <chrono>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <random>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -30,25 +28,32 @@ constexpr uint64_t kRoundMask = (1ULL << kRoundBits) - 1;
 constexpr uint64_t kPhaseMask = (1ULL << kPhaseBits) - 1;
 constexpr uint64_t kSlotMask = (1ULL << kSlotBits) - 1;
 constexpr uint64_t kGenerationMask = (1ULL << kSlotShift) - 1;
-constexpr uint64_t TICKET_FAA_DONE_BIT = 1ULL << 63;
+constexpr uint64_t kLogLiveBit = 1ULL << 63;
+constexpr uint64_t kLogTicketMask = (1ULL << 31) - 1;
 constexpr uint8_t kReleaseTurnConnIndex = 0xFF;
+constexpr uint64_t kDetachedTurnWrTag = 0xFF00000000000000ULL;
+
+constexpr uint32_t kTurnReleaseWrite = 0;
+constexpr uint32_t kTurnReleaseCas = 1;
+constexpr uint32_t kTurnReleaseFaa = 2;
 
 enum class TicketFaaPhase : uint8_t {
     idle = 0,
     faa_ticket = 1,
     replicate_ticket = 2,
-    wait_turn_read = 3,
-    wait_turn_spin = 4,
-    release_parallel = 5,
+    replicate_ticket_spin = 3,
+    wait_turn_read = 4,
+    wait_turn_spin = 5,
+    release_parallel = 6,
 };
 
 struct RegisteredTicketFaaBuffers {
     uint64_t* ticket_results = nullptr;
     uint64_t* replicate_results = nullptr;
     uint64_t* turn_reads = nullptr;
-    uint64_t* mark_done_values = nullptr;
-    uint64_t* mark_done_results = nullptr;
-    uint64_t* release_results = nullptr;
+    uint64_t* release_log_values = nullptr;
+    uint64_t* release_log_results = nullptr;
+    uint64_t* detached_turn_results = nullptr;
 };
 
 struct TicketFaaOpCtx {
@@ -61,17 +66,25 @@ struct TicketFaaOpCtx {
     uint8_t round = 0;
     uint64_t ticket = 0;
     uint64_t waiter_id = 0;
+    uint64_t physical_log_slot = 0;
     uint64_t last_turn = 0;
+    uint32_t replicate_retry_spin_remaining = 0;
     uint32_t turn_spin_remaining = 0;
     TicketFaaPhase phase = TicketFaaPhase::idle;
     uint32_t responses = 0;
     uint32_t response_target = 0;
     uint32_t quorum_hits = 0;
-    uint32_t release_mark_done_responses = 0;
-    uint32_t release_mark_done_quorum = 0;
-    bool release_turn_done = false;
+    uint32_t release_log_responses = 0;
+    uint32_t release_log_quorum = 0;
+    bool release_owner_log_done = false;
     size_t latency_index = 0;
     std::chrono::steady_clock::time_point started_at{};
+};
+
+struct DetachedTurnCtx {
+    bool active = false;
+    uint32_t turn_mode = kTurnReleaseWrite;
+    uint64_t expected_old = 0;
 };
 
 uint64_t encode_waiter(const uint16_t client_id, const uint16_t op_slot, const uint32_t req_id) {
@@ -86,6 +99,18 @@ uint64_t encode_wr_id(const TicketFaaOpCtx& op, const TicketFaaPhase phase, cons
          | ((static_cast<uint64_t>(phase) & kPhaseMask) << kPhaseShift)
          | ((static_cast<uint64_t>(op.round) & kRoundMask) << kRoundShift)
          | ((static_cast<uint64_t>(conn_index) & kConnMask) << kConnShift);
+}
+
+bool is_detached_turn_wr_id(const uint64_t wr_id) {
+    return (wr_id & kDetachedTurnWrTag) == kDetachedTurnWrTag;
+}
+
+uint64_t make_detached_turn_wr_id(const uint32_t ctx_index) {
+    return kDetachedTurnWrTag | static_cast<uint64_t>(ctx_index);
+}
+
+uint32_t detached_turn_ctx_index(const uint64_t wr_id) {
+    return static_cast<uint32_t>(wr_id & 0x00FFFFFFu);
 }
 
 uint32_t wr_generation(const uint64_t wr_id) {
@@ -116,16 +141,41 @@ uint64_t* row_ptr(uint64_t* base, const uint32_t slot, const size_t replica_coun
     return base + row_offset(slot, replica_count);
 }
 
-uint64_t waiter_mark_done(const uint64_t waiter) {
-    return waiter | TICKET_FAA_DONE_BIT;
+size_t detached_turn_ctx_capacity(const size_t active_window) {
+    return std::max<size_t>(active_window * 8, 64);
 }
 
-void ensure_log_slot_in_bounds(const uint32_t lock_id, const uint64_t slot, const char* context) {
-    if (slot >= MAX_LOG_PER_LOCK) {
+uint64_t ticket_faa_physical_log_slot(const uint64_t ticket) {
+    return ticket % TICKET_FAA_LOG_CAPACITY;
+}
+
+uint64_t pack_ticket_faa_log_free(const uint64_t ticket) {
+    return (ticket & kLogTicketMask) << 32;
+}
+
+uint64_t pack_ticket_faa_log_live(const uint64_t ticket, const uint16_t client_id, const uint16_t op_slot) {
+    return kLogLiveBit
+         | ((ticket & kLogTicketMask) << 32)
+         | (static_cast<uint64_t>(client_id) << 16)
+         | static_cast<uint64_t>(op_slot);
+}
+
+uint64_t ticket_faa_log_expected_free_value(const uint64_t ticket) {
+    return ticket < TICKET_FAA_LOG_CAPACITY ? EMPTY_SLOT : pack_ticket_faa_log_free(ticket);
+}
+
+uint64_t ticket_faa_log_next_free_value(const uint64_t ticket) {
+    return pack_ticket_faa_log_free(ticket + TICKET_FAA_LOG_CAPACITY);
+}
+
+void ensure_log_slot_in_bounds(const uint32_t lock_id, const uint64_t ticket, const char* context) {
+    const uint64_t physical = ticket_faa_physical_log_slot(ticket);
+    if (physical >= MAX_LOG_PER_LOCK) {
         throw std::runtime_error(
-            std::string("ticket_faa pipeline: log overflow during ") + context
+            std::string("ticket_faa pipeline: wrapped log overflow during ") + context
             + " lock=" + std::to_string(lock_id)
-            + " slot=" + std::to_string(slot)
+            + " ticket=" + std::to_string(ticket)
+            + " physical=" + std::to_string(physical)
             + " max_log_per_lock=" + std::to_string(MAX_LOG_PER_LOCK));
     }
 }
@@ -148,6 +198,7 @@ RegisteredTicketFaaBuffers map_buffers(
     RegisteredTicketFaaBuffers buffers{};
     const size_t scalar_bytes = align_up(active_window * sizeof(uint64_t), 64);
     const size_t matrix_bytes = align_up(active_window * replica_count * sizeof(uint64_t), 64);
+    const size_t detached_turn_bytes = align_up(detached_turn_ctx_capacity(active_window) * sizeof(uint64_t), 64);
 
     buffers.ticket_results = reinterpret_cast<uint64_t*>(base + offset);
     offset += scalar_bytes;
@@ -155,12 +206,12 @@ RegisteredTicketFaaBuffers map_buffers(
     offset += matrix_bytes;
     buffers.turn_reads = reinterpret_cast<uint64_t*>(base + offset);
     offset += scalar_bytes;
-    buffers.mark_done_values = reinterpret_cast<uint64_t*>(base + offset);
-    offset += scalar_bytes;
-    buffers.mark_done_results = reinterpret_cast<uint64_t*>(base + offset);
+    buffers.release_log_values = reinterpret_cast<uint64_t*>(base + offset);
     offset += matrix_bytes;
-    buffers.release_results = reinterpret_cast<uint64_t*>(base + offset);
-    offset += scalar_bytes;
+    buffers.release_log_results = reinterpret_cast<uint64_t*>(base + offset);
+    offset += matrix_bytes;
+    buffers.detached_turn_results = reinterpret_cast<uint64_t*>(base + offset);
+    offset += detached_turn_bytes;
 
     if (offset > buffer_size) {
         throw std::runtime_error("ticket_faa pipeline: registered client buffer too small");
@@ -203,14 +254,16 @@ void post_ticket_faa(Client& client, TicketFaaOpCtx& op, const RegisteredTicketF
 void post_replicate_ticket(
     Client& client,
     TicketFaaOpCtx& op,
-    const RegisteredTicketFaaBuffers& buffers,
-    const bool replicate_with_cas
+    const RegisteredTicketFaaBuffers& buffers
 ) {
     const auto& conns = client.connections();
     auto* mr = client.mr();
     auto* results = row_ptr(buffers.replicate_results, op.slot, conns.size());
 
     ensure_log_slot_in_bounds(op.lock_id, op.ticket, "replicate_ticket");
+    op.physical_log_slot = ticket_faa_physical_log_slot(op.ticket);
+    const uint64_t compare_value = ticket_faa_log_expected_free_value(op.ticket);
+    const uint64_t swap_value = pack_ticket_faa_log_live(op.ticket, static_cast<uint16_t>(client.id()), static_cast<uint16_t>(op.slot));
 
     op.round++;
     op.phase = TicketFaaPhase::replicate_ticket;
@@ -219,7 +272,7 @@ void post_replicate_ticket(
     op.quorum_hits = 0;
 
     for (size_t i = 0; i < conns.size(); ++i) {
-        results[i] = replicate_with_cas ? (EMPTY_SLOT - 1) : op.waiter_id;
+        results[i] = EMPTY_SLOT - 1;
 
         ibv_sge sge{};
         sge.addr = reinterpret_cast<uintptr_t>(&results[i]);
@@ -231,17 +284,11 @@ void post_replicate_ticket(
         wr.send_flags = IBV_SEND_SIGNALED;
         wr.sg_list = &sge;
         wr.num_sge = 1;
-        if (replicate_with_cas) {
-            wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
-            wr.wr.atomic.remote_addr = conns[i].addr + lock_log_slot_offset(op.lock_id, op.ticket);
-            wr.wr.atomic.rkey = conns[i].rkey;
-            wr.wr.atomic.compare_add = EMPTY_SLOT;
-            wr.wr.atomic.swap = op.waiter_id;
-        } else {
-            wr.opcode = IBV_WR_RDMA_WRITE;
-            wr.wr.rdma.remote_addr = conns[i].addr + lock_log_slot_offset(op.lock_id, op.ticket);
-            wr.wr.rdma.rkey = conns[i].rkey;
-        }
+        wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
+        wr.wr.atomic.remote_addr = conns[i].addr + lock_log_slot_offset(op.lock_id, op.physical_log_slot);
+        wr.wr.atomic.rkey = conns[i].rkey;
+        wr.wr.atomic.compare_add = compare_value;
+        wr.wr.atomic.swap = swap_value;
 
         if (ibv_post_send(conns[i].id->qp, &wr, &bad_wr)) {
             throw std::runtime_error("ticket_faa pipeline: replicate ticket post failed");
@@ -284,76 +331,131 @@ void post_release_parallel(
     Client& client,
     TicketFaaOpCtx& op,
     const RegisteredTicketFaaBuffers& buffers,
-    const bool replicate_with_cas
+    const TicketFaaLockPipelineConfig& config,
+    std::vector<DetachedTurnCtx>& detached_turn_ctxs
 ) {
     const auto& conns = client.connections();
     auto* mr = client.mr();
     const auto& owner = conns[op.owner_node];
-    auto* mark_done_value = &buffers.mark_done_values[op.slot];
-    auto* mark_done_results = row_ptr(buffers.mark_done_results, op.slot, conns.size());
+    auto* release_log_values = row_ptr(buffers.release_log_values, op.slot, conns.size());
+    auto* release_log_results = row_ptr(buffers.release_log_results, op.slot, conns.size());
+    const uint64_t live_value = pack_ticket_faa_log_live(op.ticket, static_cast<uint16_t>(client.id()), static_cast<uint16_t>(op.slot));
+    const uint64_t free_value = ticket_faa_log_next_free_value(op.ticket);
 
     ensure_log_slot_in_bounds(op.lock_id, op.ticket, "release_parallel");
-
-    *mark_done_value = waiter_mark_done(op.waiter_id);
-    auto* turn_result = &buffers.release_results[op.slot];
-    *turn_result = 0;
-
-    ibv_sge turn_sge{};
-    turn_sge.addr = reinterpret_cast<uintptr_t>(turn_result);
-    turn_sge.length = sizeof(uint64_t);
-    turn_sge.lkey = mr->lkey;
 
     op.round++;
     op.phase = TicketFaaPhase::release_parallel;
     op.responses = 0;
-    op.response_target = static_cast<uint32_t>(conns.size() + 1);
-    op.release_mark_done_responses = 0;
-    op.release_mark_done_quorum = 0;
-    op.release_turn_done = false;
+    op.response_target = static_cast<uint32_t>(conns.size());
+    op.release_log_responses = 0;
+    op.release_log_quorum = 0;
+    op.release_owner_log_done = false;
+
+    DetachedTurnCtx* detached_turn_ctx = nullptr;
+    uint32_t detached_turn_idx = 0;
+    if (config.release_turn_mode != kTurnReleaseWrite) {
+        for (uint32_t i = 0; i < detached_turn_ctxs.size(); ++i) {
+            if (!detached_turn_ctxs[i].active) {
+                detached_turn_ctx = &detached_turn_ctxs[i];
+                detached_turn_idx = i;
+                break;
+            }
+        }
+        if (detached_turn_ctx == nullptr) {
+            throw std::runtime_error("ticket_faa pipeline: detached turn context pool exhausted");
+        }
+
+        detached_turn_ctx->active = true;
+        detached_turn_ctx->turn_mode = config.release_turn_mode;
+        detached_turn_ctx->expected_old = op.ticket;
+        buffers.detached_turn_results[detached_turn_idx] = 0;
+    }
+
+    if (config.release_turn_mode == kTurnReleaseWrite) {
+        uint64_t turn_value = op.ticket + 1;
+
+        ibv_sge turn_sge{};
+        turn_sge.addr = reinterpret_cast<uintptr_t>(&turn_value);
+        turn_sge.length = sizeof(uint64_t);
+        turn_sge.lkey = mr->lkey;
+
+        ibv_send_wr wr{}, *bad_wr = nullptr;
+        wr.wr_id = encode_wr_id(op, TicketFaaPhase::release_parallel, kReleaseTurnConnIndex);
+        wr.opcode = IBV_WR_RDMA_WRITE;
+        wr.send_flags = IBV_SEND_INLINE;
+        wr.sg_list = &turn_sge;
+        wr.num_sge = 1;
+        wr.wr.rdma.remote_addr = owner.addr + lock_turn_offset(op.lock_id);
+        wr.wr.rdma.rkey = owner.rkey;
+
+        if (ibv_post_send(owner.id->qp, &wr, &bad_wr)) {
+            throw std::runtime_error("ticket_faa pipeline: release turn post failed");
+        }
+    } else {
+        auto* turn_result = &buffers.detached_turn_results[detached_turn_idx];
+
+        ibv_sge turn_sge{};
+        turn_sge.addr = reinterpret_cast<uintptr_t>(turn_result);
+        turn_sge.length = sizeof(uint64_t);
+        turn_sge.lkey = mr->lkey;
+
+        ibv_send_wr wr{}, *bad_wr = nullptr;
+        wr.wr_id = make_detached_turn_wr_id(detached_turn_idx);
+        wr.send_flags = IBV_SEND_SIGNALED;
+        wr.sg_list = &turn_sge;
+        wr.num_sge = 1;
+        if (config.release_turn_mode == kTurnReleaseCas) {
+            wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
+            wr.wr.atomic.remote_addr = owner.addr + lock_turn_offset(op.lock_id);
+            wr.wr.atomic.rkey = owner.rkey;
+            wr.wr.atomic.compare_add = op.ticket;
+            wr.wr.atomic.swap = op.ticket + 1;
+        } else {
+            wr.opcode = IBV_WR_ATOMIC_FETCH_AND_ADD;
+            wr.wr.atomic.remote_addr = owner.addr + lock_turn_offset(op.lock_id);
+            wr.wr.atomic.rkey = owner.rkey;
+            wr.wr.atomic.compare_add = 1;
+        }
+
+        if (ibv_post_send(owner.id->qp, &wr, &bad_wr)) {
+            throw std::runtime_error("ticket_faa pipeline: release turn post failed");
+        }
+    }
 
     for (size_t i = 0; i < conns.size(); ++i) {
-        mark_done_results[i] = 0;
+        auto* log_value = &release_log_values[i];
+        auto* log_result = &release_log_results[i];
+        *log_value = free_value;
+        *log_result = EMPTY_SLOT - 1;
 
-        ibv_sge mark_done_sge{};
-        mark_done_sge.length = sizeof(uint64_t);
-        mark_done_sge.lkey = mr->lkey;
+        ibv_sge log_sge{};
+        log_sge.length = sizeof(uint64_t);
+        log_sge.lkey = mr->lkey;
 
         ibv_send_wr wr{}, *bad_wr = nullptr;
         wr.wr_id = encode_wr_id(op, TicketFaaPhase::release_parallel, static_cast<uint8_t>(i));
         wr.send_flags = IBV_SEND_SIGNALED;
-        wr.sg_list = &mark_done_sge;
+        wr.sg_list = &log_sge;
         wr.num_sge = 1;
-        if (replicate_with_cas) {
-            mark_done_sge.addr = reinterpret_cast<uintptr_t>(&mark_done_results[i]);
+        if (config.release_log_with_cas) {
+            log_sge.addr = reinterpret_cast<uintptr_t>(log_result);
             wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
-            wr.wr.atomic.remote_addr = conns[i].addr + lock_log_slot_offset(op.lock_id, op.ticket);
+            wr.wr.atomic.remote_addr = conns[i].addr + lock_log_slot_offset(op.lock_id, op.physical_log_slot);
             wr.wr.atomic.rkey = conns[i].rkey;
-            wr.wr.atomic.compare_add = op.waiter_id;
-            wr.wr.atomic.swap = waiter_mark_done(op.waiter_id);
+            wr.wr.atomic.compare_add = live_value;
+            wr.wr.atomic.swap = free_value;
         } else {
-            mark_done_sge.addr = reinterpret_cast<uintptr_t>(mark_done_value);
+            log_sge.addr = reinterpret_cast<uintptr_t>(log_value);
             wr.opcode = IBV_WR_RDMA_WRITE;
-            wr.wr.rdma.remote_addr = conns[i].addr + lock_log_slot_offset(op.lock_id, op.ticket);
+            wr.send_flags |= IBV_SEND_INLINE;
+            wr.wr.rdma.remote_addr = conns[i].addr + lock_log_slot_offset(op.lock_id, op.physical_log_slot);
             wr.wr.rdma.rkey = conns[i].rkey;
         }
 
         if (ibv_post_send(conns[i].id->qp, &wr, &bad_wr)) {
-            throw std::runtime_error("ticket_faa pipeline: mark done post failed");
+            throw std::runtime_error("ticket_faa pipeline: release log post failed");
         }
-    }
-
-    ibv_send_wr wr{}, *bad_wr = nullptr;
-    wr.wr_id = encode_wr_id(op, TicketFaaPhase::release_parallel, kReleaseTurnConnIndex);
-    wr.opcode = IBV_WR_ATOMIC_FETCH_AND_ADD;
-    wr.send_flags = IBV_SEND_SIGNALED;
-    wr.sg_list = &turn_sge;
-    wr.num_sge = 1;
-    wr.wr.atomic.remote_addr = owner.addr + lock_turn_offset(op.lock_id);
-    wr.wr.atomic.rkey = owner.rkey;
-    wr.wr.atomic.compare_add = 1;
-
-    if (ibv_post_send(owner.id->qp, &wr, &bad_wr)) {
-        throw std::runtime_error("ticket_faa pipeline: release turn post failed");
     }
 }
 
@@ -364,8 +466,9 @@ TicketFaaLockPipelineConfig load_ticket_faa_lock_pipeline_config() {
     config.active_window = std::max<size_t>(1, TICKET_FAA_ACTIVE_WINDOW);
     config.cq_batch = std::max<size_t>(1, TICKET_FAA_CQ_BATCH);
     config.zipf_skew = TICKET_FAA_ZIPF_SKEW;
-    config.replicate_with_cas = TICKET_FAA_REPLICATE_USE_CAS;
     config.shard_owner = TICKET_FAA_SHARD_OWNER;
+    config.release_log_with_cas = TICKET_FAA_RELEASE_LOG_USE_CAS;
+    config.release_turn_mode = TICKET_FAA_RELEASE_TURN_MODE;
     return config;
 }
 
@@ -373,7 +476,8 @@ size_t ticket_faa_lock_pipeline_client_buffer_size(const TicketFaaLockPipelineCo
     const size_t replica_count = CLUSTER_NODES.size();
     const size_t scalar_bytes = align_up(config.active_window * sizeof(uint64_t), 64);
     const size_t matrix_bytes = align_up(config.active_window * replica_count * sizeof(uint64_t), 64);
-    return align_up(scalar_bytes * 4 + matrix_bytes * 2 + PAGE_SIZE, PAGE_SIZE);
+    const size_t detached_turn_bytes = align_up(detached_turn_ctx_capacity(config.active_window) * sizeof(uint64_t), 64);
+    return align_up(scalar_bytes * 2 + matrix_bytes * 3 + detached_turn_bytes + PAGE_SIZE, PAGE_SIZE);
 }
 
 void run_ticket_faa_lock_pipeline(
@@ -388,6 +492,7 @@ void run_ticket_faa_lock_pipeline(
 
     auto buffers = map_buffers(client.buffer(), client.buffer_size(), config.active_window, conns.size());
     std::vector<TicketFaaOpCtx> ops(config.active_window);
+    std::vector<DetachedTurnCtx> detached_turn_ctxs(detached_turn_ctx_capacity(config.active_window));
     std::vector<ibv_wc> completions(config.cq_batch);
     ZipfLockPicker picker(config.zipf_skew);
 
@@ -399,7 +504,7 @@ void run_ticket_faa_lock_pipeline(
     auto begin_release = [&](TicketFaaOpCtx& op) {
         latencies[op.latency_index] = std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - op.started_at).count();
-        post_release_parallel(client, op, buffers, config.replicate_with_cas);
+        post_release_parallel(client, op, buffers, config, detached_turn_ctxs);
     };
 
     auto submit_op = [&](const size_t slot) {
@@ -413,15 +518,17 @@ void run_ticket_faa_lock_pipeline(
         op.round = 0;
         op.ticket = 0;
         op.waiter_id = encode_waiter(static_cast<uint16_t>(client.id()), static_cast<uint16_t>(slot), op.req_id);
+        op.physical_log_slot = 0;
         op.last_turn = 0;
+        op.replicate_retry_spin_remaining = 0;
         op.turn_spin_remaining = 0;
         op.phase = TicketFaaPhase::idle;
         op.responses = 0;
         op.response_target = 0;
         op.quorum_hits = 0;
-        op.release_mark_done_responses = 0;
-        op.release_mark_done_quorum = 0;
-        op.release_turn_done = false;
+        op.release_log_responses = 0;
+        op.release_log_quorum = 0;
+        op.release_owner_log_done = false;
         op.latency_index = submitted;
         op.started_at = std::chrono::steady_clock::now();
         post_ticket_faa(client, op, buffers);
@@ -435,20 +542,27 @@ void run_ticket_faa_lock_pipeline(
 
     while (completed < NUM_OPS_PER_CLIENT) {
         for (auto& op : ops) {
-            if (!op.active || op.phase != TicketFaaPhase::wait_turn_spin) continue;
-            if (op.turn_spin_remaining > 0) {
-                --op.turn_spin_remaining;
-            }
-            if (op.turn_spin_remaining == 0) {
-                post_turn_read(client, op, buffers);
+            if (!op.active) continue;
+            if (op.phase == TicketFaaPhase::replicate_ticket_spin) {
+                if (op.replicate_retry_spin_remaining > 0) {
+                    --op.replicate_retry_spin_remaining;
+                }
+                if (op.replicate_retry_spin_remaining == 0) {
+                    post_replicate_ticket(client, op, buffers);
+                }
+            } else if (op.phase == TicketFaaPhase::wait_turn_spin) {
+                if (op.turn_spin_remaining > 0) {
+                    --op.turn_spin_remaining;
+                }
+                if (op.turn_spin_remaining == 0) {
+                    post_turn_read(client, op, buffers);
+                }
             }
         }
 
         const int polled = ibv_poll_cq(client.cq(), static_cast<int>(completions.size()), completions.data());
         if (polled < 0) throw std::runtime_error("ticket_faa pipeline: CQ poll failed");
-        if (polled == 0) {
-            continue;
-        }
+        if (polled == 0) continue;
 
         for (int i = 0; i < polled; ++i) {
             const ibv_wc& wc = completions[static_cast<size_t>(i)];
@@ -456,6 +570,20 @@ void run_ticket_faa_lock_pipeline(
                 throw std::runtime_error(
                     "ticket_faa pipeline: completion failed status=" + std::to_string(wc.status)
                     + " vendor=" + std::to_string(wc.vendor_err));
+            }
+
+            if (is_detached_turn_wr_id(wc.wr_id)) {
+                const uint32_t ctx_index = detached_turn_ctx_index(wc.wr_id);
+                if (ctx_index >= detached_turn_ctxs.size()) {
+                    throw std::runtime_error("ticket_faa pipeline: detached turn context out of range");
+                }
+                auto& ctx = detached_turn_ctxs[ctx_index];
+                if (!ctx.active) continue;
+                if (ctx.turn_mode == kTurnReleaseCas && buffers.detached_turn_results[ctx_index] != ctx.expected_old) {
+                    throw std::runtime_error("ticket_faa pipeline: turn CAS release failed");
+                }
+                ctx.active = false;
+                continue;
             }
 
             const uint32_t slot = wr_slot(wc.wr_id);
@@ -468,7 +596,7 @@ void run_ticket_faa_lock_pipeline(
 
             if (phase == TicketFaaPhase::faa_ticket) {
                 op.ticket = buffers.ticket_results[op.slot];
-                post_replicate_ticket(client, op, buffers, config.replicate_with_cas);
+                post_replicate_ticket(client, op, buffers);
                 continue;
             }
 
@@ -477,7 +605,7 @@ void run_ticket_faa_lock_pipeline(
             if (phase == TicketFaaPhase::replicate_ticket) {
                 auto* results = row_ptr(buffers.replicate_results, op.slot, conns.size());
                 const uint8_t idx = wr_conn(wc.wr_id);
-                if (!config.replicate_with_cas || results[idx] == EMPTY_SLOT) {
+                if (results[idx] == ticket_faa_log_expected_free_value(op.ticket)) {
                     op.quorum_hits++;
                 }
                 const uint32_t remaining = op.response_target - op.responses;
@@ -490,16 +618,9 @@ void run_ticket_faa_lock_pipeline(
                     continue;
                 }
                 if (op.quorum_hits + remaining < QUORUM) {
-                    throw std::runtime_error("ticket_faa pipeline: ticket replication cannot reach quorum");
-                }
-                if (op.responses < op.response_target) continue;
-                if (op.quorum_hits < QUORUM) {
-                    throw std::runtime_error("ticket_faa pipeline: ticket replication failed to reach quorum");
-                }
-                if (op.ticket == 0) {
-                    begin_release(op);
-                } else {
-                    post_turn_read(client, op, buffers);
+                    op.replicate_retry_spin_remaining = TICKET_FAA_REPLICATE_RETRY_SPIN;
+                    op.phase = TicketFaaPhase::replicate_ticket_spin;
+                    continue;
                 }
                 continue;
             }
@@ -523,26 +644,30 @@ void run_ticket_faa_lock_pipeline(
 
             if (phase == TicketFaaPhase::release_parallel) {
                 const uint8_t idx = wr_conn(wc.wr_id);
-                if (idx == kReleaseTurnConnIndex) {
-                    op.release_turn_done = true;
-                } else {
-                    auto* mark_done_results = row_ptr(buffers.mark_done_results, op.slot, conns.size());
-                    op.release_mark_done_responses++;
-                    if (!config.replicate_with_cas || mark_done_results[idx] == op.waiter_id) {
-                        op.release_mark_done_quorum++;
+                auto* release_log_results = row_ptr(buffers.release_log_results, op.slot, conns.size());
+                op.release_log_responses++;
+                if (!config.release_log_with_cas
+                    || release_log_results[idx] == pack_ticket_faa_log_live(op.ticket, static_cast<uint16_t>(client.id()), static_cast<uint16_t>(op.slot))) {
+                    op.release_log_quorum++;
+                    if (idx == op.owner_node) {
+                        op.release_owner_log_done = true;
                     }
-                    const uint32_t remaining = static_cast<uint32_t>(conns.size()) - op.release_mark_done_responses;
-                    if (op.release_mark_done_quorum + remaining < QUORUM) {
-                        throw std::runtime_error("ticket_faa pipeline: mark done failed to reach quorum");
-                    }
+                } else if (idx == op.owner_node) {
+                    throw std::runtime_error("ticket_faa pipeline: owner wrapped log release CAS failed");
                 }
-                if (!op.release_turn_done || op.release_mark_done_quorum < QUORUM) continue;
-                lock_counts[op.lock_id]++;
-                op.active = false;
-                op.phase = TicketFaaPhase::idle;
-                completed++;
-                active--;
-                if (submitted < NUM_OPS_PER_CLIENT) submit_op(slot);
+
+                const uint32_t remaining = static_cast<uint32_t>(conns.size()) - op.release_log_responses;
+                if (op.release_log_quorum + remaining < QUORUM) {
+                    throw std::runtime_error("ticket_faa pipeline: wrapped log release failed to reach quorum");
+                }
+                if (op.release_owner_log_done && op.release_log_quorum >= QUORUM) {
+                    lock_counts[op.lock_id]++;
+                    op.active = false;
+                    op.phase = TicketFaaPhase::idle;
+                    completed++;
+                    active--;
+                    if (submitted < NUM_OPS_PER_CLIENT) submit_op(slot);
+                }
             }
         }
     }

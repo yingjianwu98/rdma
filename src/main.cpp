@@ -20,7 +20,7 @@
 #include <thread>
 
 // ─── Configuration ───
-constexpr const char* STRATEGY = "cas";      // "mu", "ticket_faa", "cas", or "simple_cas"
+constexpr const char* STRATEGY = "ticket_faa";      // "mu", "ticket_faa", "cas", or "simple_cas"
 
 int main() {
     try {
@@ -194,8 +194,12 @@ int main() {
                 std::cout << "Active Window:  " << std::setw(14) << ticket_faa_config.active_window << "\n";
                 std::cout << "Zipf Skew:      " << std::setw(14) << std::fixed << std::setprecision(2)
                           << ticket_faa_config.zipf_skew << "\n";
-                std::cout << "Replicate Mode: " << std::setw(14)
-                          << (ticket_faa_config.replicate_with_cas ? "cas" : "write") << "\n";
+                std::cout << "Replicate Mode: " << std::setw(14) << "cas" << "\n";
+                std::cout << "Log Release:    " << std::setw(14)
+                          << (ticket_faa_config.release_log_with_cas ? "cas" : "write") << "\n";
+                std::cout << "Turn Release:   " << std::setw(14)
+                          << (ticket_faa_config.release_turn_mode == 0 ? "write"
+                              : (ticket_faa_config.release_turn_mode == 1 ? "cas" : "faa")) << "\n";
                 std::cout << "Owner Mode:     " << std::setw(14)
                           << (ticket_faa_config.shard_owner ? "sharded" : "leader") << "\n";
             } else if (is_mu) {
