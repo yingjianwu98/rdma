@@ -73,7 +73,7 @@ constexpr uint32_t TICKET_FAA_TURN_SPIN_FAR = 512;
 
 constexpr size_t CAS_ACTIVE_CLIENTS = 16;
 constexpr size_t CAS_CQ_BATCH = 32;
-constexpr double CAS_ZIPF_SKEW = .9;
+constexpr double CAS_ZIPF_SKEW = 0.0;
 constexpr bool CAS_SHARD_OWNER = true;
 constexpr uint32_t CAS_RELEASE_SIGNAL_EVERY = 100;
 constexpr bool CAS_RELEASE_USE_CAS = true;
