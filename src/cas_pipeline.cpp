@@ -276,7 +276,8 @@ void post_release(
     control_wr.sg_list = &control_sge;
     control_wr.num_sge = 1;
     control_wr.send_flags = 0;
-    control_wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP | IBV_SEND_INLINE;
+    control_wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
+    control_wr.send_flags = IBV_SEND_INLINE;
     control_wr.wr.atomic.remote_addr = owner.addr + lock_control_offset(op.lock_id);
     control_wr.wr.atomic.rkey = owner.rkey;
     control_wr.wr.atomic.compare_add = op.held_slot;
