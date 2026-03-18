@@ -244,7 +244,8 @@ void post_replicate(const Client& client, CasOpCtx& op, const RegisteredCasBuffe
 void post_release(
     Client& client,
     CasOpCtx& op,
-    const RegisteredCasBuffers& buffers
+    const RegisteredCasBuffers& buffers,
+    const CasPipelineConfig& config
 ) {
     const auto& conns = client.connections();
     const auto* mr = client.mr();
@@ -270,10 +271,19 @@ void post_release(
     control_wr.wr_id = encode_wr_id(op, OpPhase::release, static_cast<uint8_t>(op.owner_node));
     control_wr.sg_list = &control_sge;
     control_wr.num_sge = 1;
-    control_wr.send_flags = IBV_SEND_INLINE;
-    control_wr.opcode = IBV_WR_RDMA_WRITE;
-    control_wr.wr.rdma.remote_addr = owner.addr + lock_control_offset(op.lock_id);
-    control_wr.wr.rdma.rkey = owner.rkey;
+    if (config.release_control_with_cas) {
+        control_wr.send_flags = 0;
+        control_wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
+        control_wr.wr.atomic.remote_addr = owner.addr + lock_control_offset(op.lock_id);
+        control_wr.wr.atomic.rkey = owner.rkey;
+        control_wr.wr.atomic.compare_add = op.held_slot;
+        control_wr.wr.atomic.swap = op.held_slot + 1;
+    } else {
+        control_wr.send_flags = IBV_SEND_INLINE;
+        control_wr.opcode = IBV_WR_RDMA_WRITE;
+        control_wr.wr.rdma.remote_addr = owner.addr + lock_control_offset(op.lock_id);
+        control_wr.wr.rdma.rkey = owner.rkey;
+    }
 
     if (ibv_post_send(owner.id->qp, &control_wr, &bad_wr)) {
         throw std::runtime_error("CAS pipeline: release post failed");
@@ -281,7 +291,7 @@ void post_release(
 
     for (size_t i = 0; i < conns.size(); ++i) {
         auto* log_result = log_results + i;
-        *log_result = free_value;
+        *log_result = EMPTY_SLOT - 1;
 
         ibv_sge log_sge{};
         log_sge.addr = reinterpret_cast<uintptr_t>(log_result);
@@ -292,10 +302,20 @@ void post_release(
         log_wr.wr_id = encode_wr_id(op, OpPhase::release, static_cast<uint8_t>(kReleaseLogConnFlag | i));
         log_wr.sg_list = &log_sge;
         log_wr.num_sge = 1;
-        log_wr.opcode = IBV_WR_RDMA_WRITE;
-        log_wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE;
-        log_wr.wr.rdma.remote_addr = conns[i].addr + lock_log_slot_offset(op.lock_id, op.physical_log_slot);
-        log_wr.wr.rdma.rkey = conns[i].rkey;
+        if (config.release_log_with_cas) {
+            log_wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
+            log_wr.send_flags = IBV_SEND_SIGNALED;
+            log_wr.wr.atomic.remote_addr = conns[i].addr + lock_log_slot_offset(op.lock_id, op.physical_log_slot);
+            log_wr.wr.atomic.rkey = conns[i].rkey;
+            log_wr.wr.atomic.compare_add = live_value;
+            log_wr.wr.atomic.swap = free_value;
+        } else {
+            *log_result = free_value;
+            log_wr.opcode = IBV_WR_RDMA_WRITE;
+            log_wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE;
+            log_wr.wr.rdma.remote_addr = conns[i].addr + lock_log_slot_offset(op.lock_id, op.physical_log_slot);
+            log_wr.wr.rdma.rkey = conns[i].rkey;
+        }
 
         if (ibv_post_send(conns[i].id->qp, &log_wr, &bad_log)) {
             throw std::runtime_error("CAS pipeline: release log post failed");
@@ -311,6 +331,8 @@ CasPipelineConfig load_cas_pipeline_config() {
     config.cq_batch = std::max<size_t>(1, CAS_CQ_BATCH);
     config.zipf_skew = CAS_ZIPF_SKEW;
     config.shard_owner = CAS_SHARD_OWNER;
+    config.release_control_with_cas = CAS_RELEASE_CONTROL_USE_CAS;
+    config.release_log_with_cas = CAS_RELEASE_LOG_USE_CAS;
     config.wrap_debug = CAS_WRAP_DEBUG;
     config.wrap_debug_print_limit = CAS_WRAP_DEBUG_PRINT_LIMIT;
     return config;
@@ -475,7 +497,7 @@ void run_cas_pipeline(
                     latencies[op.latency_index] = std::chrono::duration_cast<std::chrono::nanoseconds>(
                         std::chrono::steady_clock::now() - op.started_at).count();
                     frontier_hints[op.lock_id] = std::max(frontier_hints[op.lock_id], op.held_slot + 2);
-                    post_release(client, op, buffers);
+                    post_release(client, op, buffers, config);
                     if (wrapped) {
                         wrap_debug_stats.wrapped_release_attempts++;
                     }
@@ -501,14 +523,30 @@ void run_cas_pipeline(
                 }
 
                 if (is_log_release) {
+                    auto* log_results = row_ptr(buffers.release_log_results, op.slot, conns.size());
                     op.release_log_responses++;
                     const bool wrapped = cas_log_is_wrapped(op.logical_seq);
-                    op.release_log_acks++;
-                    if (replica_index == op.owner_node) {
-                        op.release_owner_log_done = true;
-                    }
-                    if (wrapped) {
-                        wrap_debug_stats.wrapped_release_cqe_matches++;
+                    if (!config.release_log_with_cas
+                        || log_results[replica_index]
+                            == pack_cas_log_live(op.logical_seq, static_cast<uint16_t>(client.id()), static_cast<uint16_t>(op.slot))) {
+                        op.release_log_acks++;
+                        if (replica_index == op.owner_node) {
+                            op.release_owner_log_done = true;
+                        }
+                        if (wrapped) {
+                            wrap_debug_stats.wrapped_release_cqe_matches++;
+                        }
+                    } else if (wrapped) {
+                        maybe_debug_wrap(
+                            "release mismatch lock=" + std::to_string(op.lock_id)
+                            + " logical_seq=" + std::to_string(op.logical_seq)
+                            + " physical=" + std::to_string(op.physical_log_slot)
+                            + " replica=" + std::to_string(replica_index)
+                            + " expected=" + std::to_string(pack_cas_log_live(op.logical_seq, static_cast<uint16_t>(client.id()), static_cast<uint16_t>(op.slot)))
+                            + " got=" + std::to_string(log_results[replica_index]));
+                        if (replica_index == op.owner_node) {
+                            throw std::runtime_error("CAS pipeline: owner wrapped log release CAS failed");
+                        }
                     }
                     if (op.release_log_acks >= QUORUM) {
                         op.release_log_quorum = true;

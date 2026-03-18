@@ -10,6 +10,8 @@ struct CasPipelineConfig {
     size_t cq_batch;
     double zipf_skew;
     bool shard_owner;
+    bool release_control_with_cas;
+    bool release_log_with_cas;
     bool wrap_debug;
     uint32_t wrap_debug_print_limit;
 };

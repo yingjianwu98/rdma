@@ -180,6 +180,10 @@ int main() {
                 std::cout << "Owner Mode:     " << std::setw(14)
                           << (cas_config.shard_owner ? "sharded" : "leader") << "\n";
                 std::cout << "Log Mode:       " << std::setw(14) << "wrapped_cas" << "\n";
+                std::cout << "Ctl Release:    " << std::setw(14)
+                          << (cas_config.release_control_with_cas ? "cas" : "write") << "\n";
+                std::cout << "Log Release:    " << std::setw(14)
+                          << (cas_config.release_log_with_cas ? "cas" : "write") << "\n";
             } else if (is_simple_cas) {
                 std::cout << "Active Window:  " << std::setw(14) << simple_cas_config.active_window << "\n";
                 std::cout << "Zipf Skew:      " << std::setw(14) << std::fixed << std::setprecision(2)
