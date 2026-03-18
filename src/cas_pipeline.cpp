@@ -151,7 +151,7 @@ void post_replicate(const Client& client, CasOpCtx& op, const uint64_t* replicat
         wr.sg_list = &sge;
         wr.num_sge = 1;
         wr.opcode = IBV_WR_RDMA_WRITE;
-        wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE;
+        wr.send_flags = IBV_SEND_SIGNALED;
         wr.wr.rdma.remote_addr = conns[i].addr + lock_log_slot_offset(op.lock_id, op.held_slot);
         wr.wr.rdma.rkey = conns[i].rkey;
 
