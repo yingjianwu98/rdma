@@ -49,13 +49,13 @@ constexpr uint8_t RDMA_INITIATOR_DEPTH = 16;
 
 // ─── Benchmark / workload config ───
 
-constexpr size_t NUM_OPS = 100000;
+constexpr size_t NUM_OPS = 10000000;
 constexpr size_t NUM_CLIENTS_PER_MACHINE = 1;
 constexpr size_t TOTAL_MACHINES = 1;
 constexpr size_t TOTAL_CLIENTS = NUM_CLIENTS_PER_MACHINE * TOTAL_MACHINES;
 constexpr size_t NUM_OPS_PER_CLIENT = NUM_OPS / TOTAL_CLIENTS;
 constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * TOTAL_CLIENTS;
-constexpr size_t MAX_LOCKS = 1;
+constexpr size_t MAX_LOCKS = 1000;
 
 // ─── CAS config ───
 
@@ -92,15 +92,7 @@ constexpr uint32_t TICKET_FAA_TURN_SPIN_FAR = 512;
 
 // ─── MU config ───
 
-constexpr size_t MU_ACTIVE_WINDOW = 8;
-constexpr size_t MU_CQ_BATCH = 32;
-constexpr uint32_t MU_CLIENT_SEND_SIGNAL_EVERY = 64;
-constexpr uint32_t MU_SERVER_SEND_SIGNAL_EVERY = 128;
-constexpr double MU_ZIPF_SKEW = 0.0;
-constexpr bool MU_DEBUG = false;
-constexpr bool MU_STATS = true;
-constexpr bool MU_STATS_PRINT_IDLE = false;
-constexpr size_t MU_LOG_CAPACITY = TOTAL_CLIENTS * MU_ACTIVE_WINDOW * 4;
+constexpr size_t MU_ACTIVE_WINDOW = 32;
 
 // ─── Lock table layout ───
 
@@ -132,7 +124,6 @@ constexpr size_t CLIENT_ALIGNED_SIZE = ((CLIENT_POOL_SIZE + PAGE_SIZE - 1) / PAG
 static_assert(LOCK_TABLE_SIZE <= SERVER_ALIGNED_SIZE, "Lock table exceeds server buffer size");
 static_assert(CAS_LOG_CAPACITY <= MAX_LOG_PER_LOCK, "CAS log capacity exceeds allocated per-lock log size");
 static_assert(TICKET_FAA_LOG_CAPACITY <= MAX_LOG_PER_LOCK, "Ticket FAA log capacity exceeds allocated per-lock log size");
-static_assert(MU_LOG_CAPACITY <= MAX_LOG_PER_LOCK, "MU log capacity exceeds allocated per-lock log size");
 
 // ─── Per-lock offset helpers ───
 

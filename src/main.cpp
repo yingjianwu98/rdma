@@ -20,7 +20,7 @@
 #include <thread>
 
 // ─── Configuration ───
-constexpr const char* STRATEGY = "mu";      // "mu", "ticket_faa", "cas", or "simple_cas"
+constexpr const char* STRATEGY = "ticket_faa";      // "mu", "ticket_faa", "cas", or "simple_cas"
 
 int main() {
     try {
@@ -206,8 +206,6 @@ int main() {
                           << (ticket_faa_config.shard_owner ? "sharded" : "leader") << "\n";
             } else if (is_mu) {
                 std::cout << "Active Window:  " << std::setw(14) << mu_config.active_window << "\n";
-                std::cout << "Zipf Skew:      " << std::setw(14) << std::fixed << std::setprecision(2)
-                          << mu_config.zipf_skew << "\n";
             }
             std::cout << "Clients:        " << std::setw(14) << TOTAL_CLIENTS
                       << " (" << NUM_CLIENTS_PER_MACHINE << " on this machine)\n";
@@ -239,7 +237,7 @@ int main() {
                       << "," << MAX_LOCKS
                       << "," << (is_cas ? cas_config.active_window : (is_simple_cas ? simple_cas_config.active_window : (is_ticket_faa ? ticket_faa_config.active_window : (is_mu ? mu_config.active_window : 0))))
                       << "," << std::fixed << std::setprecision(2)
-                      << (is_cas ? cas_config.zipf_skew : (is_simple_cas ? simple_cas_config.zipf_skew : (is_ticket_faa ? ticket_faa_config.zipf_skew : (is_mu ? mu_config.zipf_skew : 0.0))))
+                      << (is_cas ? cas_config.zipf_skew : (is_simple_cas ? simple_cas_config.zipf_skew : (is_ticket_faa ? ticket_faa_config.zipf_skew : 0.0)))
                       << "," << local_total_ops
                       << "," << std::fixed << std::setprecision(3) << wall_s
                       << "," << std::setprecision(0) << goodput

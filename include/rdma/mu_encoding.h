@@ -38,51 +38,32 @@ struct MuResponse {
 static_assert(sizeof(MuRequest) == 16);
 static_assert(sizeof(MuResponse) == 16);
 
-constexpr uint64_t MU_ENTRY_LIVE_BIT = 1ULL << 63;
-constexpr uint64_t MU_ENTRY_GENERATION_SHIFT = 48;
-constexpr uint64_t MU_ENTRY_CLIENT_ID_SHIFT = 32;
-constexpr uint64_t MU_ENTRY_REQ_ID_SHIFT = 0;
-constexpr uint64_t MU_ENTRY_GENERATION_MASK = 0x7FFFULL;
-constexpr uint64_t MU_ENTRY_CLIENT_ID_MASK = 0xFFFFULL;
-constexpr uint64_t MU_ENTRY_REQ_ID_MASK = 0xFFFFFFFFULL;
+constexpr uint64_t MU_UNLOCKED_BIT = 1ULL;
+constexpr uint64_t MU_CLIENT_ID_SHIFT = 1;
+constexpr uint64_t MU_REQ_ID_SHIFT = 17;
+constexpr uint64_t MU_CLIENT_ID_MASK = 0xFFFFULL;
+constexpr uint64_t MU_REQ_ID_MASK = 0xFFFFFFFFULL;
 
-inline uint16_t mu_logical_generation(const uint32_t logical_slot) {
-    return static_cast<uint16_t>(logical_slot / MU_LOG_CAPACITY);
-}
-
-inline uint32_t mu_physical_slot(const uint32_t logical_slot) {
-    return logical_slot % MU_LOG_CAPACITY;
-}
-
-inline uint64_t mu_make_free(const uint16_t generation) {
-    return static_cast<uint64_t>(generation) << MU_ENTRY_GENERATION_SHIFT;
-}
-
-inline uint64_t mu_make_live(const uint16_t generation, const uint16_t client_id, const uint32_t req_id) {
-    return MU_ENTRY_LIVE_BIT
-         | (static_cast<uint64_t>(generation) << MU_ENTRY_GENERATION_SHIFT)
-         | (static_cast<uint64_t>(client_id) << MU_ENTRY_CLIENT_ID_SHIFT)
-         | static_cast<uint64_t>(req_id);
+inline uint64_t mu_make_entry(const uint16_t client_id, const uint32_t req_id, const bool unlocked = false) {
+    return (static_cast<uint64_t>(req_id) << MU_REQ_ID_SHIFT)
+         | (static_cast<uint64_t>(client_id) << MU_CLIENT_ID_SHIFT)
+         | (unlocked ? MU_UNLOCKED_BIT : 0ULL);
 }
 
 inline uint16_t mu_entry_client_id(const uint64_t entry) {
-    return static_cast<uint16_t>((entry >> MU_ENTRY_CLIENT_ID_SHIFT) & MU_ENTRY_CLIENT_ID_MASK);
+    return static_cast<uint16_t>((entry >> MU_CLIENT_ID_SHIFT) & MU_CLIENT_ID_MASK);
 }
 
 inline uint32_t mu_entry_req_id(const uint64_t entry) {
-    return static_cast<uint32_t>((entry >> MU_ENTRY_REQ_ID_SHIFT) & MU_ENTRY_REQ_ID_MASK);
-}
-
-inline uint16_t mu_entry_generation(const uint64_t entry) {
-    return static_cast<uint16_t>((entry >> MU_ENTRY_GENERATION_SHIFT) & MU_ENTRY_GENERATION_MASK);
-}
-
-inline bool mu_entry_is_live(const uint64_t entry) {
-    return (entry & MU_ENTRY_LIVE_BIT) != 0;
+    return static_cast<uint32_t>((entry >> MU_REQ_ID_SHIFT) & MU_REQ_ID_MASK);
 }
 
 inline bool mu_entry_is_unlocked(const uint64_t entry) {
-    return !mu_entry_is_live(entry);
+    return (entry & MU_UNLOCKED_BIT) != 0;
+}
+
+inline uint64_t mu_entry_mark_unlocked(const uint64_t entry) {
+    return entry | MU_UNLOCKED_BIT;
 }
 
 inline void mu_write_commit_index(uint8_t* lock_base, const uint64_t commit_index) {
@@ -102,11 +83,11 @@ inline const uint8_t* mu_lock_base(const uint8_t* buf, const uint32_t lock_id) {
 }
 
 inline uint8_t* mu_entry_ptr(uint8_t* lock_base, const uint32_t slot) {
-    return lock_base + LOCK_HEADER_SIZE + (static_cast<size_t>(mu_physical_slot(slot)) * ENTRY_SIZE);
+    return lock_base + LOCK_HEADER_SIZE + (static_cast<size_t>(slot) * ENTRY_SIZE);
 }
 
 inline const uint8_t* mu_entry_ptr(const uint8_t* lock_base, const uint32_t slot) {
-    return lock_base + LOCK_HEADER_SIZE + (static_cast<size_t>(mu_physical_slot(slot)) * ENTRY_SIZE);
+    return lock_base + LOCK_HEADER_SIZE + (static_cast<size_t>(slot) * ENTRY_SIZE);
 }
 
 inline uint64_t mu_read_entry_word(const uint8_t* lock_base, const uint32_t slot) {
@@ -117,6 +98,10 @@ inline void mu_write_entry_word(uint8_t* lock_base, const uint32_t slot, const u
     *reinterpret_cast<uint64_t*>(mu_entry_ptr(lock_base, slot)) = word;
 }
 
+constexpr size_t MU_CLIENT_SEND_SIGNAL_EVERY_DEFAULT = 64;
+constexpr size_t MU_SERVER_SEND_SIGNAL_EVERY_DEFAULT = 128;
+constexpr size_t MU_CLIENT_CQ_BATCH_DEFAULT = 32;
 constexpr size_t MU_SERVER_RECV_RING = 2048;
 constexpr size_t MU_MAX_PENDING_PER_LOCK = 1024;
 constexpr size_t MU_MAX_APPEND_INFLIGHT_PER_LOCK = 64;
+constexpr size_t MU_REPL_SIGNAL_QUORUM_ONLY_DEFAULT = 1;

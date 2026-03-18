@@ -9,7 +9,6 @@ struct MuPipelineConfig {
     size_t active_window;
     size_t cq_batch;
     uint32_t client_send_signal_every;
-    double zipf_skew;
 };
 
 [[nodiscard]] MuPipelineConfig load_mu_pipeline_config();

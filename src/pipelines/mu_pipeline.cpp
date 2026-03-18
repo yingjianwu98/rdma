@@ -3,13 +3,13 @@
 #include "rdma/client.h"
 #include "rdma/common.h"
 #include "rdma/mu_encoding.h"
-#include "rdma/zipf_lock_picker.h"
 
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <iostream>
 #include <limits>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -150,9 +150,10 @@ void post_request(
 MuPipelineConfig load_mu_pipeline_config() {
     MuPipelineConfig config{};
     config.active_window = std::max<size_t>(1, MU_ACTIVE_WINDOW);
-    config.cq_batch = std::max<size_t>(1, MU_CQ_BATCH);
-    config.client_send_signal_every = std::max<uint32_t>(1, MU_CLIENT_SEND_SIGNAL_EVERY);
-    config.zipf_skew = MU_ZIPF_SKEW;
+    config.cq_batch = std::max<size_t>(1, get_uint_env_or("MU_CQ_BATCH", MU_CLIENT_CQ_BATCH_DEFAULT));
+    config.client_send_signal_every = std::max<uint32_t>(
+        1,
+        get_uint_env_or("MU_CLIENT_SEND_SIGNAL_EVERY", MU_CLIENT_SEND_SIGNAL_EVERY_DEFAULT));
     return config;
 }
 
@@ -168,7 +169,7 @@ void run_mu_pipeline(
     uint64_t* lock_counts,
     const MuPipelineConfig& config
 ) {
-    const bool mu_debug = MU_DEBUG;
+    const bool mu_debug = get_uint_env_or("MU_DEBUG", 0) != 0;
     auto debug = [&](const std::string& msg) {
         if (mu_debug) {
             std::cout << "[MuClient " << client.id() << "] " << msg << "\n";
@@ -193,7 +194,8 @@ void run_mu_pipeline(
     auto buffers = map_client_buffers(client.buffer(), client.buffer_size(), recv_ring);
     std::vector<MuOpCtx> ops(config.active_window);
     std::vector<ibv_wc> completions(config.cq_batch);
-    ZipfLockPicker picker(config.zipf_skew);
+    std::mt19937 rng(std::random_device{}());
+    std::uniform_int_distribution<uint32_t> lock_dist(0, MAX_LOCKS - 1);
     uint32_t leader_signal_count = 0;
     std::unordered_map<uint32_t, uint32_t> req_to_slot;
     req_to_slot.reserve(config.active_window * 2);
@@ -212,7 +214,7 @@ void run_mu_pipeline(
         op.active = true;
         op.generation++;
         op.slot = static_cast<uint32_t>(slot);
-        op.lock_id = picker.next();
+        op.lock_id = lock_dist(rng);
         op.req_id = next_req_id++;
         op.granted_slot = 0;
         op.latency_index = submitted;
