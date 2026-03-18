@@ -59,7 +59,7 @@ constexpr size_t MAX_LOCKS = 1000;
 
 // ─── CAS config ───
 
-constexpr size_t CAS_ACTIVE_CLIENTS = 4;
+constexpr size_t CAS_ACTIVE_CLIENTS = 8;
 constexpr size_t CAS_CQ_BATCH = 32;
 constexpr double CAS_ZIPF_SKEW = 1.0;
 constexpr bool CAS_SHARD_OWNER = true;
