@@ -12,8 +12,6 @@ struct CasPipelineConfig {
     bool shard_owner;
     bool release_control_with_cas;
     bool release_log_with_cas;
-    bool wrap_debug;
-    uint32_t wrap_debug_print_limit;
 };
 
 [[nodiscard]] CasPipelineConfig load_cas_pipeline_config();
