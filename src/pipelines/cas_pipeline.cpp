@@ -29,7 +29,6 @@ enum class OpPhase : uint8_t {
 struct RegisteredCasBuffers {
     uint64_t* acquire_results = nullptr;
     uint64_t* replicate_results = nullptr;
-    uint64_t* release_control_results = nullptr;
     uint64_t* release_log_results = nullptr;
 };
 
@@ -163,8 +162,6 @@ RegisteredCasBuffers map_buffers(
     offset += replicate_bytes;
 
     const size_t release_bytes = align_up(active_window * replica_count * sizeof(uint64_t), 64);
-    buffers.release_control_results = reinterpret_cast<uint64_t*>(base + offset);
-    offset += release_bytes;
     buffers.release_log_results = reinterpret_cast<uint64_t*>(base + offset);
     offset += release_bytes;
 
@@ -251,7 +248,6 @@ void post_release(
 ) {
     const auto& conns = client.connections();
     const auto* mr = client.mr();
-    auto* control_results = row_ptr(buffers.release_control_results, op.slot, conns.size());
     auto* log_results = row_ptr(buffers.release_log_results, op.slot, conns.size());
     const uint64_t live_value = pack_cas_log_live(op.logical_seq, static_cast<uint16_t>(client.id()), static_cast<uint16_t>(op.slot));
     const uint64_t free_value = cas_log_next_free_value(op.logical_seq);
@@ -263,11 +259,10 @@ void post_release(
     op.release_owner_log_done = false;
     op.release_log_quorum = false;
 
-    auto* control_result = control_results + op.owner_node;
-    *control_result = op.held_slot + 1;
+    uint64_t control_value = op.held_slot + 1;
 
     ibv_sge control_sge{};
-    control_sge.addr = reinterpret_cast<uintptr_t>(control_result);
+    control_sge.addr = reinterpret_cast<uintptr_t>(&control_value);
     control_sge.length = sizeof(uint64_t);
     control_sge.lkey = mr->lkey;
 
@@ -275,12 +270,10 @@ void post_release(
     control_wr.wr_id = encode_wr_id(op, OpPhase::release, static_cast<uint8_t>(op.owner_node));
     control_wr.sg_list = &control_sge;
     control_wr.num_sge = 1;
-    control_wr.send_flags = 0;
-    control_wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
-    control_wr.wr.atomic.remote_addr = owner.addr + lock_control_offset(op.lock_id);
-    control_wr.wr.atomic.rkey = owner.rkey;
-    control_wr.wr.atomic.compare_add = op.held_slot;
-    control_wr.wr.atomic.swap = op.held_slot + 1;
+    control_wr.send_flags = IBV_SEND_INLINE;
+    control_wr.opcode = IBV_WR_RDMA_WRITE;
+    control_wr.wr.rdma.remote_addr = owner.addr + lock_control_offset(op.lock_id);
+    control_wr.wr.rdma.rkey = owner.rkey;
 
     if (ibv_post_send(owner.id->qp, &control_wr, &bad_wr)) {
         throw std::runtime_error("CAS pipeline: release post failed");
@@ -330,7 +323,7 @@ size_t cas_pipeline_client_buffer_size(const CasPipelineConfig& config) {
     const size_t acquire_bytes = align_up(config.active_window * sizeof(uint64_t), 64);
     const size_t replicate_bytes = align_up(config.active_window * replica_count * sizeof(uint64_t), 64);
     const size_t release_bytes = align_up(config.active_window * replica_count * sizeof(uint64_t), 64);
-    return align_up(acquire_bytes + replicate_bytes + release_bytes * 2 + PAGE_SIZE, PAGE_SIZE);
+    return align_up(acquire_bytes + replicate_bytes + release_bytes + PAGE_SIZE, PAGE_SIZE);
 }
 
 void run_cas_pipeline(
