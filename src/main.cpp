@@ -190,6 +190,8 @@ int main() {
                           << simple_cas_config.zipf_skew << "\n";
                 std::cout << "Owner Mode:     " << std::setw(14)
                           << (simple_cas_config.shard_owner ? "sharded" : "leader") << "\n";
+                std::cout << "Release Mode:   " << std::setw(14)
+                          << (simple_cas_config.release_with_cas ? "cas" : "write") << "\n";
             } else if (is_ticket_faa) {
                 std::cout << "Active Window:  " << std::setw(14) << ticket_faa_config.active_window << "\n";
                 std::cout << "Zipf Skew:      " << std::setw(14) << std::fixed << std::setprecision(2)

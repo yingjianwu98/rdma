@@ -10,6 +10,7 @@ struct SimpleCasPipelineConfig {
     size_t cq_batch = 0;
     double zipf_skew = 0.0;
     bool shard_owner = true;
+    bool release_with_cas = false;
 };
 
 [[nodiscard]] SimpleCasPipelineConfig load_simple_cas_pipeline_config();

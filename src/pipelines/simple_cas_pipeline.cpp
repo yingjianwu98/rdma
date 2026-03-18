@@ -108,7 +108,7 @@ RegisteredSimpleCasBuffers map_buffers(void* raw_buffer, const size_t buffer_siz
     op.phase = SimpleCasPhase::acquire;
 }
 
-void post_release(Client& client, SimpleCasOpCtx& op) {
+void post_release(Client& client, SimpleCasOpCtx& op, const SimpleCasPipelineConfig& config) {
     const auto& conns = client.connections();
     auto* mr = client.mr();
     const auto& owner = conns[op.owner_node];
@@ -123,10 +123,19 @@ void post_release(Client& client, SimpleCasOpCtx& op) {
     wr.wr_id = encode_wr_id(op, SimpleCasPhase::release, static_cast<uint8_t>(op.owner_node));
     wr.sg_list = &sge;
     wr.num_sge = 1;
-    wr.opcode = IBV_WR_RDMA_WRITE;
-    wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE;
-    wr.wr.rdma.remote_addr = owner.addr + lock_control_offset(op.lock_id);
-    wr.wr.rdma.rkey = owner.rkey;
+    if (config.release_with_cas) {
+        wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
+        wr.send_flags = IBV_SEND_SIGNALED;
+        wr.wr.atomic.remote_addr = owner.addr + lock_control_offset(op.lock_id);
+        wr.wr.atomic.rkey = owner.rkey;
+        wr.wr.atomic.compare_add = 1;
+        wr.wr.atomic.swap = 0;
+    } else {
+        wr.opcode = IBV_WR_RDMA_WRITE;
+        wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE;
+        wr.wr.rdma.remote_addr = owner.addr + lock_control_offset(op.lock_id);
+        wr.wr.rdma.rkey = owner.rkey;
+    }
 
     if (ibv_post_send(owner.id->qp, &wr, &bad_wr)) {
         throw std::runtime_error("simple_cas pipeline: release post failed");
@@ -143,6 +152,7 @@ SimpleCasPipelineConfig load_simple_cas_pipeline_config() {
     config.cq_batch = std::max<size_t>(1, SIMPLE_CAS_CQ_BATCH);
     config.zipf_skew = SIMPLE_CAS_ZIPF_SKEW;
     config.shard_owner = SIMPLE_CAS_SHARD_OWNER;
+    config.release_with_cas = SIMPLE_CAS_RELEASE_USE_CAS;
     return config;
 }
 
@@ -231,7 +241,7 @@ void run_simple_cas_pipeline(
                 if (*op.acquire_result == 0) {
                     latencies[op.latency_index] = std::chrono::duration_cast<std::chrono::nanoseconds>(
                         std::chrono::steady_clock::now() - op.started_at).count();
-                    post_release(client, op);
+                    post_release(client, op, config);
                 } else {
                     post_acquire(client, op);
                 }
@@ -239,6 +249,9 @@ void run_simple_cas_pipeline(
             }
 
             if (phase == SimpleCasPhase::release) {
+                if (config.release_with_cas && *op.release_value != 1) {
+                    throw std::runtime_error("simple_cas pipeline: release CAS failed");
+                }
                 lock_counts[op.lock_id]++;
                 op.active = false;
                 op.phase = SimpleCasPhase::idle;
