@@ -270,7 +270,7 @@ void post_release(
     control_wr.wr_id = encode_wr_id(op, OpPhase::release, static_cast<uint8_t>(op.owner_node));
     control_wr.sg_list = &control_sge;
     control_wr.num_sge = 1;
-    control_wr.send_flags = IBV_SEND_INLINE;
+    // control_wr.send_flags = IBV_SEND_INLINE;
     control_wr.opcode = IBV_WR_RDMA_WRITE;
     control_wr.wr.rdma.remote_addr = owner.addr + lock_control_offset(op.lock_id);
     control_wr.wr.rdma.rkey = owner.rkey;
@@ -293,7 +293,7 @@ void post_release(
         log_wr.sg_list = &log_sge;
         log_wr.num_sge = 1;
         log_wr.opcode = IBV_WR_RDMA_WRITE;
-        log_wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE;
+        log_wr.send_flags = IBV_SEND_SIGNALED; // | IBV_SEND_INLINE;
         log_wr.wr.rdma.remote_addr = conns[i].addr + lock_log_slot_offset(op.lock_id, op.physical_log_slot);
         log_wr.wr.rdma.rkey = conns[i].rkey;
 
