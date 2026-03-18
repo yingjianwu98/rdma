@@ -49,13 +49,13 @@ constexpr uint8_t RDMA_INITIATOR_DEPTH = 16;
 
 // ─── Benchmark / workload config ───
 
-constexpr size_t NUM_OPS = 15000000;
+constexpr size_t NUM_OPS = 200000;
 constexpr size_t NUM_CLIENTS_PER_MACHINE = 1;
 constexpr size_t TOTAL_MACHINES = 1;
 constexpr size_t TOTAL_CLIENTS = NUM_CLIENTS_PER_MACHINE * TOTAL_MACHINES;
 constexpr size_t NUM_OPS_PER_CLIENT = NUM_OPS / TOTAL_CLIENTS;
 constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * TOTAL_CLIENTS;
-constexpr size_t MAX_LOCKS = 1000;
+constexpr size_t MAX_LOCKS = 1;
 
 // ─── Ticket FAA config ───
 
@@ -71,12 +71,11 @@ constexpr uint32_t TICKET_FAA_TURN_SPIN_FAR = 512;
 
 // ─── CAS config ───
 
-constexpr size_t CAS_ACTIVE_CLIENTS = 16;
+constexpr size_t CAS_ACTIVE_CLIENTS = 1;
 constexpr size_t CAS_CQ_BATCH = 32;
 constexpr double CAS_ZIPF_SKEW = 0.0;
 constexpr bool CAS_SHARD_OWNER = true;
-constexpr uint32_t CAS_RELEASE_SIGNAL_EVERY = 100;
-constexpr bool CAS_RELEASE_USE_CAS = true;
+constexpr size_t CAS_LOG_CAPACITY = TOTAL_CLIENTS * CAS_ACTIVE_CLIENTS * 4;
 
 // ─── Simple CAS config ───
 
@@ -133,6 +132,7 @@ constexpr size_t CLIENT_POOL_SIZE = 4096 * 2;  // 8KB — plenty for LocalState
 constexpr size_t CLIENT_ALIGNED_SIZE = ((CLIENT_POOL_SIZE + PAGE_SIZE - 1) / PAGE_SIZE) * PAGE_SIZE;
 
 static_assert(LOCK_TABLE_SIZE <= SERVER_ALIGNED_SIZE, "Lock table exceeds server buffer size");
+static_assert(CAS_LOG_CAPACITY <= MAX_LOG_PER_LOCK, "CAS log capacity exceeds allocated per-lock log size");
 
 // ─── Per-lock offset helpers ───
 

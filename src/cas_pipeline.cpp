@@ -28,8 +28,9 @@ enum class OpPhase : uint8_t {
 
 struct RegisteredCasBuffers {
     uint64_t* acquire_results = nullptr;
-    uint64_t* replicate_value = nullptr;
-    uint64_t* release_sinks = nullptr;
+    uint64_t* replicate_results = nullptr;
+    uint64_t* release_control_results = nullptr;
+    uint64_t* release_log_results = nullptr;
 };
 
 struct CasOpCtx {
@@ -41,29 +42,56 @@ struct CasOpCtx {
     OpPhase phase = OpPhase::idle;
     uint64_t target_slot = 1;
     uint64_t held_slot = 0;
+    uint64_t logical_seq = 0;
+    uint64_t physical_log_slot = 0;
+    uint32_t replicate_responses = 0;
     uint32_t replicate_acks = 0;
-    bool quorum_reached = false;
+    uint32_t release_log_responses = 0;
+    uint32_t release_log_acks = 0;
+    bool release_control_quorum = false;
+    bool release_log_quorum = false;
     size_t latency_index = 0;
     uint64_t* acquire_result = nullptr;
     std::chrono::steady_clock::time_point started_at{};
 };
 
-constexpr uint64_t kReleaseWrTag = 0xFF00000000000000ULL;
+constexpr uint8_t kReleaseLogConnFlag = 0x80u;
+constexpr uint64_t kLogLiveBit = 1ULL << 63;
+constexpr uint64_t kLogSeqMask = (1ULL << 31) - 1;
 
-bool is_release_wr_id(const uint64_t wr_id) {
-    return (wr_id & kReleaseWrTag) == kReleaseWrTag;
+uint64_t cas_logical_seq(const uint64_t held_slot) {
+    return held_slot >> 1;
 }
 
-uint64_t make_release_wr_id(uint64_t seq, const uint8_t conn_index) {
-    return kReleaseWrTag | (seq << 8) | static_cast<uint64_t>(conn_index);
+uint64_t cas_physical_log_slot(const uint64_t logical_seq) {
+    return logical_seq % CAS_LOG_CAPACITY;
 }
 
-void ensure_log_slot_in_bounds(const uint32_t lock_id, const uint64_t slot, const char* context) {
-    if (slot >= MAX_LOG_PER_LOCK) {
+uint64_t pack_cas_log_free(const uint64_t logical_seq) {
+    return (logical_seq & kLogSeqMask) << 32;
+}
+
+uint64_t pack_cas_log_live(const uint64_t logical_seq, const uint16_t client_id, const uint16_t active_slot) {
+    return kLogLiveBit
+         | ((logical_seq & kLogSeqMask) << 32)
+         | (static_cast<uint64_t>(client_id) << 16)
+         | static_cast<uint64_t>(active_slot);
+}
+
+uint64_t cas_log_expected_free_value(const uint64_t logical_seq) {
+    return logical_seq < CAS_LOG_CAPACITY ? EMPTY_SLOT : pack_cas_log_free(logical_seq);
+}
+
+uint64_t cas_log_next_free_value(const uint64_t logical_seq) {
+    return pack_cas_log_free(logical_seq + CAS_LOG_CAPACITY);
+}
+
+void ensure_log_seq_in_bounds(const uint32_t lock_id, const uint64_t logical_seq, const char* context) {
+    if (cas_physical_log_slot(logical_seq) >= MAX_LOG_PER_LOCK) {
         throw std::runtime_error(
-            std::string("CAS pipeline: log overflow during ") + context
+            std::string("CAS pipeline: wrapped log overflow during ") + context
             + " lock=" + std::to_string(lock_id)
-            + " slot=" + std::to_string(slot)
+            + " logical_seq=" + std::to_string(logical_seq)
             + " max_log_per_lock=" + std::to_string(MAX_LOG_PER_LOCK));
     }
 }
@@ -87,6 +115,18 @@ OpPhase wr_phase(const uint64_t wr_id) {
     return static_cast<OpPhase>((wr_id >> kConnBits) & 0xFFu);
 }
 
+uint8_t wr_conn(const uint64_t wr_id) {
+    return static_cast<uint8_t>(wr_id & 0xFFu);
+}
+
+size_t row_offset(const uint32_t slot, const size_t replica_count) {
+    return static_cast<size_t>(slot) * replica_count;
+}
+
+uint64_t* row_ptr(uint64_t* base, const uint32_t slot, const size_t replica_count) {
+    return base + row_offset(slot, replica_count);
+}
+
 RegisteredCasBuffers map_buffers(
     void* raw_buffer,
     const size_t buffer_size,
@@ -102,12 +142,14 @@ RegisteredCasBuffers map_buffers(
     buffers.acquire_results = reinterpret_cast<uint64_t*>(base + offset);
     offset += acquire_bytes;
 
-    const size_t replicate_bytes = align_up(sizeof(uint64_t), 64);
-    buffers.replicate_value = reinterpret_cast<uint64_t*>(base + offset);
+    const size_t replicate_bytes = align_up(active_window * replica_count * sizeof(uint64_t), 64);
+    buffers.replicate_results = reinterpret_cast<uint64_t*>(base + offset);
     offset += replicate_bytes;
 
-    const size_t release_bytes = align_up(replica_count * sizeof(uint64_t), 64);
-    buffers.release_sinks = reinterpret_cast<uint64_t*>(base + offset);
+    const size_t release_bytes = align_up(active_window * replica_count * sizeof(uint64_t), 64);
+    buffers.release_control_results = reinterpret_cast<uint64_t*>(base + offset);
+    offset += release_bytes;
+    buffers.release_log_results = reinterpret_cast<uint64_t*>(base + offset);
     offset += release_bytes;
 
     if (offset > buffer_size) {
@@ -117,7 +159,7 @@ RegisteredCasBuffers map_buffers(
     return buffers;
 }
 
-void post_acquire(Client& client, CasOpCtx& op) {
+void post_acquire(const Client& client, CasOpCtx& op) {
     const auto& conns = client.connections();
     auto* mr = client.mr();
 
@@ -146,26 +188,35 @@ void post_acquire(Client& client, CasOpCtx& op) {
     op.phase = OpPhase::acquire;
 }
 
-void post_replicate(const Client& client, CasOpCtx& op, const uint64_t* replicate_value) {
+void post_replicate(const Client& client, CasOpCtx& op, const RegisteredCasBuffers& buffers) {
     const auto& conns = client.connections();
     auto* mr = client.mr();
+    auto* results = row_ptr(buffers.replicate_results, op.slot, conns.size());
 
-    ensure_log_slot_in_bounds(op.lock_id, op.held_slot, "replicate");
-
-    ibv_sge sge{};
-    sge.addr = reinterpret_cast<uintptr_t>(replicate_value);
-    sge.length = sizeof(uint64_t);
-    sge.lkey = mr->lkey;
+    op.logical_seq = cas_logical_seq(op.held_slot);
+    op.physical_log_slot = cas_physical_log_slot(op.logical_seq);
+    ensure_log_seq_in_bounds(op.lock_id, op.logical_seq, "replicate");
+    const uint64_t      compare_value = cas_log_expected_free_value(op.logical_seq);
+    const uint64_t swap_value = pack_cas_log_live(op.logical_seq, static_cast<uint16_t>(client.id()), static_cast<uint16_t>(op.slot));
 
     for (size_t i = 0; i < conns.size(); ++i) {
+        results[i] = EMPTY_SLOT - 1;
+
+        ibv_sge sge{};
+        sge.addr = reinterpret_cast<uintptr_t>(&results[i]);
+        sge.length = sizeof(uint64_t);
+        sge.lkey = mr->lkey;
+
         ibv_send_wr wr{}, *bad_wr = nullptr;
         wr.wr_id = encode_wr_id(op, OpPhase::replicate, static_cast<uint8_t>(i));
         wr.sg_list = &sge;
         wr.num_sge = 1;
-        wr.opcode = IBV_WR_RDMA_WRITE;
+        wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
         wr.send_flags = IBV_SEND_SIGNALED;
-        wr.wr.rdma.remote_addr = conns[i].addr + lock_log_slot_offset(op.lock_id, op.held_slot);
-        wr.wr.rdma.rkey = conns[i].rkey;
+        wr.wr.atomic.remote_addr = conns[i].addr + lock_log_slot_offset(op.lock_id, op.physical_log_slot);
+        wr.wr.atomic.rkey = conns[i].rkey;
+        wr.wr.atomic.compare_add = compare_value;
+        wr.wr.atomic.swap = swap_value;
 
         if (ibv_post_send(conns[i].id->qp, &wr, &bad_wr)) {
             throw std::runtime_error("CAS pipeline: replicate post failed");
@@ -173,53 +224,74 @@ void post_replicate(const Client& client, CasOpCtx& op, const uint64_t* replicat
     }
 
     op.phase = OpPhase::replicate;
+    op.replicate_responses = 0;
     op.replicate_acks = 0;
-    op.quorum_reached = false;
 }
 
 void post_release(
     Client& client,
-    const CasOpCtx& op,
-    uint64_t* release_sinks,
-    uint64_t& release_sequence,
-    uint64_t& release_signal_count,
-    const uint32_t release_signal_every,
-    const bool release_with_cas
+    CasOpCtx& op,
+    const RegisteredCasBuffers& buffers
 ) {
     const auto& conns = client.connections();
     const auto* mr = client.mr();
+    auto* control_results = row_ptr(buffers.release_control_results, op.slot, conns.size());
+    auto* log_results = row_ptr(buffers.release_log_results, op.slot, conns.size());
+    const uint64_t live_value = pack_cas_log_live(op.logical_seq, static_cast<uint16_t>(client.id()), static_cast<uint16_t>(op.slot));
+    const uint64_t free_value = cas_log_next_free_value(op.logical_seq);
+    const auto& owner = conns[op.owner_node];
+
+    op.phase = OpPhase::release;
+    op.release_log_responses = 0;
+    op.release_log_acks = 0;
+    op.release_control_quorum = false;
+    op.release_log_quorum = false;
+
+    auto* control_result = control_results + op.owner_node;
+    *control_result = op.held_slot + 1;
+
+    ibv_sge control_sge{};
+    control_sge.addr = reinterpret_cast<uintptr_t>(control_result);
+    control_sge.length = sizeof(uint64_t);
+    control_sge.lkey = mr->lkey;
+
+    ibv_send_wr control_wr{}, *bad_wr = nullptr;
+    control_wr.wr_id = encode_wr_id(op, OpPhase::release, static_cast<uint8_t>(op.owner_node));
+    control_wr.sg_list = &control_sge;
+    control_wr.num_sge = 1;
+    control_wr.send_flags = IBV_SEND_SIGNALED;
+    control_wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
+    control_wr.wr.atomic.remote_addr = owner.addr + lock_control_offset(op.lock_id);
+    control_wr.wr.atomic.rkey = owner.rkey;
+    control_wr.wr.atomic.compare_add = op.held_slot;
+    control_wr.wr.atomic.swap = op.held_slot + 1;
+
+    if (ibv_post_send(owner.id->qp, &control_wr, &bad_wr)) {
+        throw std::runtime_error("CAS pipeline: release post failed");
+    }
 
     for (size_t i = 0; i < conns.size(); ++i) {
-        auto* result = release_sinks + i;
-        *result = op.held_slot + 1;
+        auto* log_result = log_results + i;
+        *log_result = EMPTY_SLOT - 1;
 
-        ibv_sge sge{};
-        sge.addr = reinterpret_cast<uintptr_t>(result);
-        sge.length = sizeof(uint64_t);
-        sge.lkey = mr->lkey;
+        ibv_sge log_sge{};
+        log_sge.addr = reinterpret_cast<uintptr_t>(log_result);
+        log_sge.length = sizeof(uint64_t);
+        log_sge.lkey = mr->lkey;
 
-        ibv_send_wr wr{}, *bad_wr = nullptr;
-        wr.wr_id = make_release_wr_id(release_sequence++, static_cast<uint8_t>(i));
-        wr.sg_list = &sge;
-        wr.num_sge = 1;
-        wr.send_flags = (++release_signal_count % std::max<uint32_t>(release_signal_every, 1u) == 0)
-                            ? IBV_SEND_SIGNALED
-                            : 0;
-        if (release_with_cas) {
-            wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
-            wr.wr.atomic.remote_addr = conns[i].addr + lock_control_offset(op.lock_id);
-            wr.wr.atomic.rkey = conns[i].rkey;
-            wr.wr.atomic.compare_add = (i == op.owner_node) ? op.held_slot : std::min(op.held_slot, op.held_slot - 1);
-            wr.wr.atomic.swap = op.held_slot + 1;
-        } else {
-            wr.opcode = IBV_WR_RDMA_WRITE;
-            wr.send_flags |= IBV_SEND_INLINE;
-            wr.wr.rdma.remote_addr = conns[i].addr + lock_control_offset(op.lock_id);
-            wr.wr.rdma.rkey = conns[i].rkey;
-        }
+        ibv_send_wr log_wr{}, *bad_log = nullptr;
+        log_wr.wr_id = encode_wr_id(op, OpPhase::release, static_cast<uint8_t>(kReleaseLogConnFlag | i));
+        log_wr.sg_list = &log_sge;
+        log_wr.num_sge = 1;
+        log_wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
+        log_wr.send_flags = IBV_SEND_SIGNALED;
+        log_wr.wr.atomic.remote_addr = conns[i].addr + lock_log_slot_offset(op.lock_id, op.physical_log_slot);
+        log_wr.wr.atomic.rkey = conns[i].rkey;
+        log_wr.wr.atomic.compare_add = live_value;
+        log_wr.wr.atomic.swap = free_value;
 
-        if (ibv_post_send(conns[i].id->qp, &wr, &bad_wr)) {
-            throw std::runtime_error("CAS pipeline: release post failed");
+        if (ibv_post_send(conns[i].id->qp, &log_wr, &bad_log)) {
+            throw std::runtime_error("CAS pipeline: release log post failed");
         }
     }
 }
@@ -232,17 +304,15 @@ CasPipelineConfig load_cas_pipeline_config() {
     config.cq_batch = std::max<size_t>(1, CAS_CQ_BATCH);
     config.zipf_skew = CAS_ZIPF_SKEW;
     config.shard_owner = CAS_SHARD_OWNER;
-    config.release_signal_every = std::max<uint32_t>(1, CAS_RELEASE_SIGNAL_EVERY);
-    config.release_with_cas = CAS_RELEASE_USE_CAS;
     return config;
 }
 
 size_t cas_pipeline_client_buffer_size(const CasPipelineConfig& config) {
     const size_t replica_count = CLUSTER_NODES.size();
     const size_t acquire_bytes = align_up(config.active_window * sizeof(uint64_t), 64);
-    const size_t replicate_bytes = align_up(sizeof(uint64_t), 64);
-    const size_t release_bytes = align_up(replica_count * sizeof(uint64_t), 64);
-    return align_up(acquire_bytes + replicate_bytes + release_bytes + PAGE_SIZE, PAGE_SIZE);
+    const size_t replicate_bytes = align_up(config.active_window * replica_count * sizeof(uint64_t), 64);
+    const size_t release_bytes = align_up(config.active_window * replica_count * sizeof(uint64_t), 64);
+    return align_up(acquire_bytes + replicate_bytes + release_bytes * 2 + PAGE_SIZE, PAGE_SIZE);
 }
 
 void run_cas_pipeline(
@@ -266,13 +336,10 @@ void run_cas_pipeline(
     std::vector<ibv_wc> completions(config.cq_batch);
     std::array<uint64_t, MAX_LOCKS> frontier_hints{};
     frontier_hints.fill(1);
-    *buffers.replicate_value = static_cast<uint64_t>(client.id());
 
     size_t submitted = 0;
     size_t completed = 0;
     size_t active = 0;
-    uint64_t release_sequence = 1;
-    uint64_t release_signal_count = 0;
 
     auto submit_op = [&](const size_t slot) {
         auto& op = ops[slot];
@@ -284,8 +351,14 @@ void run_cas_pipeline(
         op.phase = OpPhase::idle;
         op.target_slot = frontier_hints[op.lock_id];
         op.held_slot = 0;
+        op.logical_seq = 0;
+        op.physical_log_slot = 0;
+        op.replicate_responses = 0;
         op.replicate_acks = 0;
-        op.quorum_reached = false;
+        op.release_log_responses = 0;
+        op.release_log_acks = 0;
+        op.release_control_quorum = false;
+        op.release_log_quorum = false;
         op.latency_index = submitted;
         op.acquire_result = &buffers.acquire_results[slot];
         op.started_at = std::chrono::steady_clock::now();
@@ -315,10 +388,6 @@ void run_cas_pipeline(
                     + " opcode=" + std::to_string(wc.opcode));
             }
 
-            if (is_release_wr_id(wc.wr_id)) {
-                continue;
-            }
-
             const uint32_t slot = wr_slot(wc.wr_id);
             if (slot >= ops.size()) {
                 throw std::runtime_error("CAS pipeline: completion slot out of range");
@@ -340,7 +409,7 @@ void run_cas_pipeline(
 
                 if (result == expected) {
                     op.held_slot = op.target_slot;
-                    post_replicate(client, op, buffers.replicate_value);
+                    post_replicate(client, op, buffers);
                 } else {
                     op.target_slot = (result % 2 != 0) ? result + 2 : result + 1;
                     frontier_hints[op.lock_id] = op.target_slot;
@@ -350,32 +419,73 @@ void run_cas_pipeline(
             }
 
             if (phase == OpPhase::replicate) {
-                if (!op.quorum_reached) {
+                auto* replicate_results = row_ptr(buffers.replicate_results, op.slot, conns.size());
+                const uint8_t idx = wr_conn(wc.wr_id);
+                op.replicate_responses++;
+                if (replicate_results[idx] == cas_log_expected_free_value(op.logical_seq)) {
                     op.replicate_acks++;
-                    if (op.replicate_acks >= QUORUM) {
-                        op.quorum_reached = true;
-                        latencies[op.latency_index] = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                            std::chrono::steady_clock::now() - op.started_at).count();
-                        frontier_hints[op.lock_id] = std::max(frontier_hints[op.lock_id], op.held_slot + 2);
-                        post_release(
-                            client,
-                            op,
-                            buffers.release_sinks,
-                            release_sequence,
-                            release_signal_count,
-                            config.release_signal_every,
-                            config.release_with_cas);
-                        lock_counts[op.lock_id]++;
-                        op.active = false;
-                        op.phase = OpPhase::idle;
-                        completed++;
-                        active--;
+                }
+                if (op.replicate_acks >= QUORUM) {
+                    latencies[op.latency_index] = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now() - op.started_at).count();
+                    frontier_hints[op.lock_id] = std::max(frontier_hints[op.lock_id], op.held_slot + 2);
+                    post_release(client, op, buffers);
+                    continue;
+                }
+                const uint32_t remaining = static_cast<uint32_t>(conns.size()) - op.replicate_responses;
+                if (op.replicate_acks + remaining < QUORUM) {
+                    throw std::runtime_error("CAS pipeline: wrapped log replicate failed to reach quorum");
+                }
+                continue;
+            }
 
-                        if (submitted < NUM_OPS_PER_CLIENT) {
-                            submit_op(slot);
+            if (phase == OpPhase::release) {
+                const uint8_t raw_idx = wr_conn(wc.wr_id);
+                const bool is_log_release = (raw_idx & kReleaseLogConnFlag) != 0;
+                const size_t replica_index = static_cast<size_t>(raw_idx & ~kReleaseLogConnFlag);
+
+                if (replica_index >= conns.size()) {
+                    throw std::runtime_error("CAS pipeline: release replica index out of range");
+                }
+
+                if (is_log_release) {
+                    auto* log_results = row_ptr(buffers.release_log_results, op.slot, conns.size());
+                    op.release_log_responses++;
+                    if (log_results[replica_index]
+                        == pack_cas_log_live(op.logical_seq, static_cast<uint16_t>(client.id()), static_cast<uint16_t>(op.slot))) {
+                        op.release_log_acks++;
+                    }
+                    if (op.release_log_acks >= QUORUM) {
+                        op.release_log_quorum = true;
+                    } else {
+                        const uint32_t remaining = static_cast<uint32_t>(conns.size()) - op.release_log_responses;
+                        if (op.release_log_acks + remaining < QUORUM) {
+                            throw std::runtime_error("CAS pipeline: wrapped log release failed to reach quorum");
                         }
                     }
+                } else {
+                    auto* control_results = row_ptr(buffers.release_control_results, op.slot, conns.size());
+                    if (replica_index != op.owner_node) {
+                        throw std::runtime_error("CAS pipeline: unexpected non-owner control release completion");
+                    }
+                    if (control_results[replica_index] != op.held_slot) {
+                        throw std::runtime_error("CAS pipeline: owner control release CAS failed");
+                    }
+                    op.release_control_quorum = true;
                 }
+
+                if (op.release_control_quorum && op.release_log_quorum) {
+                    lock_counts[op.lock_id]++;
+                    op.active = false;
+                    op.phase = OpPhase::idle;
+                    completed++;
+                    active--;
+
+                    if (submitted < NUM_OPS_PER_CLIENT) {
+                        submit_op(slot);
+                    }
+                }
+                continue;
             }
         }
     }
