@@ -1,4 +1,4 @@
-#include "rdma/mu_pipeline.h"
+#include "rdma/pipelines/mu_pipeline.h"
 
 #include "rdma/client.h"
 #include "rdma/common.h"

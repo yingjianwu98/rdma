@@ -1,4 +1,4 @@
-#include "rdma/ticket_faa_lock_pipeline.h"
+#include "rdma/pipelines/ticket_faa_lock_pipeline.h"
 
 #include "rdma/client.h"
 #include "rdma/common.h"

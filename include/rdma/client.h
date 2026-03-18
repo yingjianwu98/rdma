@@ -10,10 +10,6 @@
 struct RemoteNode;
 
 class Client {
-    friend class Lock;
-    template <typename>
-    friend class LockStrategyBase;
-
 public:
     explicit Client(uint32_t id, size_t buffer_size = CLIENT_ALIGNED_SIZE);
     ~Client();

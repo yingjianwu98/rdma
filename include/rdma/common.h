@@ -57,18 +57,6 @@ constexpr size_t NUM_OPS_PER_CLIENT = NUM_OPS / TOTAL_CLIENTS;
 constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * TOTAL_CLIENTS;
 constexpr size_t MAX_LOCKS = 1000;
 
-// ─── Ticket FAA config ───
-
-constexpr size_t TICKET_FAA_ACTIVE_WINDOW = 2;
-constexpr bool TICKET_FAA_REPLICATE_USE_CAS = false;
-constexpr bool TICKET_FAA_SHARD_OWNER = true;
-constexpr size_t TICKET_FAA_CQ_BATCH = 32;
-constexpr double TICKET_FAA_ZIPF_SKEW = 0.0;
-constexpr uint32_t TICKET_FAA_TURN_SPIN_VERY_NEAR = 0;
-constexpr uint32_t TICKET_FAA_TURN_SPIN_NEAR = 32;
-constexpr uint32_t TICKET_FAA_TURN_SPIN_MID = 128;
-constexpr uint32_t TICKET_FAA_TURN_SPIN_FAR = 512;
-
 // ─── CAS config ───
 
 constexpr size_t CAS_ACTIVE_CLIENTS = 16;
@@ -86,25 +74,21 @@ constexpr bool SIMPLE_CAS_SHARD_OWNER = true;
 constexpr size_t SIMPLE_CAS_CQ_BATCH = 32;
 constexpr double SIMPLE_CAS_ZIPF_SKEW = 0.0;
 
-// ─── FAA config ───
+// ─── Ticket FAA config ───
 
-constexpr size_t FAA_ACTIVE_WINDOW = 32;
-constexpr bool FAA_REPLICATE_USE_CAS = false;
-
-// ─── Local Ticket FAA config ───
-
-constexpr size_t LOCAL_TICKET_FAA_ACTIVE_WINDOW = 16;
-constexpr bool LOCAL_TICKET_FAA_REPLICATE_USE_CAS = false;
-constexpr size_t LOCAL_TICKET_FAA_CQ_BATCH = 32;
-constexpr double LOCAL_TICKET_FAA_ZIPF_SKEW = 0.0;
+constexpr size_t TICKET_FAA_ACTIVE_WINDOW = 2;
+constexpr bool TICKET_FAA_REPLICATE_USE_CAS = false;
+constexpr bool TICKET_FAA_SHARD_OWNER = true;
+constexpr size_t TICKET_FAA_CQ_BATCH = 32;
+constexpr double TICKET_FAA_ZIPF_SKEW = 0.0;
+constexpr uint32_t TICKET_FAA_TURN_SPIN_VERY_NEAR = 0;
+constexpr uint32_t TICKET_FAA_TURN_SPIN_NEAR = 32;
+constexpr uint32_t TICKET_FAA_TURN_SPIN_MID = 128;
+constexpr uint32_t TICKET_FAA_TURN_SPIN_FAR = 512;
 
 // ─── MU config ───
 
 constexpr size_t MU_ACTIVE_WINDOW = 32;
-
-// ─── TAS config ───
-
-constexpr size_t TAS_ACTIVE_WINDOW = 32;
 
 // ─── Lock table layout ───
 

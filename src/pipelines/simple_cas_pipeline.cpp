@@ -1,4 +1,4 @@
-#include "rdma/simple_cas_pipeline.h"
+#include "rdma/pipelines/simple_cas_pipeline.h"
 
 #include "rdma/client.h"
 #include "rdma/common.h"
