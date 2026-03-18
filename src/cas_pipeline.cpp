@@ -48,7 +48,7 @@ struct CasOpCtx {
     uint32_t replicate_acks = 0;
     uint32_t release_log_responses = 0;
     uint32_t release_log_acks = 0;
-    bool release_control_quorum = false;
+    bool release_owner_log_done = false;
     bool release_log_quorum = false;
     size_t latency_index = 0;
     uint64_t* acquire_result = nullptr;
@@ -260,7 +260,7 @@ void post_release(
     op.phase = OpPhase::release;
     op.release_log_responses = 0;
     op.release_log_acks = 0;
-    op.release_control_quorum = false;
+    op.release_owner_log_done = false;
     op.release_log_quorum = false;
 
     auto* control_result = control_results + op.owner_node;
@@ -275,7 +275,7 @@ void post_release(
     control_wr.wr_id = encode_wr_id(op, OpPhase::release, static_cast<uint8_t>(op.owner_node));
     control_wr.sg_list = &control_sge;
     control_wr.num_sge = 1;
-    control_wr.send_flags = IBV_SEND_SIGNALED;
+    control_wr.send_flags = 0;
     control_wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
     control_wr.wr.atomic.remote_addr = owner.addr + lock_control_offset(op.lock_id);
     control_wr.wr.atomic.rkey = owner.rkey;
@@ -384,7 +384,7 @@ void run_cas_pipeline(
         op.replicate_acks = 0;
         op.release_log_responses = 0;
         op.release_log_acks = 0;
-        op.release_control_quorum = false;
+        op.release_owner_log_done = false;
         op.release_log_quorum = false;
         op.latency_index = submitted;
         op.acquire_result = &buffers.acquire_results[slot];
@@ -516,6 +516,9 @@ void run_cas_pipeline(
                     if (log_results[replica_index]
                         == pack_cas_log_live(op.logical_seq, static_cast<uint16_t>(client.id()), static_cast<uint16_t>(op.slot))) {
                         op.release_log_acks++;
+                        if (replica_index == op.owner_node) {
+                            op.release_owner_log_done = true;
+                        }
                         if (wrapped) {
                             wrap_debug_stats.wrapped_release_cqe_matches++;
                         }
@@ -527,6 +530,9 @@ void run_cas_pipeline(
                             + " replica=" + std::to_string(replica_index)
                             + " expected=" + std::to_string(pack_cas_log_live(op.logical_seq, static_cast<uint16_t>(client.id()), static_cast<uint16_t>(op.slot)))
                             + " got=" + std::to_string(log_results[replica_index]));
+                        if (replica_index == op.owner_node) {
+                            throw std::runtime_error("CAS pipeline: owner wrapped log release CAS failed");
+                        }
                     }
                     if (op.release_log_acks >= QUORUM) {
                         op.release_log_quorum = true;
@@ -548,17 +554,10 @@ void run_cas_pipeline(
                         }
                     }
                 } else {
-                    auto* control_results = row_ptr(buffers.release_control_results, op.slot, conns.size());
-                    if (replica_index != op.owner_node) {
-                        throw std::runtime_error("CAS pipeline: unexpected non-owner control release completion");
-                    }
-                    if (control_results[replica_index] != op.held_slot) {
-                        throw std::runtime_error("CAS pipeline: owner control release CAS failed");
-                    }
-                    op.release_control_quorum = true;
+                    throw std::runtime_error("CAS pipeline: unexpected control release completion");
                 }
 
-                if (op.release_control_quorum && op.release_log_quorum) {
+                if (op.release_owner_log_done && op.release_log_quorum) {
                     lock_counts[op.lock_id]++;
                     op.active = false;
                     op.phase = OpPhase::idle;
