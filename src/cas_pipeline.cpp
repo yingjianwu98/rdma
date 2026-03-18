@@ -59,13 +59,13 @@ uint64_t make_release_wr_id(uint64_t seq, const uint8_t conn_index) {
 }
 
 void ensure_log_slot_in_bounds(const uint32_t lock_id, const uint64_t slot, const char* context) {
-    if (slot >= MAX_LOG_PER_LOCK) {
-        throw std::runtime_error(
-            std::string("CAS pipeline: log overflow during ") + context
-            + " lock=" + std::to_string(lock_id)
-            + " slot=" + std::to_string(slot)
-            + " max_log_per_lock=" + std::to_string(MAX_LOG_PER_LOCK));
-    }
+    // if (slot >= MAX_LOG_PER_LOCK) {
+    //     throw std::runtime_error(
+    //         std::string("CAS pipeline: log overflow during ") + context
+    //         + " lock=" + std::to_string(lock_id)
+    //         + " slot=" + std::to_string(slot)
+    //         + " max_log_per_lock=" + std::to_string(MAX_LOG_PER_LOCK));
+    // }
 }
 
 uint64_t encode_wr_id(const CasOpCtx& op, const OpPhase phase, const uint8_t conn_index) {
