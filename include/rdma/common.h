@@ -61,7 +61,7 @@ constexpr size_t MAX_LOCKS = 10000;
 
 constexpr size_t CAS_ACTIVE_CLIENTS = 16;
 constexpr size_t CAS_CQ_BATCH = 32;
-constexpr double CAS_ZIPF_SKEW = 0.5;
+constexpr double CAS_ZIPF_SKEW = 0.9;
 constexpr bool CAS_SHARD_OWNER = true;
 constexpr uint32_t CAS_RELEASE_SIGNAL_EVERY = 100;
 constexpr bool CAS_RELEASE_USE_CAS = true;
