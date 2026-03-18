@@ -107,7 +107,7 @@ constexpr size_t TAS_ACTIVE_WINDOW = 32;
 
 // ─── Lock table layout ───
 
-constexpr size_t MAX_LOG_PER_LOCK = ((NUM_OPS + MAX_LOCKS - 1) / MAX_LOCKS) * 8;
+constexpr size_t MAX_LOG_PER_LOCK = ((NUM_OPS + MAX_LOCKS - 1) / MAX_LOCKS) * 16;
 constexpr size_t LOCK_HEADER_SIZE = 16;
 constexpr size_t LOCK_LOG_SIZE = MAX_LOG_PER_LOCK * ENTRY_SIZE;
 constexpr size_t LOCK_REGION_SIZE = LOCK_HEADER_SIZE + LOCK_LOG_SIZE;
