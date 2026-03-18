@@ -526,7 +526,7 @@ void MuLeader::run() {
         const uint32_t slot = lock.next_append_slot++;
         const uint16_t generation = mu_logical_generation(slot);
         auto* lock_base = mu_lock_base(local_buf, lock_id);
-        const uint64_t expected_old = mu_expected_free(generation);
+        const uint64_t expected_old = mu_make_free(generation);
         const uint64_t desired_new = mu_make_live(generation, req.client_id, req.req_id);
         const uint64_t current_entry = mu_read_entry_word(lock_base, slot);
         if (current_entry != expected_old) {
