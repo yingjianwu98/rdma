@@ -71,11 +71,13 @@ constexpr uint32_t TICKET_FAA_TURN_SPIN_FAR = 512;
 
 // ─── CAS config ───
 
-constexpr size_t CAS_ACTIVE_CLIENTS = 1;
+constexpr size_t CAS_ACTIVE_CLIENTS = 2;
 constexpr size_t CAS_CQ_BATCH = 32;
 constexpr double CAS_ZIPF_SKEW = 0.0;
 constexpr bool CAS_SHARD_OWNER = true;
 constexpr size_t CAS_LOG_CAPACITY = TOTAL_CLIENTS * CAS_ACTIVE_CLIENTS * 4;
+constexpr bool CAS_WRAP_DEBUG = true;
+constexpr uint32_t CAS_WRAP_DEBUG_PRINT_LIMIT = 32;
 
 // ─── Simple CAS config ───
 

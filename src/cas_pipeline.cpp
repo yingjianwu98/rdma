@@ -55,6 +55,18 @@ struct CasOpCtx {
     std::chrono::steady_clock::time_point started_at{};
 };
 
+struct CasWrapDebugStats {
+    uint64_t wrapped_claim_attempts = 0;
+    uint64_t wrapped_claim_cqe_matches = 0;
+    uint64_t wrapped_claim_quorum_success = 0;
+    uint64_t wrapped_release_attempts = 0;
+    uint64_t wrapped_release_cqe_matches = 0;
+    uint64_t wrapped_release_quorum_success = 0;
+    uint64_t wrapped_claim_quorum_fail = 0;
+    uint64_t wrapped_release_quorum_fail = 0;
+    uint32_t printed_lines = 0;
+};
+
 constexpr uint8_t kReleaseLogConnFlag = 0x80u;
 constexpr uint64_t kLogLiveBit = 1ULL << 63;
 constexpr uint64_t kLogSeqMask = (1ULL << 31) - 1;
@@ -84,6 +96,10 @@ uint64_t cas_log_expected_free_value(const uint64_t logical_seq) {
 
 uint64_t cas_log_next_free_value(const uint64_t logical_seq) {
     return pack_cas_log_free(logical_seq + CAS_LOG_CAPACITY);
+}
+
+bool cas_log_is_wrapped(const uint64_t logical_seq) {
+    return logical_seq >= CAS_LOG_CAPACITY;
 }
 
 void ensure_log_seq_in_bounds(const uint32_t lock_id, const uint64_t logical_seq, const char* context) {
@@ -304,6 +320,8 @@ CasPipelineConfig load_cas_pipeline_config() {
     config.cq_batch = std::max<size_t>(1, CAS_CQ_BATCH);
     config.zipf_skew = CAS_ZIPF_SKEW;
     config.shard_owner = CAS_SHARD_OWNER;
+    config.wrap_debug = CAS_WRAP_DEBUG;
+    config.wrap_debug_print_limit = CAS_WRAP_DEBUG_PRINT_LIMIT;
     return config;
 }
 
@@ -336,6 +354,15 @@ void run_cas_pipeline(
     std::vector<ibv_wc> completions(config.cq_batch);
     std::array<uint64_t, MAX_LOCKS> frontier_hints{};
     frontier_hints.fill(1);
+    CasWrapDebugStats wrap_debug_stats{};
+
+    auto maybe_debug_wrap = [&](const std::string& msg) {
+        if (!config.wrap_debug || wrap_debug_stats.printed_lines >= config.wrap_debug_print_limit) {
+            return;
+        }
+        std::cout << "[CAS wrap client=" << client.id() << "] " << msg << "\n";
+        wrap_debug_stats.printed_lines++;
+    };
 
     size_t submitted = 0;
     size_t completed = 0;
@@ -409,6 +436,14 @@ void run_cas_pipeline(
 
                 if (result == expected) {
                     op.held_slot = op.target_slot;
+                    if (config.wrap_debug && cas_log_is_wrapped(cas_logical_seq(op.held_slot))) {
+                        wrap_debug_stats.wrapped_claim_attempts++;
+                        maybe_debug_wrap(
+                            "claim attempt lock=" + std::to_string(op.lock_id)
+                            + " held_slot=" + std::to_string(op.held_slot)
+                            + " logical_seq=" + std::to_string(cas_logical_seq(op.held_slot))
+                            + " physical=" + std::to_string(cas_physical_log_slot(cas_logical_seq(op.held_slot))));
+                    }
                     post_replicate(client, op, buffers);
                 } else {
                     op.target_slot = (result % 2 != 0) ? result + 2 : result + 1;
@@ -422,18 +457,44 @@ void run_cas_pipeline(
                 auto* replicate_results = row_ptr(buffers.replicate_results, op.slot, conns.size());
                 const uint8_t idx = wr_conn(wc.wr_id);
                 op.replicate_responses++;
+                const bool wrapped = cas_log_is_wrapped(op.logical_seq);
                 if (replicate_results[idx] == cas_log_expected_free_value(op.logical_seq)) {
                     op.replicate_acks++;
+                    if (wrapped) {
+                        wrap_debug_stats.wrapped_claim_cqe_matches++;
+                    }
+                } else if (wrapped) {
+                    maybe_debug_wrap(
+                        "claim mismatch lock=" + std::to_string(op.lock_id)
+                        + " logical_seq=" + std::to_string(op.logical_seq)
+                        + " physical=" + std::to_string(op.physical_log_slot)
+                        + " replica=" + std::to_string(idx)
+                        + " expected=" + std::to_string(cas_log_expected_free_value(op.logical_seq))
+                        + " got=" + std::to_string(replicate_results[idx]));
                 }
                 if (op.replicate_acks >= QUORUM) {
+                    if (wrapped) {
+                        wrap_debug_stats.wrapped_claim_quorum_success++;
+                        maybe_debug_wrap(
+                            "claim quorum lock=" + std::to_string(op.lock_id)
+                            + " logical_seq=" + std::to_string(op.logical_seq)
+                            + " physical=" + std::to_string(op.physical_log_slot)
+                            + " acks=" + std::to_string(op.replicate_acks));
+                    }
                     latencies[op.latency_index] = std::chrono::duration_cast<std::chrono::nanoseconds>(
                         std::chrono::steady_clock::now() - op.started_at).count();
                     frontier_hints[op.lock_id] = std::max(frontier_hints[op.lock_id], op.held_slot + 2);
                     post_release(client, op, buffers);
+                    if (wrapped) {
+                        wrap_debug_stats.wrapped_release_attempts++;
+                    }
                     continue;
                 }
                 const uint32_t remaining = static_cast<uint32_t>(conns.size()) - op.replicate_responses;
                 if (op.replicate_acks + remaining < QUORUM) {
+                    if (wrapped) {
+                        wrap_debug_stats.wrapped_claim_quorum_fail++;
+                    }
                     throw std::runtime_error("CAS pipeline: wrapped log replicate failed to reach quorum");
                 }
                 continue;
@@ -451,15 +512,38 @@ void run_cas_pipeline(
                 if (is_log_release) {
                     auto* log_results = row_ptr(buffers.release_log_results, op.slot, conns.size());
                     op.release_log_responses++;
+                    const bool wrapped = cas_log_is_wrapped(op.logical_seq);
                     if (log_results[replica_index]
                         == pack_cas_log_live(op.logical_seq, static_cast<uint16_t>(client.id()), static_cast<uint16_t>(op.slot))) {
                         op.release_log_acks++;
+                        if (wrapped) {
+                            wrap_debug_stats.wrapped_release_cqe_matches++;
+                        }
+                    } else if (wrapped) {
+                        maybe_debug_wrap(
+                            "release mismatch lock=" + std::to_string(op.lock_id)
+                            + " logical_seq=" + std::to_string(op.logical_seq)
+                            + " physical=" + std::to_string(op.physical_log_slot)
+                            + " replica=" + std::to_string(replica_index)
+                            + " expected=" + std::to_string(pack_cas_log_live(op.logical_seq, static_cast<uint16_t>(client.id()), static_cast<uint16_t>(op.slot)))
+                            + " got=" + std::to_string(log_results[replica_index]));
                     }
                     if (op.release_log_acks >= QUORUM) {
                         op.release_log_quorum = true;
+                        if (wrapped) {
+                            wrap_debug_stats.wrapped_release_quorum_success++;
+                            maybe_debug_wrap(
+                                "release quorum lock=" + std::to_string(op.lock_id)
+                                + " logical_seq=" + std::to_string(op.logical_seq)
+                                + " physical=" + std::to_string(op.physical_log_slot)
+                                + " acks=" + std::to_string(op.release_log_acks));
+                        }
                     } else {
                         const uint32_t remaining = static_cast<uint32_t>(conns.size()) - op.release_log_responses;
                         if (op.release_log_acks + remaining < QUORUM) {
+                            if (wrapped) {
+                                wrap_debug_stats.wrapped_release_quorum_fail++;
+                            }
                             throw std::runtime_error("CAS pipeline: wrapped log release failed to reach quorum");
                         }
                     }
@@ -488,5 +572,19 @@ void run_cas_pipeline(
                 continue;
             }
         }
+    }
+
+    if (config.wrap_debug) {
+        std::cout << "[CAS wrap client=" << client.id() << "] summary"
+                  << " | claim_attempts=" << wrap_debug_stats.wrapped_claim_attempts
+                  << " claim_cqe_matches=" << wrap_debug_stats.wrapped_claim_cqe_matches
+                  << " claim_quorum_success=" << wrap_debug_stats.wrapped_claim_quorum_success
+                  << " claim_quorum_fail=" << wrap_debug_stats.wrapped_claim_quorum_fail
+                  << " release_attempts=" << wrap_debug_stats.wrapped_release_attempts
+                  << " release_cqe_matches=" << wrap_debug_stats.wrapped_release_cqe_matches
+                  << " release_quorum_success=" << wrap_debug_stats.wrapped_release_quorum_success
+                  << " release_quorum_fail=" << wrap_debug_stats.wrapped_release_quorum_fail
+                  << " printed_lines=" << wrap_debug_stats.printed_lines
+                  << "\n";
     }
 }
