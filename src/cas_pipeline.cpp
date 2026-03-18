@@ -217,9 +217,10 @@ void post_release(
 CasPipelineConfig load_cas_pipeline_config() {
     CasPipelineConfig config{};
     config.active_window = CAS_ACTIVE_CLIENTS;
-    config.cq_batch = std::max<size_t>(1, get_uint_env_or("CAS_CQ_BATCH", 32));
-    config.zipf_skew = get_double_env_or("CAS_ZIPF_SKEW", 0.0);
-    config.release_signal_every = std::max<uint32_t>(1, get_uint_env_or("CAS_RELEASE_SIGNAL_EVERY", 100));
+    config.cq_batch = std::max<size_t>(1, CAS_CQ_BATCH);
+    config.zipf_skew = CAS_ZIPF_SKEW;
+    config.shard_owner = CAS_SHARD_OWNER;
+    config.release_signal_every = std::max<uint32_t>(1, CAS_RELEASE_SIGNAL_EVERY);
     config.release_with_cas = CAS_RELEASE_USE_CAS;
     return config;
 }
@@ -267,7 +268,7 @@ void run_cas_pipeline(
         op.generation++;
         op.slot = static_cast<uint32_t>(slot);
         op.lock_id = picker.next();
-        op.owner_node = op.lock_id % conns.size();
+        op.owner_node = config.shard_owner ? (op.lock_id % conns.size()) : 0;
         op.phase = OpPhase::idle;
         op.target_slot = frontier_hints[op.lock_id];
         op.held_slot = 0;

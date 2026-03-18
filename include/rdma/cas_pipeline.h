@@ -9,6 +9,7 @@ struct CasPipelineConfig {
     size_t active_window;
     size_t cq_batch;
     double zipf_skew;
+    bool shard_owner;
     uint32_t release_signal_every;
     bool release_with_cas;
 };
