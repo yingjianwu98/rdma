@@ -49,7 +49,7 @@ constexpr uint8_t RDMA_INITIATOR_DEPTH = 16;
 
 // ─── Benchmark / workload config ───
 
-constexpr size_t NUM_OPS = 500000;
+constexpr size_t NUM_OPS = 1000000;
 constexpr size_t NUM_CLIENTS_PER_MACHINE = 1;
 constexpr size_t TOTAL_MACHINES = 1;
 constexpr size_t TOTAL_CLIENTS = NUM_CLIENTS_PER_MACHINE * TOTAL_MACHINES;
@@ -63,7 +63,7 @@ constexpr size_t TICKET_FAA_ACTIVE_WINDOW = 2;
 constexpr bool TICKET_FAA_REPLICATE_USE_CAS = false;
 constexpr bool TICKET_FAA_SHARD_OWNER = true;
 constexpr size_t TICKET_FAA_CQ_BATCH = 32;
-constexpr double TICKET_FAA_ZIPF_SKEW = 0.5;
+constexpr double TICKET_FAA_ZIPF_SKEW = 0.0;
 constexpr uint32_t TICKET_FAA_TURN_SPIN_VERY_NEAR = 0;
 constexpr uint32_t TICKET_FAA_TURN_SPIN_NEAR = 32;
 constexpr uint32_t TICKET_FAA_TURN_SPIN_MID = 128;
