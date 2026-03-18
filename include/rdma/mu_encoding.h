@@ -58,6 +58,10 @@ inline uint64_t mu_make_free(const uint16_t generation) {
     return static_cast<uint64_t>(generation) << MU_ENTRY_GENERATION_SHIFT;
 }
 
+inline uint64_t mu_expected_free(const uint16_t generation) {
+    return generation == 0 ? EMPTY_SLOT : mu_make_free(generation);
+}
+
 inline uint64_t mu_make_live(const uint16_t generation, const uint16_t client_id, const uint32_t req_id) {
     return MU_ENTRY_LIVE_BIT
          | (static_cast<uint64_t>(generation) << MU_ENTRY_GENERATION_SHIFT)
