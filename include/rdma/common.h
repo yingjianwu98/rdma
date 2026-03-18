@@ -59,7 +59,7 @@ constexpr size_t MAX_LOCKS = 1000;
 
 // ─── Ticket FAA config ───
 
-constexpr size_t TICKET_FAA_ACTIVE_WINDOW = 4;
+constexpr size_t TICKET_FAA_ACTIVE_WINDOW = 8;
 constexpr bool TICKET_FAA_REPLICATE_USE_CAS = false;
 constexpr bool TICKET_FAA_SHARD_OWNER = true;
 constexpr size_t TICKET_FAA_CQ_BATCH = 32;
