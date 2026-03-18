@@ -124,7 +124,7 @@ void post_release(Client& client, SimpleCasOpCtx& op) {
     wr.sg_list = &sge;
     wr.num_sge = 1;
     wr.opcode = IBV_WR_RDMA_WRITE;
-    wr.send_flags = IBV_SEND_SIGNALED;
+    wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE;
     wr.wr.rdma.remote_addr = owner.addr + lock_control_offset(op.lock_id);
     wr.wr.rdma.rkey = owner.rkey;
 

@@ -151,7 +151,7 @@ void post_replicate(const Client& client, CasOpCtx& op, const uint64_t* replicat
         wr.sg_list = &sge;
         wr.num_sge = 1;
         wr.opcode = IBV_WR_RDMA_WRITE;
-        wr.send_flags = IBV_SEND_SIGNALED;
+        wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE;
         wr.wr.rdma.remote_addr = conns[i].addr + lock_log_slot_offset(op.lock_id, op.held_slot);
         wr.wr.rdma.rkey = conns[i].rkey;
 
@@ -171,13 +171,15 @@ void post_release(
     uint64_t* release_sinks,
     uint64_t& release_sequence,
     uint64_t& release_signal_count,
-    const uint32_t release_signal_every
+    const uint32_t release_signal_every,
+    const bool release_with_cas
 ) {
     const auto& conns = client.connections();
     const auto* mr = client.mr();
 
     for (size_t i = 0; i < conns.size(); ++i) {
         auto* result = release_sinks + i;
+        *result = op.held_slot + 1;
 
         ibv_sge sge{};
         sge.addr = reinterpret_cast<uintptr_t>(result);
@@ -188,14 +190,21 @@ void post_release(
         wr.wr_id = make_release_wr_id(release_sequence++, static_cast<uint8_t>(i));
         wr.sg_list = &sge;
         wr.num_sge = 1;
-        wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
         wr.send_flags = (++release_signal_count % std::max<uint32_t>(release_signal_every, 1u) == 0)
                             ? IBV_SEND_SIGNALED
                             : 0;
-        wr.wr.rdma.remote_addr = conns[i].addr + lock_control_offset(op.lock_id);
-        wr.wr.atomic.rkey = conns[i].rkey;
-        wr.wr.atomic.compare_add = (i == op.owner_node) ? op.held_slot : std::min(op.held_slot, op.held_slot - 1);
-        wr.wr.atomic.swap = op.held_slot + 1;
+        if (release_with_cas) {
+            wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
+            wr.wr.atomic.remote_addr = conns[i].addr + lock_control_offset(op.lock_id);
+            wr.wr.atomic.rkey = conns[i].rkey;
+            wr.wr.atomic.compare_add = (i == op.owner_node) ? op.held_slot : std::min(op.held_slot, op.held_slot - 1);
+            wr.wr.atomic.swap = op.held_slot + 1;
+        } else {
+            wr.opcode = IBV_WR_RDMA_WRITE;
+            wr.send_flags |= IBV_SEND_INLINE;
+            wr.wr.rdma.remote_addr = conns[i].addr + lock_control_offset(op.lock_id);
+            wr.wr.rdma.rkey = conns[i].rkey;
+        }
 
         if (ibv_post_send(conns[i].id->qp, &wr, &bad_wr)) {
             throw std::runtime_error("CAS pipeline: release post failed");
@@ -211,6 +220,7 @@ CasPipelineConfig load_cas_pipeline_config() {
     config.cq_batch = std::max<size_t>(1, get_uint_env_or("CAS_CQ_BATCH", 32));
     config.zipf_skew = get_double_env_or("CAS_ZIPF_SKEW", 0.0);
     config.release_signal_every = std::max<uint32_t>(1, get_uint_env_or("CAS_RELEASE_SIGNAL_EVERY", 100));
+    config.release_with_cas = CAS_RELEASE_USE_CAS;
     return config;
 }
 
@@ -340,7 +350,8 @@ void run_cas_pipeline(
                             buffers.release_sinks,
                             release_sequence,
                             release_signal_count,
-                            config.release_signal_every);
+                            config.release_signal_every,
+                            config.release_with_cas);
                         lock_counts[op.lock_id]++;
                         op.active = false;
                         op.phase = OpPhase::idle;

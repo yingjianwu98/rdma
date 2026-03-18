@@ -10,6 +10,7 @@ struct CasPipelineConfig {
     size_t cq_batch;
     double zipf_skew;
     uint32_t release_signal_every;
+    bool release_with_cas;
 };
 
 [[nodiscard]] CasPipelineConfig load_cas_pipeline_config();

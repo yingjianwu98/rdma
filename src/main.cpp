@@ -28,7 +28,7 @@
 #include <thread>
 
 // ─── Configuration ───
-constexpr const char* STRATEGY = "simple_cas";      // "mu", "faa", "ticket_faa", "local_ticket_faa", "cas", "simple_cas", or "tas"
+constexpr const char* STRATEGY = "cas";      // "mu", "faa", "ticket_faa", "local_ticket_faa", "cas", "simple_cas", or "tas"
 
 int main() {
     try {
@@ -338,6 +338,8 @@ int main() {
                 std::cout << "Active Window:  " << std::setw(14) << cas_config.active_window << "\n";
                 std::cout << "Zipf Skew:      " << std::setw(14) << std::fixed << std::setprecision(2)
                           << cas_config.zipf_skew << "\n";
+                std::cout << "Release Mode:   " << std::setw(14)
+                          << (cas_config.release_with_cas ? "cas" : "write") << "\n";
             } else if (is_simple_cas) {
                 std::cout << "Active Window:  " << std::setw(14) << simple_cas_config.active_window << "\n";
                 std::cout << "Zipf Skew:      " << std::setw(14) << std::fixed << std::setprecision(2)

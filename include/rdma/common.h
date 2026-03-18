@@ -47,18 +47,36 @@ constexpr size_t MAX_REPLICAS = 10;
 constexpr uint8_t RDMA_RESPONDER_RESOURCES = 16;
 constexpr uint8_t RDMA_INITIATOR_DEPTH = 16;
 
-// ─── Benchmark constants ───
+// ─── Benchmark / workload config ───
 
 constexpr size_t NUM_OPS = 20000000;
-constexpr size_t NUM_CLIENTS_PER_MACHINE = 16;
+constexpr size_t NUM_CLIENTS_PER_MACHINE = 1;
 constexpr size_t TOTAL_MACHINES = 1;
 constexpr size_t TOTAL_CLIENTS = NUM_CLIENTS_PER_MACHINE * TOTAL_MACHINES;
 constexpr size_t NUM_OPS_PER_CLIENT = NUM_OPS / TOTAL_CLIENTS;
 constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * TOTAL_CLIENTS;
-constexpr bool FAA_REPLICATE_USE_CAS = false;
+constexpr size_t MAX_LOCKS = 1000;
+
+// ─── CAS config ───
+
+constexpr size_t CAS_ACTIVE_CLIENTS = 1;
+constexpr bool CAS_RELEASE_USE_CAS = false;
+
+// ─── Simple CAS config ───
+
+constexpr size_t SIMPLE_CAS_ACTIVE_WINDOW = 32;
 constexpr bool SIMPLE_CAS_SHARD_OWNER = true;
 constexpr size_t SIMPLE_CAS_CQ_BATCH = 32;
 constexpr double SIMPLE_CAS_ZIPF_SKEW = 0.0;
+
+// ─── FAA config ───
+
+constexpr size_t FAA_ACTIVE_WINDOW = 32;
+constexpr bool FAA_REPLICATE_USE_CAS = false;
+
+// ─── Ticket FAA config ───
+
+constexpr size_t TICKET_FAA_ACTIVE_WINDOW = 32;
 constexpr bool TICKET_FAA_REPLICATE_USE_CAS = false;
 constexpr bool TICKET_FAA_SHARD_OWNER = true;
 constexpr size_t TICKET_FAA_CQ_BATCH = 32;
@@ -68,20 +86,23 @@ constexpr uint32_t TICKET_FAA_TURN_SPIN_NEAR = 128;
 constexpr uint32_t TICKET_FAA_TURN_SPIN_MID = 512;
 constexpr uint32_t TICKET_FAA_TURN_SPIN_FAR = 1024;
 
+// ─── Local Ticket FAA config ───
+
+constexpr size_t LOCAL_TICKET_FAA_ACTIVE_WINDOW = 16;
 constexpr bool LOCAL_TICKET_FAA_REPLICATE_USE_CAS = false;
 constexpr size_t LOCAL_TICKET_FAA_CQ_BATCH = 32;
 constexpr double LOCAL_TICKET_FAA_ZIPF_SKEW = 0.0;
 
+// ─── MU config ───
+
+constexpr size_t MU_ACTIVE_WINDOW = 32;
+
+// ─── TAS config ───
+
+constexpr size_t TAS_ACTIVE_WINDOW = 32;
+
 // ─── Lock table layout ───
 
-constexpr size_t MAX_LOCKS = 1000;
-constexpr size_t SIMPLE_CAS_ACTIVE_WINDOW = 32;
-constexpr size_t FAA_ACTIVE_WINDOW = 32;
-constexpr size_t TICKET_FAA_ACTIVE_WINDOW = 32;
-constexpr size_t LOCAL_TICKET_FAA_ACTIVE_WINDOW = 16;
-constexpr size_t MU_ACTIVE_WINDOW = 32;
-constexpr size_t TAS_ACTIVE_WINDOW = 32;
-constexpr size_t CAS_ACTIVE_CLIENTS = 32;
 constexpr size_t MAX_LOG_PER_LOCK = ((NUM_OPS + MAX_LOCKS - 1) / MAX_LOCKS) * 4;
 constexpr size_t LOCK_HEADER_SIZE = 16;
 constexpr size_t LOCK_LOG_SIZE = MAX_LOG_PER_LOCK * ENTRY_SIZE;
