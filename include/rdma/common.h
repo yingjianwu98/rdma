@@ -74,7 +74,7 @@ constexpr bool CAS_RELEASE_LOG_USE_CAS = true;
 
 // ─── Simple CAS config ───
 
-constexpr size_t SIMPLE_CAS_ACTIVE_WINDOW = 8;
+constexpr size_t SIMPLE_CAS_ACTIVE_WINDOW = 16;
 constexpr bool SIMPLE_CAS_SHARD_OWNER = true;
 constexpr size_t SIMPLE_CAS_CQ_BATCH = 32;
 constexpr double SIMPLE_CAS_ZIPF_SKEW = 0.0;
