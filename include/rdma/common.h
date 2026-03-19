@@ -5,12 +5,15 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 #include <pthread.h>
+#include <sys/mman.h>
 #include <rdma/rdma_cma.h>
 #include <infiniband/verbs.h>
 
@@ -42,7 +45,6 @@ constexpr uint16_t RDMA_PORT = 6969;
 constexpr size_t ENTRY_SIZE = 8;
 constexpr size_t QP_DEPTH = 2048;
 constexpr size_t MAX_INLINE_DEPTH = 64;
-constexpr size_t CLIENT_SLOT_SIZE = 1024;
 constexpr size_t MAX_REPLICAS = 10;
 constexpr uint8_t RDMA_RESPONDER_RESOURCES = 16;
 constexpr uint8_t RDMA_INITIATOR_DEPTH = 16;
@@ -50,7 +52,7 @@ constexpr uint8_t RDMA_INITIATOR_DEPTH = 16;
 // ─── Benchmark / workload config ───
 
 constexpr size_t NUM_OPS = 5000000;
-constexpr size_t NUM_CLIENTS_PER_MACHINE = 4;
+constexpr size_t NUM_CLIENTS_PER_MACHINE = 1;
 constexpr size_t TOTAL_MACHINES = 1;
 constexpr size_t TOTAL_CLIENTS = NUM_CLIENTS_PER_MACHINE * TOTAL_MACHINES;
 constexpr size_t NUM_OPS_PER_CLIENT = NUM_OPS / TOTAL_CLIENTS;
@@ -111,19 +113,13 @@ constexpr size_t LOCK_LOG_SIZE = MAX_LOG_PER_LOCK * ENTRY_SIZE;
 constexpr size_t LOCK_REGION_SIZE = LOCK_HEADER_SIZE + LOCK_LOG_SIZE;
 constexpr size_t LOCK_TABLE_SIZE = LOCK_REGION_SIZE * MAX_LOCKS;
 
-// ─── Client staging area ───
-
-constexpr size_t CLIENT_STAGING_SIZE = CLIENT_SLOT_SIZE;
-constexpr size_t CLIENT_STAGING_OFFSET = LOCK_TABLE_SIZE;
-constexpr size_t CLIENT_STAGING_TOTAL = CLIENT_STAGING_SIZE * TOTAL_CLIENTS;
-
 // ─── Buffer sizing ───
 
 constexpr size_t METADATA_SIZE = 4096;
 constexpr size_t PAGE_SIZE = 4096;
 
-// Server: full lock table + staging + metadata
-constexpr size_t SERVER_POOL_SIZE = LOCK_TABLE_SIZE + CLIENT_STAGING_TOTAL + METADATA_SIZE;
+// Server: full lock table + metadata
+constexpr size_t SERVER_POOL_SIZE = LOCK_TABLE_SIZE + METADATA_SIZE;
 constexpr size_t SERVER_ALIGNED_SIZE = ((SERVER_POOL_SIZE + PAGE_SIZE - 1) / PAGE_SIZE) * PAGE_SIZE;
 
 // Client: just LocalState + padding (a few KB)
@@ -133,7 +129,6 @@ constexpr size_t CLIENT_ALIGNED_SIZE = ((CLIENT_POOL_SIZE + PAGE_SIZE - 1) / PAG
 static_assert(LOCK_TABLE_SIZE <= SERVER_ALIGNED_SIZE, "Lock table exceeds server buffer size");
 static_assert(CAS_LOG_CAPACITY <= MAX_LOG_PER_LOCK, "CAS log capacity exceeds allocated per-lock log size");
 static_assert(TICKET_FAA_LOG_CAPACITY <= MAX_LOG_PER_LOCK, "Ticket FAA log capacity exceeds allocated per-lock log size");
-static_assert(MU_GLOBAL_LOG_CAPACITY <= MAX_LOCKS * MAX_LOG_PER_LOCK, "MU global log exceeds allocated total log size");
 static_assert(MU_GLOBAL_LOG_CAPACITY <= MAX_LOCKS * MAX_LOG_PER_LOCK, "MU global log exceeds allocated total log size");
 
 // ─── Per-lock offset helpers ───
@@ -160,14 +155,53 @@ inline constexpr size_t mu_global_log_slot_offset(const uint64_t slot) {
         slot % MAX_LOG_PER_LOCK);
 }
 
-// ─── Client staging offset helper ───
-
-inline constexpr size_t client_staging_offset(const uint32_t client_id) {
-    return CLIENT_STAGING_OFFSET + (client_id * CLIENT_STAGING_SIZE);
-}
-
 inline constexpr size_t align_up(const size_t value, const size_t alignment) {
     return ((value + alignment - 1) / alignment) * alignment;
+}
+
+inline size_t huge_page_size() {
+    static const size_t size = []() -> size_t {
+        std::ifstream meminfo("/proc/meminfo");
+        if (!meminfo) {
+            throw std::runtime_error("Could not open /proc/meminfo for huge page size");
+        }
+
+        std::string line;
+        while (std::getline(meminfo, line)) {
+            if (line.rfind("Hugepagesize:", 0) == 0) {
+                std::istringstream iss(line.substr(std::string("Hugepagesize:").size()));
+                size_t value_kb = 0;
+                std::string unit;
+                if (!(iss >> value_kb >> unit) || unit != "kB") {
+                    break;
+                }
+                return value_kb * 1024;
+            }
+        }
+
+        throw std::runtime_error("Hugepagesize not found in /proc/meminfo");
+    }();
+    return size;
+}
+
+inline size_t huge_page_align(const size_t size) {
+    return align_up(size, huge_page_size());
+}
+
+inline void* allocate_hugepage_buffer(const size_t requested_size) {
+    const size_t aligned_size = huge_page_align(std::max(requested_size, huge_page_size()));
+    void* ptr = mmap(nullptr, aligned_size, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+    if (ptr == MAP_FAILED) {
+        throw std::runtime_error("Could not allocate hugepage RDMA buffer");
+    }
+    return ptr;
+}
+
+inline void free_hugepage_buffer(void* ptr, const size_t requested_size) noexcept {
+    if (!ptr) return;
+    const size_t aligned_size = huge_page_align(std::max(requested_size, huge_page_size()));
+    munmap(ptr, aligned_size);
 }
 
 // ─── Sentinel values ───
@@ -256,7 +290,7 @@ inline double get_double_env_or(const std::string& name, const double fallback) 
 }
 
 inline void* allocate_server_buffer(size_t num_locks = MAX_LOCKS) {
-    void* ptr = aligned_alloc(PAGE_SIZE, SERVER_ALIGNED_SIZE);
+    void* ptr = allocate_hugepage_buffer(SERVER_ALIGNED_SIZE);
     if (!ptr) throw std::runtime_error("Could not allocate server RDMA buffer");
     std::memset(ptr, 0xFF, SERVER_ALIGNED_SIZE);
 
@@ -272,7 +306,7 @@ inline void* allocate_server_buffer(size_t num_locks = MAX_LOCKS) {
 
 inline void* allocate_client_buffer(size_t requested_size = CLIENT_ALIGNED_SIZE) {
     const size_t aligned_size = std::max(align_up(requested_size, PAGE_SIZE), PAGE_SIZE);
-    void* ptr = aligned_alloc(PAGE_SIZE, aligned_size);
+    void* ptr = allocate_hugepage_buffer(aligned_size);
     if (!ptr) throw std::runtime_error("Could not allocate client RDMA buffer");
     std::memset(ptr, 0xFF, aligned_size);
     return ptr;

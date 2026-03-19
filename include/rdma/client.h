@@ -18,7 +18,6 @@ public:
     Client& operator=(const Client&) = delete;
 
     void connect(const std::vector<std::string>& node_ips, uint16_t port);
-    void connect_peers(uint16_t peer_port);
 
     [[nodiscard]] uint32_t id() const { return id_; }
     [[nodiscard]] ibv_cq* cq() const { return cq_; }
@@ -26,7 +25,6 @@ public:
     [[nodiscard]] void* buffer() const { return buf_; }
     [[nodiscard]] size_t buffer_size() const { return buffer_size_; }
     [[nodiscard]] const std::vector<RemoteNode>& connections() const { return connections_; }
-    [[nodiscard]] const std::vector<RemoteNode>& peers() const { return peers_; }
 
 private:
     uint32_t id_;
@@ -38,10 +36,4 @@ private:
     void* buf_ = nullptr;
     size_t buffer_size_;
     std::vector<RemoteNode> connections_;
-    std::vector<RemoteNode> peers_;
-
-    // peer mesh resources — kept alive for connection lifetime
-    rdma_event_channel* peer_ec_ = nullptr;
-    rdma_cm_id* peer_listener_ = nullptr;
-    std::vector<rdma_event_channel*> peer_conn_ecs_;
 };

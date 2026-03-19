@@ -29,7 +29,7 @@ Server::~Server() {
     if (mr_)       ibv_dereg_mr(mr_);
     if (cq_)       ibv_destroy_cq(cq_);
     if (pd_)       ibv_dealloc_pd(pd_);
-    if (buf_)      free(buf_);
+    if (buf_)      free_hugepage_buffer(buf_, SERVER_ALIGNED_SIZE);
     if (listener_) rdma_destroy_id(listener_);
     if (ec_)       rdma_destroy_event_channel(ec_);
 }
