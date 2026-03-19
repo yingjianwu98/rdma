@@ -97,7 +97,7 @@ constexpr uint32_t TICKET_FAA_TURN_SPIN_FAR = 512;
 
 // ─── MU config ───
 
-constexpr size_t MU_ACTIVE_WINDOW = 1;
+constexpr size_t MU_ACTIVE_WINDOW = 2;
 constexpr size_t MU_CQ_BATCH = 32;
 constexpr uint32_t MU_CLIENT_SEND_SIGNAL_EVERY = 64;
 constexpr uint32_t MU_SERVER_SEND_SIGNAL_EVERY = 128;
