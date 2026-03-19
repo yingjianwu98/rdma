@@ -70,7 +70,7 @@ constexpr double CAS_ZIPF_SKEW = 0.99;
 constexpr bool CAS_SHARD_OWNER = true;
 constexpr size_t CAS_LOG_CAPACITY = TOTAL_CLIENTS * CAS_ACTIVE_WINDOW * 4;
 constexpr bool CAS_RELEASE_CONTROL_USE_CAS = false;
-constexpr bool CAS_RELEASE_LOG_USE_CAS = true;
+constexpr bool CAS_RELEASE_LOG_USE_CAS = false;
 
 // ─── Simple CAS config ───
 
