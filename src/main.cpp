@@ -20,7 +20,7 @@
 #include <thread>
 
 // ─── Configuration ───
-constexpr const char* STRATEGY = "simple_cas";      // "mu", "ticket_faa", "cas", or "simple_cas"
+constexpr const char* STRATEGY = "cas";      // "mu", "ticket_faa", "cas", or "simple_cas"
 
 int main() {
     try {
