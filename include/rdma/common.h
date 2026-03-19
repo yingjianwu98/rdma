@@ -82,7 +82,7 @@ constexpr bool SIMPLE_CAS_RELEASE_USE_CAS = false;
 
 // ─── Ticket FAA config ───
 
-constexpr size_t TICKET_FAA_ACTIVE_WINDOW = 16;
+constexpr size_t TICKET_FAA_ACTIVE_WINDOW = 8;
 constexpr bool TICKET_FAA_SHARD_OWNER = true;
 constexpr size_t TICKET_FAA_LOG_CAPACITY = TOTAL_CLIENTS * TICKET_FAA_ACTIVE_WINDOW * 4;
 constexpr size_t TICKET_FAA_CQ_BATCH = 32;
@@ -97,7 +97,7 @@ constexpr uint32_t TICKET_FAA_TURN_SPIN_FAR = 512;
 
 // ─── MU config ───
 
-constexpr size_t MU_ACTIVE_WINDOW = 16;
+constexpr size_t MU_ACTIVE_WINDOW = 8;
 constexpr size_t MU_CQ_BATCH = 32;
 constexpr uint32_t MU_CLIENT_SEND_SIGNAL_EVERY = 64;
 constexpr uint32_t MU_SERVER_SEND_SIGNAL_EVERY = 128;
