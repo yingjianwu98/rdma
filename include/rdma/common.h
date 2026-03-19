@@ -91,9 +91,9 @@ constexpr uint32_t TICKET_FAA_REPLICATE_RETRY_SPIN = 64;
 constexpr bool TICKET_FAA_RELEASE_LOG_USE_CAS = true;
 constexpr uint32_t TICKET_FAA_RELEASE_TURN_MODE = 0; // 0=write, 1=cas, 2=faa
 constexpr uint32_t TICKET_FAA_TURN_SPIN_VERY_NEAR = 0;
-constexpr uint32_t TICKET_FAA_TURN_SPIN_NEAR = 32;
-constexpr uint32_t TICKET_FAA_TURN_SPIN_MID = 128;
-constexpr uint32_t TICKET_FAA_TURN_SPIN_FAR = 512;
+constexpr uint32_t TICKET_FAA_TURN_SPIN_NEAR = 0;
+constexpr uint32_t TICKET_FAA_TURN_SPIN_MID = 0;
+constexpr uint32_t TICKET_FAA_TURN_SPIN_FAR = 0;
 
 // ─── MU config ───
 
