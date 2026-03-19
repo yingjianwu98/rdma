@@ -55,7 +55,7 @@ constexpr uint8_t RDMA_INITIATOR_DEPTH = 16;
 // ─── Benchmark / workload config ───
 
 constexpr size_t NUM_OPS = 15000000;
-constexpr size_t NUM_CLIENTS_PER_MACHINE = 8;
+constexpr size_t NUM_CLIENTS_PER_MACHINE = 16;
 constexpr size_t TOTAL_MACHINES = 1;
 constexpr size_t TOTAL_CLIENTS = NUM_CLIENTS_PER_MACHINE * TOTAL_MACHINES;
 constexpr size_t NUM_OPS_PER_CLIENT = NUM_OPS / TOTAL_CLIENTS;
@@ -82,7 +82,7 @@ constexpr bool SIMPLE_CAS_RELEASE_USE_CAS = false;
 
 // ─── Ticket FAA config ───
 
-constexpr size_t TICKET_FAA_ACTIVE_WINDOW = 16;
+constexpr size_t TICKET_FAA_ACTIVE_WINDOW = 8;
 constexpr bool TICKET_FAA_SHARD_OWNER = true;
 constexpr size_t TICKET_FAA_LOG_CAPACITY = TOTAL_CLIENTS * TICKET_FAA_ACTIVE_WINDOW * 4;
 constexpr size_t TICKET_FAA_CQ_BATCH = 32;
