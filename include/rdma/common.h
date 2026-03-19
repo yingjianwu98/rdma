@@ -54,7 +54,7 @@ constexpr uint8_t RDMA_INITIATOR_DEPTH = 16;
 
 // ─── Benchmark / workload config ───
 
-constexpr size_t NUM_OPS = 10000000;
+constexpr size_t NUM_OPS = 20000000;
 constexpr size_t NUM_CLIENTS_PER_MACHINE = 1;
 constexpr size_t TOTAL_MACHINES = 1;
 constexpr size_t TOTAL_CLIENTS = NUM_CLIENTS_PER_MACHINE * TOTAL_MACHINES;
@@ -74,7 +74,7 @@ constexpr bool CAS_RELEASE_LOG_USE_CAS = true;
 
 // ─── Simple CAS config ───
 
-constexpr size_t SIMPLE_CAS_ACTIVE_WINDOW = 1;
+constexpr size_t SIMPLE_CAS_ACTIVE_WINDOW = 2;
 constexpr bool SIMPLE_CAS_SHARD_OWNER = true;
 constexpr size_t SIMPLE_CAS_CQ_BATCH = 32;
 constexpr double SIMPLE_CAS_ZIPF_SKEW = 0.0;
