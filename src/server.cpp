@@ -10,6 +10,26 @@
 #include <thread>
 #include <chrono>
 
+static rdma_cm_event* wait_for_event(
+    rdma_event_channel* ec,
+    const rdma_cm_event_type expected,
+    const std::string& step
+) {
+    rdma_cm_event* event = nullptr;
+    if (rdma_get_cm_event(ec, &event)) {
+        throw std::runtime_error("rdma_get_cm_event failed during " + step);
+    }
+    if (event->event != expected) {
+        const int status = event->status;
+        const auto actual = event->event;
+        rdma_ack_cm_event(event);
+        throw std::runtime_error(
+            "Expected " + step + " but got event " + std::to_string(actual)
+            + " status " + std::to_string(status));
+    }
+    return event;
+}
+
 // Construct one server endpoint and pre-size the peer/client connection tables.
 Server::Server(const uint32_t node_id)
     : node_id_(node_id)
@@ -42,90 +62,99 @@ Server::~Server() {
 
 // Actively connect to a lower-id peer node and exchange MR credentials.
 RemoteConnection Server::connect_to_node(const std::string& ip, uint16_t port) {
+    rdma_event_channel* outbound_ec = rdma_create_event_channel();
+    if (!outbound_ec) throw std::runtime_error("rdma_create_event_channel failed");
+
     rdma_cm_id* cm_id = nullptr;
-    if (rdma_create_id(ec_, &cm_id, nullptr, RDMA_PS_TCP))
+    if (rdma_create_id(outbound_ec, &cm_id, nullptr, RDMA_PS_TCP)) {
+        rdma_destroy_event_channel(outbound_ec);
         throw std::runtime_error("rdma_create_id failed");
-
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    inet_pton(AF_INET, ip.c_str(), &addr.sin_addr);
-
-    if (rdma_resolve_addr(cm_id, nullptr, reinterpret_cast<sockaddr*>(&addr), 2000))
-        throw std::runtime_error("resolve_addr failed for " + ip);
-
-    rdma_cm_event* ev = nullptr;
-    rdma_get_cm_event(ec_, &ev);
-    rdma_ack_cm_event(ev);
-
-    if (rdma_resolve_route(cm_id, 2000))
-        throw std::runtime_error("resolve_route failed for " + ip);
-
-    rdma_get_cm_event(ec_, &ev);
-    rdma_ack_cm_event(ev);
-
-    // init RDMA resources on first connection
-    if (!pd_) {
-        pd_ = ibv_alloc_pd(cm_id->verbs);
-        if (!pd_) throw std::runtime_error("ibv_alloc_pd failed");
-
-        cq_ = ibv_create_cq(cm_id->verbs,
-                             QP_DEPTH * (TOTAL_CLIENTS + CLUSTER_NODES.size()),
-                             nullptr, nullptr, 0);
-        if (!cq_) throw std::runtime_error("ibv_create_cq failed");
-
-        mr_ = ibv_reg_mr(pd_, buf_, SERVER_ALIGNED_SIZE,
-                         IBV_ACCESS_LOCAL_WRITE |
-                         IBV_ACCESS_REMOTE_WRITE |
-                         IBV_ACCESS_REMOTE_READ |
-                         IBV_ACCESS_REMOTE_ATOMIC);
-        if (!mr_) throw std::runtime_error("ibv_reg_mr failed");
-
-        server_creds_.addr = reinterpret_cast<uintptr_t>(buf_);
-        server_creds_.rkey = mr_->rkey;
     }
 
-    ibv_qp_init_attr qp_attr{};
-    qp_attr.qp_type            = IBV_QPT_RC;
-    qp_attr.send_cq            = cq_;
-    qp_attr.recv_cq            = cq_;
-    qp_attr.cap.max_send_wr    = QP_DEPTH;
-    qp_attr.cap.max_recv_wr    = QP_DEPTH;
-    qp_attr.cap.max_send_sge   = 1;
-    qp_attr.cap.max_recv_sge   = 1;
-    qp_attr.cap.max_inline_data = MAX_INLINE_DEPTH;
-    qp_attr.sq_sig_all         = 0;
+    try {
 
-    if (rdma_create_qp(cm_id, pd_, &qp_attr))
-        throw std::runtime_error("rdma_create_qp failed for " + ip);
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(port);
+        inet_pton(AF_INET, ip.c_str(), &addr.sin_addr);
 
-    ConnPrivateData priv = server_creds_;
+        if (rdma_resolve_addr(cm_id, nullptr, reinterpret_cast<sockaddr*>(&addr), 2000))
+            throw std::runtime_error("resolve_addr failed for " + ip);
 
-    rdma_conn_param param{};
-    param.private_data = &priv;
-    param.private_data_len = sizeof(priv);
-    param.responder_resources = RDMA_RESPONDER_RESOURCES;
-    param.initiator_depth = RDMA_INITIATOR_DEPTH;
-    param.rnr_retry_count = 7;
-
-    if (rdma_connect(cm_id, &param))
-        throw std::runtime_error("rdma_connect failed for " + ip);
-
-    rdma_get_cm_event(ec_, &ev);
-    if (ev->event != RDMA_CM_EVENT_ESTABLISHED) {
+        auto* ev = wait_for_event(outbound_ec, RDMA_CM_EVENT_ADDR_RESOLVED, "ADDR_RESOLVE");
         rdma_ack_cm_event(ev);
-        throw std::runtime_error("connect to node failed for " + ip);
-    }
 
-    RemoteConnection conn{};
-    if (ev->param.conn.private_data &&
-        ev->param.conn.private_data_len >= sizeof(ConnPrivateData)) {
-        auto* remote = static_cast<const ConnPrivateData*>(
-            ev->param.conn.private_data);
-        conn = {remote->node_id, cm_id, remote->addr, remote->rkey, remote->type};
+        if (rdma_resolve_route(cm_id, 2000))
+            throw std::runtime_error("resolve_route failed for " + ip);
+
+        ev = wait_for_event(outbound_ec, RDMA_CM_EVENT_ROUTE_RESOLVED, "ROUTE_RESOLVE");
+        rdma_ack_cm_event(ev);
+
+        // init RDMA resources on first connection
+        if (!pd_) {
+            pd_ = ibv_alloc_pd(cm_id->verbs);
+            if (!pd_) throw std::runtime_error("ibv_alloc_pd failed");
+
+            cq_ = ibv_create_cq(cm_id->verbs,
+                                 QP_DEPTH * (TOTAL_CLIENTS + CLUSTER_NODES.size()),
+                                 nullptr, nullptr, 0);
+            if (!cq_) throw std::runtime_error("ibv_create_cq failed");
+
+            mr_ = ibv_reg_mr(pd_, buf_, SERVER_ALIGNED_SIZE,
+                             IBV_ACCESS_LOCAL_WRITE |
+                             IBV_ACCESS_REMOTE_WRITE |
+                             IBV_ACCESS_REMOTE_READ |
+                             IBV_ACCESS_REMOTE_ATOMIC);
+            if (!mr_) throw std::runtime_error("ibv_reg_mr failed");
+
+            server_creds_.addr = reinterpret_cast<uintptr_t>(buf_);
+            server_creds_.rkey = mr_->rkey;
+        }
+
+        ibv_qp_init_attr qp_attr{};
+        qp_attr.qp_type            = IBV_QPT_RC;
+        qp_attr.send_cq            = cq_;
+        qp_attr.recv_cq            = cq_;
+        qp_attr.cap.max_send_wr    = QP_DEPTH;
+        qp_attr.cap.max_recv_wr    = QP_DEPTH;
+        qp_attr.cap.max_send_sge   = 1;
+        qp_attr.cap.max_recv_sge   = 1;
+        qp_attr.cap.max_inline_data = MAX_INLINE_DEPTH;
+        qp_attr.sq_sig_all         = 0;
+
+        if (rdma_create_qp(cm_id, pd_, &qp_attr))
+            throw std::runtime_error("rdma_create_qp failed for " + ip);
+
+        ConnPrivateData priv = server_creds_;
+
+        rdma_conn_param param{};
+        param.private_data = &priv;
+        param.private_data_len = sizeof(priv);
+        param.responder_resources = RDMA_RESPONDER_RESOURCES;
+        param.initiator_depth = RDMA_INITIATOR_DEPTH;
+        param.rnr_retry_count = 7;
+
+        if (rdma_connect(cm_id, &param))
+            throw std::runtime_error("rdma_connect failed for " + ip);
+
+        ev = wait_for_event(outbound_ec, RDMA_CM_EVENT_ESTABLISHED, "ESTABLISHED");
+
+        RemoteConnection conn{};
+        if (ev->param.conn.private_data &&
+            ev->param.conn.private_data_len >= sizeof(ConnPrivateData)) {
+            auto* remote = static_cast<const ConnPrivateData*>(
+                ev->param.conn.private_data);
+            conn = {remote->node_id, cm_id, remote->addr, remote->rkey, remote->type};
+        }
+        rdma_ack_cm_event(ev);
+        rdma_destroy_event_channel(outbound_ec);
+        return conn;
+    } catch (...) {
+        if (cm_id && cm_id->qp) rdma_destroy_qp(cm_id);
+        if (cm_id) rdma_destroy_id(cm_id);
+        rdma_destroy_event_channel(outbound_ec);
+        throw;
     }
-    rdma_ack_cm_event(ev);
-    return conn;
 }
 
 // ─── Main startup: mesh nodes + accept clients ───

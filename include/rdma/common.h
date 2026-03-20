@@ -26,21 +26,25 @@ inline const std::vector<std::string> CLUSTER_NODES = {
     "192.168.1.1",
     "192.168.1.2",
     "192.168.1.3",
-    "192.168.1.4",
-    "192.168.1.5",
+    // "192.168.1.4",
+    // "192.168.1.5",
     // "192.168.1.6",
     // "192.168.1.7"
 };
 
+// change these two variables together
 inline const std::vector<std::string> CLIENT_NODES = {
-     // "192.168.1.4",
+     "192.168.1.4",
    // "192.168.1.5",
-    "192.168.1.6",
+    // "192.168.1.6",
     // "192.168.1.7",
     // "192.168.1.8",
     // "192.168.1.9",
     // "192.168.1.10",
 };
+
+constexpr size_t TOTAL_CLIENT_MACHINES = 1;
+//
 
 inline const size_t QUORUM = (CLUSTER_NODES.size() / 2) + 1;
 inline const size_t SUPER_QUORUM = (3 * CLUSTER_NODES.size() + 3) / 4;
@@ -60,8 +64,7 @@ constexpr uint8_t RDMA_INITIATOR_DEPTH = 16;
 
 constexpr size_t NUM_OPS = 15000000;
 constexpr size_t NUM_CLIENTS_PER_MACHINE = 8;
-constexpr size_t TOTAL_MACHINES = 2;
-constexpr size_t TOTAL_CLIENTS = NUM_CLIENTS_PER_MACHINE * TOTAL_MACHINES;
+constexpr size_t TOTAL_CLIENTS = NUM_CLIENTS_PER_MACHINE * TOTAL_CLIENT_MACHINES;
 constexpr size_t NUM_OPS_PER_CLIENT = NUM_OPS / TOTAL_CLIENTS;
 constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * TOTAL_CLIENTS;
 constexpr size_t MAX_LOCKS = 1000;
