@@ -1,5 +1,10 @@
 #pragma once
 
+// Client-side ticket FAA pipeline:
+// - fetch ticket from owner node with RDMA FAA
+// - claim wrapped replicated log slot
+// - wait on turn, then release turn/log with configurable modes
+
 #include <cstddef>
 #include <cstdint>
 

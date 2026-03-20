@@ -1,5 +1,7 @@
 #include "rdma/pipelines/simple_cas_pipeline.h"
 
+// Minimal one-sided CAS flag lock implementation.
+
 #include "rdma/client.h"
 #include "rdma/common.h"
 #include "rdma/zipf_lock_picker.h"
@@ -43,6 +45,7 @@ struct SimpleCasOpCtx {
     std::chrono::steady_clock::time_point started_at{};
 };
 
+// Encode a completion id from op generation/slot plus the current phase.
 uint64_t encode_wr_id(const SimpleCasOpCtx& op, const SimpleCasPhase phase, const uint8_t conn_index) {
     return (static_cast<uint64_t>(op.generation) << 32)
          | (static_cast<uint64_t>(op.slot) << 16)
@@ -50,18 +53,23 @@ uint64_t encode_wr_id(const SimpleCasOpCtx& op, const SimpleCasPhase phase, cons
          | static_cast<uint64_t>(conn_index);
 }
 
+// Extract the op generation from a simple_cas work-request id.
 uint32_t wr_generation(const uint64_t wr_id) {
     return static_cast<uint32_t>(wr_id >> 32);
 }
 
+// Extract the pipeline slot from a simple_cas work-request id.
 uint32_t wr_slot(const uint64_t wr_id) {
     return static_cast<uint32_t>((wr_id >> 16) & 0xFFFFu);
 }
 
+// Extract the phase tag from a simple_cas work-request id.
 SimpleCasPhase wr_phase(const uint64_t wr_id) {
     return static_cast<SimpleCasPhase>((wr_id >> kConnBits) & 0xFFu);
 }
 
+// Map the shared client MR into the small per-op result buffers used by the
+// simple CAS pipeline.
 RegisteredSimpleCasBuffers map_buffers(void* raw_buffer, const size_t buffer_size, const size_t active_window) {
     auto* base = static_cast<uint8_t*>(raw_buffer);
     size_t offset = 0;
@@ -79,6 +87,7 @@ RegisteredSimpleCasBuffers map_buffers(void* raw_buffer, const size_t buffer_siz
     return buffers;
 }
 
+// Post the owner-node 0->1 CAS that attempts to acquire the simple flag lock.
  void post_acquire(Client& client, SimpleCasOpCtx& op) {
     const auto& conns = client.connections();
     auto* mr = client.mr();
@@ -108,6 +117,8 @@ RegisteredSimpleCasBuffers map_buffers(void* raw_buffer, const size_t buffer_siz
     op.phase = SimpleCasPhase::acquire;
 }
 
+// Release the flag either with a guarded CAS or a blind write, depending on the
+// configured comparison mode.
 void post_release(Client& client, SimpleCasOpCtx& op, const SimpleCasPipelineConfig& config) {
     const auto& conns = client.connections();
     auto* mr = client.mr();
@@ -146,6 +157,7 @@ void post_release(Client& client, SimpleCasOpCtx& op, const SimpleCasPipelineCon
 
 } // namespace
 
+// Load the compile-time simple CAS tuning knobs into the runtime config struct.
 SimpleCasPipelineConfig load_simple_cas_pipeline_config() {
     SimpleCasPipelineConfig config{};
     config.active_window = std::max<size_t>(1, SIMPLE_CAS_ACTIVE_WINDOW);
@@ -156,17 +168,21 @@ SimpleCasPipelineConfig load_simple_cas_pipeline_config() {
     return config;
 }
 
+// Report how much client MR space simple_cas needs for its result buffers.
 size_t simple_cas_pipeline_client_buffer_size(const SimpleCasPipelineConfig& config) {
     const size_t scalar_bytes = align_up(config.active_window * sizeof(uint64_t), 64);
     return align_up(scalar_bytes * 2 + PAGE_SIZE, PAGE_SIZE);
 }
 
+// Run the minimal simple_cas state machine across the configured active window.
 void run_simple_cas_pipeline(
     Client& client,
     uint64_t* latencies,
     uint64_t* lock_counts,
     const SimpleCasPipelineConfig& config
 ) {
+    // Validate that the client has server connections and that the active window
+    // fits within the WR-id slot encoding used by this pipeline.
     const auto& conns = client.connections();
     if (conns.empty()) {
         throw std::runtime_error("simple_cas pipeline: no server connections");
@@ -175,6 +191,8 @@ void run_simple_cas_pipeline(
         throw std::runtime_error("simple_cas pipeline: active window exceeds wr_id slot encoding");
     }
 
+    // Map the client MR into small per-op result buffers, then create one op
+    // context per active-window slot.
     auto buffers = map_buffers(client.buffer(), client.buffer_size(), config.active_window);
     std::vector<SimpleCasOpCtx> ops(config.active_window);
     std::vector<ibv_wc> completions(config.cq_batch);
@@ -185,6 +203,11 @@ void run_simple_cas_pipeline(
     size_t active = 0;
 
     auto submit_op = [&](const size_t slot) {
+        // Start one new lock attempt in this op slot:
+        // 1. choose a lock id,
+        // 2. choose the owner node,
+        // 3. initialize local result pointers,
+        // 4. post the acquire CAS immediately.
         auto& op = ops[slot];
         op.active = true;
         op.generation++;
@@ -201,11 +224,14 @@ void run_simple_cas_pipeline(
         active++;
     };
 
+    // Fill the pipeline window before entering the completion-driven main loop.
     while (active < config.active_window && submitted < NUM_OPS_PER_CLIENT) {
         submit_op(active);
     }
 
     while (completed < NUM_OPS_PER_CLIENT) {
+        // Drive the state machine entirely from completions. Each op alternates
+        // between acquire and release until its lock/unlock pair is complete.
         const int polled = ibv_poll_cq(client.cq(), static_cast<int>(completions.size()), completions.data());
         if (polled < 0) {
             throw std::runtime_error("simple_cas pipeline: CQ poll failed");
@@ -238,6 +264,8 @@ void run_simple_cas_pipeline(
             }
 
             if (phase == SimpleCasPhase::acquire) {
+                // Acquire succeeds only if the old control-word value was 0. On
+                // failure we immediately repost another acquire CAS for the same op.
                 if (*op.acquire_result == 0) {
                     latencies[op.latency_index] = std::chrono::duration_cast<std::chrono::nanoseconds>(
                         std::chrono::steady_clock::now() - op.started_at).count();
@@ -249,6 +277,8 @@ void run_simple_cas_pipeline(
             }
 
             if (phase == SimpleCasPhase::release) {
+                // Release completion finishes the full operation. Retire this op
+                // slot, record the completed lock count, and submit the next request.
                 if (config.release_with_cas && *op.release_value != 1) {
                     throw std::runtime_error("simple_cas pipeline: release CAS failed");
                 }

@@ -1,5 +1,7 @@
 #pragma once
 
+// Client-side non-fault-tolerant one-sided CAS flag lock baseline.
+
 #include <cstddef>
 #include <cstdint>
 

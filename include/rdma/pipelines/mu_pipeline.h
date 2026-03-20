@@ -1,5 +1,7 @@
 #pragma once
 
+// Client-side RPC pipeline for the leader-based MU design.
+
 #include <cstddef>
 #include <cstdint>
 

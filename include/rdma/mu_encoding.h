@@ -1,5 +1,7 @@
 #pragma once
 
+// Shared MU RPC structs and mutation-log encoding helpers.
+
 #include "rdma/common.h"
 
 #include <cstddef>
@@ -23,6 +25,8 @@ struct MuRequest {
     uint16_t client_id;
     uint32_t lock_id;
     uint32_t req_id;
+    // For MU, granted_slot refers to the global mutation-log slot that granted
+    // the lock, not a per-lock log position.
     uint32_t granted_slot;
 };
 
@@ -52,6 +56,7 @@ inline uint64_t mu_make_log_entry(
     const uint16_t client_id,
     const uint32_t req_id
 ) {
+    // Global MU mutation log entry: op kind, lock id, client id, req id.
     return (static_cast<uint64_t>(op == MuRpcOp::Unlock) << MU_LOG_OP_SHIFT)
          | ((static_cast<uint64_t>(lock_id) & MU_LOG_LOCK_ID_MASK) << MU_LOG_LOCK_ID_SHIFT)
          | ((static_cast<uint64_t>(client_id) & MU_LOG_CLIENT_ID_MASK) << MU_LOG_CLIENT_ID_SHIFT)

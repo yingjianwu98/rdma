@@ -1,5 +1,7 @@
 #include "rdma/server.h"
 
+// Generic server/node RDMA endpoint setup and shared lock-table MR registration.
+
 #include <arpa/inet.h>
 #include <cstring>
 #include <iostream>
@@ -8,6 +10,7 @@
 #include <thread>
 #include <chrono>
 
+// Construct one server endpoint and pre-size the peer/client connection tables.
 Server::Server(const uint32_t node_id)
     : node_id_(node_id)
     , peers_(CLUSTER_NODES.size())
@@ -17,6 +20,7 @@ Server::Server(const uint32_t node_id)
     server_creds_.type    = ConnType::FOLLOWER;  // node-to-node type
 }
 
+// Tear down all server-side RDMA resources and free the huge-page lock-table MR.
 Server::~Server() {
     for (auto& c : clients_) {
         if (c.cm_id && c.cm_id->qp) rdma_destroy_qp(c.cm_id);
@@ -36,6 +40,7 @@ Server::~Server() {
 
 // ─── Active connect to a peer node ───
 
+// Actively connect to a lower-id peer node and exchange MR credentials.
 RemoteConnection Server::connect_to_node(const std::string& ip, uint16_t port) {
     rdma_cm_id* cm_id = nullptr;
     if (rdma_create_id(ec_, &cm_id, nullptr, RDMA_PS_TCP))
@@ -125,6 +130,8 @@ RemoteConnection Server::connect_to_node(const std::string& ip, uint16_t port) {
 
 // ─── Main startup: mesh nodes + accept clients ───
 
+// Start the server listener, build the server mesh, accept clients, then enter
+// the subclass-specific run loop.
 void Server::start(uint16_t port) {
     ec_ = rdma_create_event_channel();
     if (!ec_) throw std::runtime_error("rdma_create_event_channel failed");

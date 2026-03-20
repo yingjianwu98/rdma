@@ -20,10 +20,14 @@
 #include <thread>
 
 // ─── Configuration ───
+// Add new strategies here and wire them into the config load, buffer sizing,
+// dispatch, and summary branches below.
 constexpr const char* STRATEGY = "cas";      // "mu", "ticket_faa", "cas", or "simple_cas"
 
 int main() {
     try {
+        // Each pipeline exposes a config struct plus a client buffer-size helper.
+        // New pipelines should follow that pattern so main stays uniform.
         const bool is_mu  = (std::string(STRATEGY) == "mu");
         const bool is_ticket_faa = (std::string(STRATEGY) == "ticket_faa");
         const bool is_cas = (std::string(STRATEGY) == "cas");
@@ -35,6 +39,8 @@ int main() {
             is_ticket_faa ? load_ticket_faa_lock_pipeline_config() : TicketFaaLockPipelineConfig{};
         const MuPipelineConfig mu_config = is_mu ? load_mu_pipeline_config() : MuPipelineConfig{};
 
+        // Client mode runs worker threads for the selected pipeline. Server mode
+        // below launches either the MU leader/follower path or generic nodes.
         if (get_uint_env("IS_CLIENT") != 0) {
             const uint32_t machine_id = get_uint_env("MACHINE_ID");
 

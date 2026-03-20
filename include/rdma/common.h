@@ -1,5 +1,8 @@
 #pragma once
 
+// Shared benchmark configuration, memory layout, allocation helpers, and
+// low-level RDMA utilities used across all remaining pipelines.
+
 #include <array>
 #include <algorithm>
 #include <cstdint>
@@ -33,7 +36,7 @@ inline const std::vector<std::string> CLIENT_NODES = {
      // "192.168.1.4",
    // "192.168.1.5",
     "192.168.1.6",
-    "192.168.1.7",
+    // "192.168.1.7",
     // "192.168.1.8",
     // "192.168.1.9",
     // "192.168.1.10",
@@ -53,6 +56,7 @@ constexpr uint8_t RDMA_RESPONDER_RESOURCES = 16;
 constexpr uint8_t RDMA_INITIATOR_DEPTH = 16;
 
 // ─── Benchmark / workload config ───
+// These knobs define the workload shape shared across all pipelines.
 
 constexpr size_t NUM_OPS = 15000000;
 constexpr size_t NUM_CLIENTS_PER_MACHINE = 8;
@@ -63,6 +67,7 @@ constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * TOTAL_CLIENTS;
 constexpr size_t MAX_LOCKS = 1000;
 
 // ─── CAS config ───
+// Wrapped per-lock replicated log plus owner-node control word.
 
 constexpr size_t CAS_ACTIVE_WINDOW = 16;
 constexpr size_t CAS_CQ_BATCH = 32;
@@ -73,6 +78,7 @@ constexpr bool CAS_RELEASE_CONTROL_USE_CAS = false;
 constexpr bool CAS_RELEASE_LOG_USE_CAS = true;
 
 // ─── Simple CAS config ───
+// One-sided non-replicated flag lock used as a non-fault-tolerant baseline.
 
 constexpr size_t SIMPLE_CAS_ACTIVE_WINDOW = 16;
 constexpr bool SIMPLE_CAS_SHARD_OWNER = true;
@@ -81,6 +87,7 @@ constexpr double SIMPLE_CAS_ZIPF_SKEW = 0.0;
 constexpr bool SIMPLE_CAS_RELEASE_USE_CAS = false;
 
 // ─── Ticket FAA config ───
+// Ticket register on the owner node plus wrapped per-lock replicated log.
 
 constexpr size_t TICKET_FAA_ACTIVE_WINDOW = 16;
 constexpr bool TICKET_FAA_SHARD_OWNER = true;
@@ -96,6 +103,7 @@ constexpr uint32_t TICKET_FAA_TURN_SPIN_MID = 0;
 constexpr uint32_t TICKET_FAA_TURN_SPIN_FAR = 0;
 
 // ─── MU config ───
+// Global append-only mutation log with in-memory per-lock state on the leader.
 
 constexpr size_t MU_ACTIVE_WINDOW = 16;
 constexpr size_t MU_CQ_BATCH = 32;
@@ -103,13 +111,15 @@ constexpr uint32_t MU_CLIENT_SEND_SIGNAL_EVERY = 64;
 constexpr uint32_t MU_SERVER_SEND_SIGNAL_EVERY = 128;
 constexpr double MU_ZIPF_SKEW = 0.5;
 constexpr bool MU_DEBUG = false;
-constexpr bool MU_STATS = false;
-constexpr bool MU_STATS_PRINT_IDLE = false;
 constexpr bool MU_REPL_SIGNAL_QUORUM_ONLY = true;
 constexpr size_t MU_GLOBAL_LOG_CAPACITY = NUM_OPS * 2;
 
 // ─── Lock table layout ───
+// The physical server layout is shared even though pipelines use it differently.
 
+// Shared physical per-lock log allocation. Wrapped pipelines only use a bounded
+// subset of each per-lock log, while MU reinterprets the full log space as one
+// global append-only mutation stream.
 constexpr size_t MAX_LOG_PER_LOCK = ((NUM_OPS + MAX_LOCKS - 1) / MAX_LOCKS) * 4;
 constexpr size_t LOCK_HEADER_SIZE = 16;
 constexpr size_t LOCK_LOG_SIZE = MAX_LOG_PER_LOCK * ENTRY_SIZE;
@@ -153,6 +163,7 @@ inline constexpr size_t lock_log_slot_offset(const uint32_t lock_id, const uint6
 }
 
 inline constexpr size_t mu_global_log_slot_offset(const uint64_t slot) {
+    // MU maps a global mutation-log slot onto the shared per-lock log storage.
     return lock_log_slot_offset(
         static_cast<uint32_t>(slot / MAX_LOG_PER_LOCK),
         slot % MAX_LOG_PER_LOCK);

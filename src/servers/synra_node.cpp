@@ -3,6 +3,8 @@
 #include <iostream>
 #include <stdexcept>
 
+// Generic one-sided node: expose the registered lock-table MR and report CQ
+// errors, but otherwise remain passive.
 void SynraNode::run() {
     std::cout << "[SynraNode " << node_id_ << "] Passive mode — waiting for RDMA operations\n";
 

@@ -1,5 +1,10 @@
 #pragma once
 
+// Client-side wrapped CAS pipeline:
+// - acquire on an owner-node control word
+// - replicate ownership into a wrapped per-lock log
+// - release control and wrapped log with independently configurable modes
+
 #include <cstddef>
 #include <cstdint>
 

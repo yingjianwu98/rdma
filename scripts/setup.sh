@@ -22,7 +22,18 @@ sudo modprobe ib_uverbs ib_ipoib rdma_ucm
 sudo modprobe -r ib_ipoib && sudo modprobe ib_ipoib
 sudo sysctl -w vm.nr_hugepages=2048
 
-# 4. Extract the last digit of the IP from enp8s0d1
+# 4. Set all CPU governors to performance when cpufreq is available
+CPU_GOV_FILES=(/sys/devices/system/cpu/cpu*/cpufreq/scaling_governor)
+if [ -e "${CPU_GOV_FILES[0]}" ]; then
+    for f in "${CPU_GOV_FILES[@]}"; do
+        echo performance | sudo tee "$f" >/dev/null
+    done
+    echo "Set CPU scaling governor to performance on all cores"
+else
+    echo "CPU scaling governor files not found; skipping performance governor setup"
+fi
+
+# 5. Extract the last digit of the IP from enp8s0d1
 NODE_ID=$(ifconfig enp8s0d1 | grep 'inet ' | awk '{print $2}' | cut -d'.' -f4)
 
 if [ -z "$NODE_ID" ]; then
@@ -33,7 +44,7 @@ fi
 TARGET_IP="192.168.1.$NODE_ID"
 echo "Assigning IP: $TARGET_IP to ibp8s0"
 
-# 5. Configure the InfiniBand interface
+# 6. Configure the InfiniBand interface
 # Ensure the device exists before writing to sysfs
 if [ -d "/sys/class/net/ibp8s0" ]; then
     echo connected | sudo tee /sys/class/net/ibp8s0/mode

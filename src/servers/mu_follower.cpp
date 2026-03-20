@@ -4,6 +4,8 @@
 #include <stdexcept>
 #include <string>
 
+// MU followers are passive: they only need to keep the replicated MR valid and
+// surface CQ errors if replication traffic fails.
 void MuFollower::run() {
     std::cout << "[MuFollower " << node_id_ << "] Passive mode for locks ["
               << lock_start_ << ", " << lock_end_ << ")\n";

@@ -1,5 +1,7 @@
 #include "rdma/pipelines/mu_pipeline.h"
 
+// Client-side RPC pipeline for MU.
+
 #include "rdma/client.h"
 #include "rdma/common.h"
 #include "rdma/mu_encoding.h"
@@ -49,11 +51,13 @@ struct MuOpCtx {
     std::chrono::steady_clock::time_point started_at{};
 };
 
+// Encode a receive WR id so recv completions can be matched back to ring slots.
 uint64_t make_recv_wr_id(const uint32_t recv_slot) {
     return (MU_RECV_WR_TAG << MU_WR_TAG_SHIFT)
          | ((static_cast<uint64_t>(recv_slot) & MU_WR_SLOT_MASK) << MU_WR_SLOT_SHIFT);
 }
 
+// Encode a send WR id from the op generation, pipeline slot, and current phase.
 uint64_t make_send_wr_id(const MuOpCtx& op, const MuOpPhase phase) {
     return (MU_SEND_WR_TAG << MU_WR_TAG_SHIFT)
          | ((static_cast<uint64_t>(op.generation) & MU_WR_GEN_MASK) << MU_WR_GEN_SHIFT)
@@ -61,26 +65,32 @@ uint64_t make_send_wr_id(const MuOpCtx& op, const MuOpPhase phase) {
          | static_cast<uint64_t>(phase);
 }
 
+// Check whether a completion came from a posted receive buffer.
 bool is_recv_wr_id(const uint64_t wr_id) {
     return (wr_id >> MU_WR_TAG_SHIFT) == MU_RECV_WR_TAG;
 }
 
+// Check whether a completion came from a client SEND request.
 bool is_send_wr_id(const uint64_t wr_id) {
     return (wr_id >> MU_WR_TAG_SHIFT) == MU_SEND_WR_TAG;
 }
 
+// Extract the op generation from a MU send WR id.
 uint32_t wr_generation(const uint64_t wr_id) {
     return static_cast<uint32_t>((wr_id >> MU_WR_GEN_SHIFT) & MU_WR_GEN_MASK);
 }
 
+// Extract the pipeline slot from a MU send WR id.
 uint32_t wr_slot(const uint64_t wr_id) {
     return static_cast<uint32_t>((wr_id >> MU_WR_SLOT_SHIFT) & MU_WR_SLOT_MASK);
 }
 
+// Extract the MU pipeline phase from a send WR id.
 MuOpPhase wr_phase(const uint64_t wr_id) {
     return static_cast<MuOpPhase>(wr_id & 0xFFu);
 }
 
+// Map the shared client MR into the receive ring used for MU leader responses.
 MuClientBuffers map_client_buffers(
     void* raw_buffer,
     const size_t buffer_size,
@@ -97,6 +107,7 @@ MuClientBuffers map_client_buffers(
     return buffers;
 }
 
+// Post one receive buffer on the leader connection for a grant or unlock ack.
 void post_recv(Client& client, MuResponse* response, const uint32_t recv_slot) {
     auto* mr = client.mr();
     auto& leader = client.connections().front();
@@ -116,6 +127,7 @@ void post_recv(Client& client, MuResponse* response, const uint32_t recv_slot) {
     }
 }
 
+// Send one MU RPC request (lock or unlock) to the leader using the client SEND/RECV path.
 void post_request(
     Client& client,
     const MuOpCtx& op,
@@ -147,6 +159,7 @@ void post_request(
 
 }  // namespace
 
+// Load compile-time MU tuning knobs, including the shared Zipf skew helper.
 MuPipelineConfig load_mu_pipeline_config() {
     MuPipelineConfig config{};
     config.active_window = std::max<size_t>(1, MU_ACTIVE_WINDOW);
@@ -156,25 +169,22 @@ MuPipelineConfig load_mu_pipeline_config() {
     return config;
 }
 
+// Report how much client MR space the MU receive ring requires.
 size_t mu_pipeline_client_buffer_size(const MuPipelineConfig& config) {
     const size_t recv_ring = std::max(config.active_window * 2, MU_CLIENT_RECV_RING_MIN);
     const size_t response_bytes = align_up(recv_ring * sizeof(MuResponse), 64);
     return align_up(response_bytes + PAGE_SIZE, PAGE_SIZE);
 }
 
+// Run the MU client RPC pipeline across the configured active window.
 void run_mu_pipeline(
     Client& client,
     uint64_t* latencies,
     uint64_t* lock_counts,
     const MuPipelineConfig& config
 ) {
-    const bool mu_debug = MU_DEBUG;
-    auto debug = [&](const std::string& msg) {
-        if (mu_debug) {
-            std::cout << "[MuClient " << client.id() << "] " << msg << "\n";
-        }
-    };
-
+    // The MU client pipeline is RPC-based: send a lock request to the leader,
+    // wait for a grant, send the matching unlock request, then wait for the ack.
     if (client.connections().empty()) {
         throw std::runtime_error("MU pipeline: missing leader connection");
     }
@@ -190,6 +200,8 @@ void run_mu_pipeline(
         throw std::runtime_error("MU pipeline: recv ring exceeds wr_id slot capacity");
     }
 
+    // The client MR is just a receive ring for leader responses plus local per-op
+    // state; MU does not expose client memory for remote RDMA access.
     auto buffers = map_client_buffers(client.buffer(), client.buffer_size(), recv_ring);
     std::vector<MuOpCtx> ops(config.active_window);
     std::vector<ibv_wc> completions(config.cq_batch);
@@ -203,11 +215,18 @@ void run_mu_pipeline(
     size_t active = 0;
     uint32_t next_req_id = 1;
 
+    // Keep the leader response ring full so grants and unlock acks can arrive
+    // without extra round trips.
     for (uint32_t recv_slot = 0; recv_slot < recv_ring; ++recv_slot) {
         post_recv(client, &buffers.responses[recv_slot], recv_slot);
     }
 
     auto submit_lock = [&](const size_t slot) {
+        // Start one MU lock request:
+        // 1. choose a lock id with the shared Zipf picker,
+        // 2. assign a unique request id,
+        // 3. record the start time,
+        // 4. send a Lock RPC to the leader.
         auto& op = ops[slot];
         op.active = true;
         op.generation++;
@@ -226,10 +245,6 @@ void run_mu_pipeline(
         req.lock_id = op.lock_id;
         req.req_id = op.req_id;
         req.granted_slot = 0;
-        debug(
-            "send lock lock=" + std::to_string(op.lock_id)
-            + " req=" + std::to_string(op.req_id)
-            + " slot=" + std::to_string(op.slot));
         post_request(
             client,
             op,
@@ -242,6 +257,8 @@ void run_mu_pipeline(
     };
 
     auto submit_unlock = [&](MuOpCtx& op) {
+        // After a grant arrives, the same op slot sends the matching Unlock RPC
+        // back to the leader and waits for the final acknowledgement.
         op.phase = MuOpPhase::wait_unlock_ack;
 
         MuRequest req{};
@@ -250,11 +267,6 @@ void run_mu_pipeline(
         req.lock_id = op.lock_id;
         req.req_id = op.req_id;
         req.granted_slot = op.granted_slot;
-        debug(
-            "send unlock lock=" + std::to_string(op.lock_id)
-            + " req=" + std::to_string(op.req_id)
-            + " granted_slot=" + std::to_string(op.granted_slot)
-            + " op_slot=" + std::to_string(op.slot));
         post_request(
             client,
             op,
@@ -263,11 +275,14 @@ void run_mu_pipeline(
             config.client_send_signal_every);
     };
 
+    // Fill the client-side active window before entering the recv-driven CQ loop.
     while (active < config.active_window && submitted < NUM_OPS_PER_CLIENT) {
         submit_lock(active);
     }
 
     while (completed < NUM_OPS_PER_CLIENT) {
+        // MU is response-driven: send completions are ignored, while receive
+        // completions carry either a lock grant or an unlock acknowledgement.
         const int polled = ibv_poll_cq(client.cq(), static_cast<int>(completions.size()), completions.data());
         if (polled < 0) {
             throw std::runtime_error("MU pipeline: CQ poll failed");
@@ -299,17 +314,13 @@ void run_mu_pipeline(
                 throw std::runtime_error("MU pipeline: recv ring slot out of range");
             }
 
+            // Repost the receive buffer immediately so the response ring stays
+            // full while this completion is still being processed.
             const MuResponse resp = buffers.responses[recv_slot];
             recv_reposts.push_back(recv_slot);
 
             const auto it = req_to_slot.find(resp.req_id);
             if (it == req_to_slot.end()) {
-                if (mu_debug) {
-                    debug(
-                        "recv unknown response op=" + std::to_string(resp.op)
-                        + " lock=" + std::to_string(resp.lock_id)
-                        + " req=" + std::to_string(resp.req_id));
-                }
                 continue;
             }
 
@@ -327,16 +338,14 @@ void run_mu_pipeline(
             }
 
             if (resp.op == static_cast<uint8_t>(MuRpcOp::Lock)) {
+                // A successful lock response completes acquire latency and
+                // immediately advances the same op slot into its unlock phase.
                 if (op.phase != MuOpPhase::wait_lock_grant) {
                     throw std::runtime_error("MU pipeline: lock response arrived in wrong phase");
                 }
                 if (resp.op != static_cast<uint8_t>(MuRpcOp::Lock)) {
                     throw std::runtime_error("MU pipeline: expected lock grant response");
                 }
-                debug(
-                    "recv grant lock=" + std::to_string(op.lock_id)
-                    + " req=" + std::to_string(op.req_id)
-                    + " granted_slot=" + std::to_string(resp.granted_slot));
                 op.granted_slot = resp.granted_slot;
                 latencies[op.latency_index] = std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now() - op.started_at).count();
@@ -344,17 +353,14 @@ void run_mu_pipeline(
                 continue;
             }
 
+            // A successful unlock response completes the full lock/unlock pair.
+            // Retire this op slot and submit the next lock request if any remain.
             if (resp.op != static_cast<uint8_t>(MuRpcOp::Unlock)) {
                 throw std::runtime_error("MU pipeline: unexpected response opcode");
             }
             if (op.phase != MuOpPhase::wait_unlock_ack) {
                 throw std::runtime_error("MU pipeline: unlock response arrived in wrong phase");
             }
-
-            debug(
-                "recv unlock ack lock=" + std::to_string(op.lock_id)
-                + " req=" + std::to_string(op.req_id)
-                + " granted_slot=" + std::to_string(op.granted_slot));
 
             lock_counts[op.lock_id]++;
             req_to_slot.erase(it);

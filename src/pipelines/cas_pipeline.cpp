@@ -1,5 +1,7 @@
 #include "rdma/pipelines/cas_pipeline.h"
 
+// Wrapped per-lock CAS pipeline implementation.
+
 #include "rdma/client.h"
 #include "rdma/common.h"
 #include "rdma/zipf_lock_picker.h"
@@ -25,6 +27,8 @@ enum class OpPhase : uint8_t {
     replicate = 2,
     release = 3,
 };
+// Lifecycle per op: win the owner-node control slot, claim a wrapped log slot
+// on quorum, then release both the control word and the wrapped log state.
 
 struct RegisteredCasBuffers {
     uint64_t* acquire_results = nullptr;
@@ -58,18 +62,26 @@ constexpr uint8_t kReleaseLogConnFlag = 0x80u;
 constexpr uint64_t kLogLiveBit = 1ULL << 63;
 constexpr uint64_t kLogSeqMask = (1ULL << 31) - 1;
 
+// Convert the monotonic frontier slot into the logical wrapped-log generation.
 uint64_t cas_logical_seq(const uint64_t held_slot) {
     return held_slot >> 1;
 }
 
+// Map a logical sequence onto the bounded physical per-lock log ring.
 uint64_t cas_physical_log_slot(const uint64_t logical_seq) {
     return logical_seq % CAS_LOG_CAPACITY;
 }
 
+// Wrapped replicated log state. FREE(seq) means this physical slot is reusable
+// by that exact logical sequence; LIVE(seq, client, slot) means it is owned by
+// one in-flight op generation.
+
+// Encode a wrapped log slot as free for one exact logical sequence.
 uint64_t pack_cas_log_free(const uint64_t logical_seq) {
     return (logical_seq & kLogSeqMask) << 32;
 }
 
+// Encode a wrapped log slot as owned by one active client/pipeline-slot generation.
 uint64_t pack_cas_log_live(const uint64_t logical_seq, const uint16_t client_id, const uint16_t active_slot) {
     return kLogLiveBit
          | ((logical_seq & kLogSeqMask) << 32)
@@ -77,18 +89,23 @@ uint64_t pack_cas_log_live(const uint64_t logical_seq, const uint16_t client_id,
          | static_cast<uint64_t>(active_slot);
 }
 
+// The first time a physical slot is used it must still be EMPTY; later reuses
+// require the versioned free value for the next logical sequence.
 uint64_t cas_log_expected_free_value(const uint64_t logical_seq) {
     return logical_seq < CAS_LOG_CAPACITY ? EMPTY_SLOT : pack_cas_log_free(logical_seq);
 }
 
+// Freeing a wrapped log slot advances it to the next logical generation that may claim it.
 uint64_t cas_log_next_free_value(const uint64_t logical_seq) {
     return pack_cas_log_free(logical_seq + CAS_LOG_CAPACITY);
 }
 
+// Returns true once the logical sequence has wrapped past the initial physical allocation.
 bool cas_log_is_wrapped(const uint64_t logical_seq) {
     return logical_seq >= CAS_LOG_CAPACITY;
 }
 
+// Catch configuration mistakes where the wrapped physical slot would exceed the allocated log size.
 void ensure_log_seq_in_bounds(const uint32_t lock_id, const uint64_t logical_seq, const char* context) {
     if (cas_physical_log_slot(logical_seq) >= MAX_LOG_PER_LOCK) {
         throw std::runtime_error(
@@ -99,6 +116,7 @@ void ensure_log_seq_in_bounds(const uint32_t lock_id, const uint64_t logical_seq
     }
 }
 
+// Encode the active op generation/slot/phase into one CQE identifier.
 uint64_t encode_wr_id(const CasOpCtx& op, const OpPhase phase, const uint8_t conn_index) {
     return (static_cast<uint64_t>(op.generation) << 32)
          | (static_cast<uint64_t>(op.slot) << 16)
@@ -106,30 +124,37 @@ uint64_t encode_wr_id(const CasOpCtx& op, const OpPhase phase, const uint8_t con
          | static_cast<uint64_t>(conn_index);
 }
 
+// Recover the op generation from a CAS pipeline WR id.
 uint32_t wr_generation(const uint64_t wr_id) {
     return static_cast<uint32_t>(wr_id >> 32);
 }
 
+// Recover the op slot from a CAS pipeline WR id.
 uint32_t wr_slot(const uint64_t wr_id) {
     return static_cast<uint32_t>((wr_id >> 16) & 0xFFFFu);
 }
 
+// Recover the state-machine phase from a CAS pipeline WR id.
 OpPhase wr_phase(const uint64_t wr_id) {
     return static_cast<OpPhase>((wr_id >> kConnBits) & 0xFFu);
 }
 
+// Recover the replica index from a CAS pipeline WR id.
 uint8_t wr_conn(const uint64_t wr_id) {
     return static_cast<uint8_t>(wr_id & 0xFFu);
 }
 
+// Compute one row offset inside a per-op-by-replica matrix buffer.
 size_t row_offset(const uint32_t slot, const size_t replica_count) {
     return static_cast<size_t>(slot) * replica_count;
 }
 
+// Return the start of one per-op row inside a replica matrix.
 uint64_t* row_ptr(uint64_t* base, const uint32_t slot, const size_t replica_count) {
     return base + row_offset(slot, replica_count);
 }
 
+// Map the shared client MR into the per-op result matrices used by wrapped CAS.
 RegisteredCasBuffers map_buffers(
     void* raw_buffer,
     const size_t buffer_size,
@@ -160,6 +185,7 @@ RegisteredCasBuffers map_buffers(
     return buffers;
 }
 
+// Post the owner-node frontier CAS that tries to acquire one logical slot.
 void post_acquire(const Client& client, CasOpCtx& op) {
     const auto& conns = client.connections();
     auto* mr = client.mr();
@@ -194,6 +220,8 @@ void post_replicate(const Client& client, CasOpCtx& op, const RegisteredCasBuffe
     auto* mr = client.mr();
     auto* results = row_ptr(buffers.replicate_results, op.slot, conns.size());
 
+    // The control-word CAS only wins local ownership. The acquire is not treated
+    // as complete until the wrapped replicated log slot is claimed on quorum.
     op.logical_seq = cas_logical_seq(op.held_slot);
     op.physical_log_slot = cas_physical_log_slot(op.logical_seq);
     ensure_log_seq_in_bounds(op.lock_id, op.logical_seq, "replicate");
@@ -248,6 +276,9 @@ void post_release(
     op.release_owner_log_done = false;
     op.release_log_quorum = false;
 
+    // Release has two independent pieces of work: advance the owner-node control
+    // word and free the wrapped replicated log slot. The two toggles let us
+    // compare CAS vs WRITE for each piece independently.
     uint64_t control_value = op.held_slot + 1;
 
     ibv_sge control_sge{};
@@ -313,6 +344,7 @@ void post_release(
 
 }  // namespace
 
+// Load the compile-time wrapped CAS tuning knobs into the runtime config struct.
 CasPipelineConfig load_cas_pipeline_config() {
     CasPipelineConfig config{};
     config.active_window = CAS_ACTIVE_WINDOW;
@@ -324,6 +356,7 @@ CasPipelineConfig load_cas_pipeline_config() {
     return config;
 }
 
+// Report how much client MR space the wrapped CAS pipeline needs.
 size_t cas_pipeline_client_buffer_size(const CasPipelineConfig& config) {
     const size_t replica_count = CLUSTER_NODES.size();
     const size_t acquire_bytes = align_up(config.active_window * sizeof(uint64_t), 64);
@@ -338,6 +371,8 @@ void run_cas_pipeline(
     uint64_t* lock_counts,
     const CasPipelineConfig& config
 ) {
+    // Validate connection availability and ensure the active window fits inside
+    // the compact WR-id encoding used by the wrapped CAS pipeline.
     const auto& conns = client.connections();
     if (conns.empty()) {
         throw std::runtime_error("CAS pipeline: no server connections");
@@ -347,6 +382,8 @@ void run_cas_pipeline(
         throw std::runtime_error("CAS pipeline: active window exceeds wr_id slot encoding");
     }
 
+    // The client MR holds per-op matrices for wrapped-log replication/release.
+    // frontier_hints caches the next likely logical slot for each lock locally.
     auto buffers = map_buffers(client.buffer(), client.buffer_size(), config.active_window, conns.size());
     std::vector<CasOpCtx> ops(config.active_window);
     ZipfLockPicker picker(config.zipf_skew);
@@ -359,6 +396,11 @@ void run_cas_pipeline(
     size_t active = 0;
 
     auto submit_op = [&](const size_t slot) {
+        // Start one wrapped CAS acquire:
+        // 1. choose a lock id,
+        // 2. choose the owner node,
+        // 3. seed the target logical slot from the frontier hint,
+        // 4. post the owner control-word CAS.
         auto& op = ops[slot];
         op.active = true;
         op.generation++;
@@ -384,11 +426,14 @@ void run_cas_pipeline(
         active++;
     };
 
+    // Fill the active window before the CQ loop so multiple acquires can overlap.
     while (active < config.active_window && submitted < NUM_OPS_PER_CLIENT) {
         submit_op(active);
     }
 
     while (completed < NUM_OPS_PER_CLIENT) {
+        // One completion advances exactly one op phase: owner acquire, wrapped-log
+        // claim, or wrapped-log/control release.
         const int polled = ibv_poll_cq(client.cq(), static_cast<int>(completions.size()), completions.data());
         if (polled < 0) {
             throw std::runtime_error("CAS pipeline: CQ poll failed");
@@ -421,6 +466,8 @@ void run_cas_pipeline(
             }
 
             if (phase == OpPhase::acquire) {
+                // Owner acquire CAS tries to move the control word from target-1
+                // to target. On failure, advance the frontier hint and retry.
                 const uint64_t expected = op.target_slot - 1;
                 const uint64_t result = *op.acquire_result;
 
@@ -436,6 +483,8 @@ void run_cas_pipeline(
             }
 
             if (phase == OpPhase::replicate) {
+                // Winning the owner control word is not enough; acquire completes
+                // only after the wrapped replicated log slot is claimed on quorum.
                 auto* replicate_results = row_ptr(buffers.replicate_results, op.slot, conns.size());
                 const uint8_t idx = wr_conn(wc.wr_id);
                 op.replicate_responses++;
@@ -457,6 +506,9 @@ void run_cas_pipeline(
             }
 
             if (phase == OpPhase::release) {
+                // Release frees the wrapped log slot on quorum and advances the
+                // owner control word. The op slot is reused only after wrapped-log
+                // release is safe.
                 const uint8_t raw_idx = wr_conn(wc.wr_id);
                 const bool is_log_release = (raw_idx & kReleaseLogConnFlag) != 0;
                 const size_t replica_index = static_cast<size_t>(raw_idx & ~kReleaseLogConnFlag);

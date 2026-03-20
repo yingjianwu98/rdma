@@ -1,5 +1,7 @@
 #include "rdma/pipelines/ticket_faa_lock_pipeline.h"
 
+// Ticket FAA pipeline implementation with wrapped replicated log slots.
+
 #include "rdma/client.h"
 #include "rdma/common.h"
 #include "rdma/zipf_lock_picker.h"
@@ -46,6 +48,8 @@ enum class TicketFaaPhase : uint8_t {
     wait_turn_spin = 5,
     release_parallel = 6,
 };
+// Lifecycle per op: fetch ticket, claim wrapped log space, wait until turn ==
+// ticket, then release both the wrapped log slot and the turn register.
 
 struct RegisteredTicketFaaBuffers {
     uint64_t* ticket_results = nullptr;
@@ -87,12 +91,14 @@ struct DetachedTurnCtx {
     uint64_t expected_old = 0;
 };
 
+// Encode a unique waiter id used when publishing wrapped log ownership.
 uint64_t encode_waiter(const uint16_t client_id, const uint16_t op_slot, const uint32_t req_id) {
     return (static_cast<uint64_t>(client_id) << 47)
          | (static_cast<uint64_t>(op_slot) << 32)
          | static_cast<uint64_t>(req_id);
 }
 
+// Encode generation, slot, phase, round, and connection index into one WR id.
 uint64_t encode_wr_id(const TicketFaaOpCtx& op, const TicketFaaPhase phase, const uint8_t conn_index) {
     return ((static_cast<uint64_t>(op.generation) & kGenerationMask) << kGenerationShift)
          | ((static_cast<uint64_t>(op.slot) & kSlotMask) << kSlotShift)
@@ -101,46 +107,58 @@ uint64_t encode_wr_id(const TicketFaaOpCtx& op, const TicketFaaPhase phase, cons
          | ((static_cast<uint64_t>(conn_index) & kConnMask) << kConnShift);
 }
 
+// Check whether a completion belongs to the detached turn-update path.
 bool is_detached_turn_wr_id(const uint64_t wr_id) {
     return (wr_id & kDetachedTurnWrTag) == kDetachedTurnWrTag;
 }
 
+// Encode a detached turn-update completion id.
 uint64_t make_detached_turn_wr_id(const uint32_t ctx_index) {
     return kDetachedTurnWrTag | static_cast<uint64_t>(ctx_index);
 }
 
+// Recover the detached turn-update context index from a WR id.
 uint32_t detached_turn_ctx_index(const uint64_t wr_id) {
     return static_cast<uint32_t>(wr_id & 0x00FFFFFFu);
 }
 
+// Extract the op generation from a ticket-faa WR id.
 uint32_t wr_generation(const uint64_t wr_id) {
     return static_cast<uint32_t>(wr_id >> kGenerationShift);
 }
 
+// Extract the pipeline slot from a ticket-faa WR id.
 uint32_t wr_slot(const uint64_t wr_id) {
     return static_cast<uint32_t>((wr_id >> kSlotShift) & kSlotMask);
 }
 
+// Extract the phase tag from a ticket-faa WR id.
 TicketFaaPhase wr_phase(const uint64_t wr_id) {
     return static_cast<TicketFaaPhase>((wr_id >> kPhaseShift) & kPhaseMask);
 }
 
+// Extract the per-op round counter from a ticket-faa WR id.
 uint8_t wr_round(const uint64_t wr_id) {
     return static_cast<uint8_t>((wr_id >> kRoundShift) & kRoundMask);
 }
 
+// Extract the replica/connection index from a ticket-faa WR id.
 uint8_t wr_conn(const uint64_t wr_id) {
     return static_cast<uint8_t>((wr_id >> kConnShift) & kConnMask);
 }
 
+// Compute the row-major offset for a per-op-by-replica buffer.
 size_t row_offset(const uint32_t slot, const size_t replica_count) {
     return static_cast<size_t>(slot) * replica_count;
 }
 
+// Return the first element of one per-op row inside a replica matrix.
 uint64_t* row_ptr(uint64_t* base, const uint32_t slot, const size_t replica_count) {
     return base + row_offset(slot, replica_count);
 }
 
+// Size the detached turn-update pool so turn CAS/FAA completions do not block
+// op-slot reuse on quorum.
 size_t detached_turn_ctx_capacity(const size_t active_window) {
     return std::max<size_t>(active_window * 8, 64);
 }
@@ -148,6 +166,10 @@ size_t detached_turn_ctx_capacity(const size_t active_window) {
 uint64_t ticket_faa_physical_log_slot(const uint64_t ticket) {
     return ticket % TICKET_FAA_LOG_CAPACITY;
 }
+
+// Wrapped ticket-faa log state is derived directly from the logical ticket. A
+// physical slot is reusable only when its free value matches the exact ticket
+// generation currently trying to claim it.
 
 uint64_t pack_ticket_faa_log_free(const uint64_t ticket) {
     return (ticket & kLogTicketMask) << 32;
@@ -180,6 +202,7 @@ void ensure_log_slot_in_bounds(const uint32_t lock_id, const uint64_t ticket, co
     }
 }
 
+// Turn-wait heuristic: farther tickets spin longer before re-reading turn.
 uint32_t spin_budget_for_distance(const uint64_t distance) {
     if (distance <= 1) return TICKET_FAA_TURN_SPIN_VERY_NEAR;
     if (distance <= 2) return TICKET_FAA_TURN_SPIN_NEAR;
@@ -187,6 +210,7 @@ uint32_t spin_budget_for_distance(const uint64_t distance) {
     return TICKET_FAA_TURN_SPIN_FAR;
 }
 
+// Map the client MR into per-op ticket, log, turn, and detached-turn buffers.
 RegisteredTicketFaaBuffers map_buffers(
     void* raw_buffer,
     const size_t buffer_size,
@@ -219,6 +243,7 @@ RegisteredTicketFaaBuffers map_buffers(
     return buffers;
 }
 
+// Fetch the next logical ticket from the owner node's FAA register.
 void post_ticket_faa(Client& client, TicketFaaOpCtx& op, const RegisteredTicketFaaBuffers& buffers) {
     const auto& conns = client.connections();
     auto* mr = client.mr();
@@ -260,6 +285,9 @@ void post_replicate_ticket(
     auto* mr = client.mr();
     auto* results = row_ptr(buffers.replicate_results, op.slot, conns.size());
 
+    // Ticket assignment can outpace wrapped log reuse, so replicate is always a
+    // CAS and the op may later retry until enough replicas expose the expected
+    // free generation for this logical ticket.
     ensure_log_slot_in_bounds(op.lock_id, op.ticket, "replicate_ticket");
     op.physical_log_slot = ticket_faa_physical_log_slot(op.ticket);
     const uint64_t compare_value = ticket_faa_log_expected_free_value(op.ticket);
@@ -296,6 +324,8 @@ void post_replicate_ticket(
     }
 }
 
+// Read the owner-node turn register to decide whether this ticket may enter.
+// Read the owner-node turn register to decide whether this ticket may enter.
 void post_turn_read(Client& client, TicketFaaOpCtx& op, const RegisteredTicketFaaBuffers& buffers) {
     const auto& conns = client.connections();
     auto* mr = client.mr();
@@ -342,6 +372,9 @@ void post_release_parallel(
     const uint64_t live_value = pack_ticket_faa_log_live(op.ticket, static_cast<uint16_t>(client.id()), static_cast<uint16_t>(op.slot));
     const uint64_t free_value = ticket_faa_log_next_free_value(op.ticket);
 
+    // Release frees the wrapped log slot on all replicas and independently
+    // updates the owner-node turn register. Those two behaviors are toggled
+    // separately so we can compare write/cas/faa combinations.
     ensure_log_slot_in_bounds(op.lock_id, op.ticket, "release_parallel");
 
     op.round++;
@@ -461,6 +494,8 @@ void post_release_parallel(
 
 } // namespace
 
+// Load compile-time ticket-faa tuning knobs into the runtime config struct.
+// Load compile-time ticket-faa tuning knobs into the runtime config struct.
 TicketFaaLockPipelineConfig load_ticket_faa_lock_pipeline_config() {
     TicketFaaLockPipelineConfig config{};
     config.active_window = std::max<size_t>(1, TICKET_FAA_ACTIVE_WINDOW);
@@ -472,6 +507,8 @@ TicketFaaLockPipelineConfig load_ticket_faa_lock_pipeline_config() {
     return config;
 }
 
+// Report how much client MR space ticket_faa needs for its per-op state.
+// Report how much client MR space ticket_faa needs for its per-op state.
 size_t ticket_faa_lock_pipeline_client_buffer_size(const TicketFaaLockPipelineConfig& config) {
     const size_t replica_count = CLUSTER_NODES.size();
     const size_t scalar_bytes = align_up(config.active_window * sizeof(uint64_t), 64);
@@ -480,16 +517,21 @@ size_t ticket_faa_lock_pipeline_client_buffer_size(const TicketFaaLockPipelineCo
     return align_up(scalar_bytes * 2 + matrix_bytes * 3 + detached_turn_bytes + PAGE_SIZE, PAGE_SIZE);
 }
 
+// Run the ticket_faa client state machine across the configured active window.
 void run_ticket_faa_lock_pipeline(
     Client& client,
     uint64_t* latencies,
     uint64_t* lock_counts,
     const TicketFaaLockPipelineConfig& config
 ) {
+    // Validate connection availability and ensure the active window fits within
+    // the WR-id encoding used by ticket_faa.
     const auto& conns = client.connections();
     if (conns.empty()) throw std::runtime_error("ticket_faa pipeline: no server connections");
     if (config.active_window > 0x7FFFu) throw std::runtime_error("ticket_faa pipeline: active window too large");
 
+    // The client MR holds ticket FAA results, wrapped-log claim/release buffers,
+    // turn-read buffers, and detached turn-update result slots.
     auto buffers = map_buffers(client.buffer(), client.buffer_size(), config.active_window, conns.size());
     std::vector<TicketFaaOpCtx> ops(config.active_window);
     std::vector<DetachedTurnCtx> detached_turn_ctxs(detached_turn_ctx_capacity(config.active_window));
@@ -502,12 +544,19 @@ void run_ticket_faa_lock_pipeline(
     uint32_t next_req_id = 1;
 
     auto begin_release = [&](TicketFaaOpCtx& op) {
+        // Acquire latency ends when the lock is granted. Release work starts only
+        // after the latency sample has been recorded.
         latencies[op.latency_index] = std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - op.started_at).count();
         post_release_parallel(client, op, buffers, config, detached_turn_ctxs);
     };
 
     auto submit_op = [&](const size_t slot) {
+        // Start one ticket_faa request:
+        // 1. choose a lock id,
+        // 2. choose the owner node,
+        // 3. initialize a unique waiter id,
+        // 4. fetch the next logical ticket via owner-node FAA.
         auto& op = ops[slot];
         op.active = true;
         op.generation++;
@@ -536,11 +585,15 @@ void run_ticket_faa_lock_pipeline(
         active++;
     };
 
+    // Fill the active window so ticket fetches and later waits can overlap.
     while (active < config.active_window && submitted < NUM_OPS_PER_CLIENT) {
         submit_op(active);
     }
 
     while (completed < NUM_OPS_PER_CLIENT) {
+        // Two local spin states exist:
+        // - replicate_ticket_spin: wrapped log space is not reusable yet
+        // - wait_turn_spin: wait locally before issuing another turn read
         for (auto& op : ops) {
             if (!op.active) continue;
             if (op.phase == TicketFaaPhase::replicate_ticket_spin) {
@@ -560,6 +613,7 @@ void run_ticket_faa_lock_pipeline(
             }
         }
 
+        // Completion flow is: ticket FAA -> wrapped log claim -> turn reads -> release.
         const int polled = ibv_poll_cq(client.cq(), static_cast<int>(completions.size()), completions.data());
         if (polled < 0) throw std::runtime_error("ticket_faa pipeline: CQ poll failed");
         if (polled == 0) continue;
@@ -573,6 +627,8 @@ void run_ticket_faa_lock_pipeline(
             }
 
             if (is_detached_turn_wr_id(wc.wr_id)) {
+                // Detached turn CAS/FAA completions validate late owner-node turn
+                // updates without forcing the main op slot to stay occupied.
                 const uint32_t ctx_index = detached_turn_ctx_index(wc.wr_id);
                 if (ctx_index >= detached_turn_ctxs.size()) {
                     throw std::runtime_error("ticket_faa pipeline: detached turn context out of range");
@@ -595,6 +651,8 @@ void run_ticket_faa_lock_pipeline(
             if (wr_round(wc.wr_id) != op.round) continue;
 
             if (phase == TicketFaaPhase::faa_ticket) {
+                // Once the ticket is fetched, the op must claim wrapped log space
+                // before it can wait for turn.
                 op.ticket = buffers.ticket_results[op.slot];
                 post_replicate_ticket(client, op, buffers);
                 continue;
@@ -603,6 +661,9 @@ void run_ticket_faa_lock_pipeline(
             op.responses++;
 
             if (phase == TicketFaaPhase::replicate_ticket) {
+                // Wrapped log claim is always CAS. If quorum cannot be reached
+                // because the slot is still occupied by an older generation, spin
+                // locally and retry later instead of failing immediately.
                 auto* results = row_ptr(buffers.replicate_results, op.slot, conns.size());
                 const uint8_t idx = wr_conn(wc.wr_id);
                 if (results[idx] == ticket_faa_log_expected_free_value(op.ticket)) {
@@ -626,6 +687,8 @@ void run_ticket_faa_lock_pipeline(
             }
 
             if (phase == TicketFaaPhase::wait_turn_read) {
+                // The op may enter when turn == ticket. Otherwise use ticket-turn
+                // distance to decide whether to spin locally or reread turn now.
                 op.last_turn = buffers.turn_reads[op.slot];
                 if (op.last_turn == op.ticket) {
                     begin_release(op);
@@ -643,6 +706,10 @@ void run_ticket_faa_lock_pipeline(
             }
 
             if (phase == TicketFaaPhase::release_parallel) {
+                // Release has two independent pieces of work:
+                // - free the wrapped log slot on replicas
+                // - advance the owner-node turn register
+                // Op reuse is gated by wrapped-log release safety.
                 const uint8_t idx = wr_conn(wc.wr_id);
                 auto* release_log_results = row_ptr(buffers.release_log_results, op.slot, conns.size());
                 op.release_log_responses++;

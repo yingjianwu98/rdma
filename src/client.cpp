@@ -1,4 +1,6 @@
 #include "rdma/client.h"
+
+// Client RDMA connection management and local buffer lifetime.
 #include "rdma/common.h"
 
 #include <arpa/inet.h>
@@ -12,6 +14,8 @@
 
 #include "rdma/mu_encoding.h"
 
+// Wait for one specific CM event and fail fast if the connection state machine
+// deviates from the expected handshake step.
 static rdma_cm_event* wait_for_event(
     rdma_event_channel* ec,
     const rdma_cm_event_type expected,
@@ -31,11 +35,13 @@ static rdma_cm_event* wait_for_event(
     return event;
 }
 
+// Construct a client shell; RDMA resources are created lazily on connect.
 Client::Client(const uint32_t id, const size_t buffer_size)
     : id_(id)
     , buffer_size_(std::max(align_up(buffer_size, PAGE_SIZE), PAGE_SIZE)) {
 }
 
+// Tear down all client-side RDMA resources and free the huge-page buffer.
 Client::~Client() {
     for (const auto& conn : connections_) {
         if (conn.id && conn.id->qp) rdma_destroy_qp(conn.id);
@@ -48,6 +54,8 @@ Client::~Client() {
     if (ec_) rdma_destroy_event_channel(ec_);
 }
 
+// Connect this client to the target server nodes and initialize the local MR/CQ
+// on the first successful connection.
 void Client::connect(const std::vector<std::string>& node_ips, const uint16_t port) {
     if (!ec_) {
         ec_ = rdma_create_event_channel();
