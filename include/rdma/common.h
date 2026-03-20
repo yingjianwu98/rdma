@@ -82,7 +82,7 @@ constexpr bool SIMPLE_CAS_RELEASE_USE_CAS = false;
 
 // ─── Ticket FAA config ───
 
-constexpr size_t TICKET_FAA_ACTIVE_WINDOW = 4;
+constexpr size_t TICKET_FAA_ACTIVE_WINDOW = 8;
 constexpr bool TICKET_FAA_SHARD_OWNER = true;
 constexpr size_t TICKET_FAA_LOG_CAPACITY = TOTAL_CLIENTS * TICKET_FAA_ACTIVE_WINDOW * 4;
 constexpr size_t TICKET_FAA_CQ_BATCH = 32;
