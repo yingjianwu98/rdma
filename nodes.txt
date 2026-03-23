@@ -1,0 +1,7 @@
+# Emulab node list - one per line
+# Format: username@hostname
+stevie98@apt130.apt.emulab.net
+stevie98@apt131.apt.emulab.net
+stevie98@apt129.apt.emulab.net
+stevie98@apt132.apt.emulab.net
+stevie98@apt136.apt.emulab.net

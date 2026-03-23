@@ -8,6 +8,8 @@
 #include "rdma/pipelines/mu_pipeline.h"
 #include "rdma/pipelines/simple_cas_pipeline.h"
 #include "rdma/pipelines/ticket_faa_lock_pipeline.h"
+#include "rdma/pipelines/watch_pipeline.h"
+#include "rdma/pipelines/mu_watch_pipeline.h"
 #include "rdma/mu_encoding.h"
 
 #include <atomic>
@@ -22,7 +24,7 @@
 // ─── Configuration ───
 // Add new strategies here and wire them into the config load, buffer sizing,
 // dispatch, and summary branches below.
-constexpr const char* STRATEGY = "cas";      // "mu", "ticket_faa", "cas", or "simple_cas"
+constexpr const char* STRATEGY = "watch";      // "mu", "ticket_faa", "cas", "simple_cas", "watch", or "mu_watch"
 
 int main() {
     try {
@@ -32,12 +34,16 @@ int main() {
         const bool is_ticket_faa = (std::string(STRATEGY) == "ticket_faa");
         const bool is_cas = (std::string(STRATEGY) == "cas");
         const bool is_simple_cas = (std::string(STRATEGY) == "simple_cas");
+        const bool is_watch = (std::string(STRATEGY) == "watch");
+        const bool is_mu_watch = (std::string(STRATEGY) == "mu_watch");
         const CasPipelineConfig cas_config = is_cas ? load_cas_pipeline_config() : CasPipelineConfig{};
         const SimpleCasPipelineConfig simple_cas_config =
             is_simple_cas ? load_simple_cas_pipeline_config() : SimpleCasPipelineConfig{};
         const TicketFaaLockPipelineConfig ticket_faa_config =
             is_ticket_faa ? load_ticket_faa_lock_pipeline_config() : TicketFaaLockPipelineConfig{};
         const MuPipelineConfig mu_config = is_mu ? load_mu_pipeline_config() : MuPipelineConfig{};
+        const WatchPipelineConfig watch_config = is_watch ? load_watch_pipeline_config() : WatchPipelineConfig{};
+        const MuWatchPipelineConfig mu_watch_config = is_mu_watch ? load_mu_watch_pipeline_config() : MuWatchPipelineConfig{};
 
         // Client mode runs worker threads for the selected pipeline. Server mode
         // below launches either the MU leader/follower path or generic nodes.
@@ -58,9 +64,9 @@ int main() {
                 const uint32_t global_id = machine_id * NUM_CLIENTS_PER_MACHINE + i;
 
                 workers.emplace_back(
-                    [i, global_id, is_mu, is_ticket_faa, is_cas, is_simple_cas,
+                    [i, global_id, is_mu, is_ticket_faa, is_cas, is_simple_cas, is_watch, is_mu_watch,
                      &start_latch, &all_latencies, &lock_counts, &verify_client,
-                     &cas_config, &simple_cas_config, &ticket_faa_config, &mu_config]() {
+                     &cas_config, &simple_cas_config, &ticket_faa_config, &mu_config, &watch_config, &mu_watch_config]() {
                         try {
                             pin_thread_to_cpu(pick_cpu_for_client(i));
 
@@ -70,9 +76,11 @@ int main() {
                                         : (is_simple_cas ? simple_cas_pipeline_client_buffer_size(simple_cas_config)
                                                          : (is_ticket_faa ? ticket_faa_lock_pipeline_client_buffer_size(ticket_faa_config)
                                                                           : (is_mu ? mu_pipeline_client_buffer_size(mu_config)
-                                                                                   : CLIENT_ALIGNED_SIZE))));
+                                                                                   : (is_watch ? watch_pipeline_client_buffer_size(watch_config)
+                                                                                               : (is_mu_watch ? mu_watch_pipeline_client_buffer_size(mu_watch_config)
+                                                                                                              : CLIENT_ALIGNED_SIZE))))));
 
-                            if (is_mu) {
+                            if (is_mu || is_mu_watch) {
                                 std::vector leader_only = {CLUSTER_NODES[0]};
                                 client->connect(leader_only, RDMA_PORT);
                             } else {
@@ -80,7 +88,7 @@ int main() {
                             }
 
                             {
-                                const size_t num_go = is_mu ? 1 : CLUSTER_NODES.size();
+                                const size_t num_go = (is_mu || is_mu_watch) ? 1 : CLUSTER_NODES.size();
                                 auto* cq = client->cq();
 
                                 size_t got = 0;
@@ -122,6 +130,18 @@ int main() {
                                     latencies,
                                     (*lock_counts)[global_id].data(),
                                     mu_config);
+                            } else if (is_watch) {
+                                run_watch_pipeline(
+                                    *client,
+                                    latencies,
+                                    (*lock_counts)[global_id].data(),
+                                    watch_config);
+                            } else if (is_mu_watch) {
+                                run_mu_watch_pipeline(
+                                    *client,
+                                    latencies,
+                                    (*lock_counts)[global_id].data(),
+                                    mu_watch_config);
                             } else {
                                 throw std::runtime_error("Unsupported strategy");
                             }
@@ -214,6 +234,16 @@ int main() {
                 std::cout << "Active Window:  " << std::setw(14) << mu_config.active_window << "\n";
                 std::cout << "Zipf Skew:      " << std::setw(14) << std::fixed << std::setprecision(2)
                           << mu_config.zipf_skew << "\n";
+            } else if (is_watch) {
+                std::cout << "Active Window:  " << std::setw(14) << watch_config.active_window << "\n";
+                std::cout << "Zipf Skew:      " << std::setw(14) << std::fixed << std::setprecision(2)
+                          << watch_config.zipf_skew << "\n";
+                std::cout << "Owner Mode:     " << std::setw(14)
+                          << (watch_config.shard_owner ? "sharded" : "leader") << "\n";
+            } else if (is_mu_watch) {
+                std::cout << "Active Window:  " << std::setw(14) << mu_watch_config.active_window << "\n";
+                std::cout << "Zipf Skew:      " << std::setw(14) << std::fixed << std::setprecision(2)
+                          << mu_watch_config.zipf_skew << "\n";
             }
             std::cout << "Clients:        " << std::setw(14) << TOTAL_CLIENTS
                       << " (" << NUM_CLIENTS_PER_MACHINE << " on this machine)\n";
@@ -243,9 +273,9 @@ int main() {
                       << "," << machine_id
                       << "," << TOTAL_CLIENTS
                       << "," << MAX_LOCKS
-                      << "," << (is_cas ? cas_config.active_window : (is_simple_cas ? simple_cas_config.active_window : (is_ticket_faa ? ticket_faa_config.active_window : (is_mu ? mu_config.active_window : 0))))
+                      << "," << (is_cas ? cas_config.active_window : (is_simple_cas ? simple_cas_config.active_window : (is_ticket_faa ? ticket_faa_config.active_window : (is_mu ? mu_config.active_window : (is_watch ? watch_config.active_window : (is_mu_watch ? mu_watch_config.active_window : 0))))))
                       << "," << std::fixed << std::setprecision(2)
-                      << (is_cas ? cas_config.zipf_skew : (is_simple_cas ? simple_cas_config.zipf_skew : (is_ticket_faa ? ticket_faa_config.zipf_skew : (is_mu ? mu_config.zipf_skew : 0.0))))
+                      << (is_cas ? cas_config.zipf_skew : (is_simple_cas ? simple_cas_config.zipf_skew : (is_ticket_faa ? ticket_faa_config.zipf_skew : (is_mu ? mu_config.zipf_skew : (is_watch ? watch_config.zipf_skew : (is_mu_watch ? mu_watch_config.zipf_skew : 0.0))))))
                       << "," << local_total_ops
                       << "," << std::fixed << std::setprecision(3) << wall_s
                       << "," << std::setprecision(0) << goodput
@@ -264,7 +294,7 @@ int main() {
         } else {
             const uint32_t node_id = get_uint_env("NODE_ID");
 
-            if (is_mu) {
+            if (is_mu || is_mu_watch) {
                 pin_thread_to_cpu(0);
                 if (node_id == 0) {
                     MuLeader leader(node_id, 0, MAX_LOCKS);
