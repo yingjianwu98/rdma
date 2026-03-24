@@ -171,9 +171,12 @@ void Server::start(uint16_t port) {
     }
     std::cerr << "[DEBUG] Locks initialized\n" << std::flush;
 
+    std::cerr << "[DEBUG] Getting config...\n" << std::flush;
     const size_t num_nodes = CLUSTER_NODES.size();
+    std::cerr << "[DEBUG] num_nodes=" << num_nodes << "\n" << std::flush;
     const uint32_t num_clients = expected_clients();
-    std::cout << "[Server " << node_id_ << "] Config: " << num_nodes << " nodes, " << num_clients << " clients\n";
+    std::cerr << "[DEBUG] num_clients=" << num_clients << "\n" << std::flush;
+    std::cout << "[Server " << node_id_ << "] Config: " << num_nodes << " nodes, " << num_clients << " clients\n" << std::flush;
 
     // Create TCP listener
     int listen_sock = socket(AF_INET, SOCK_STREAM, 0);
