@@ -305,9 +305,12 @@ inline double get_double_env_or(const std::string& name, const double fallback) 
 }
 
 inline void* allocate_server_buffer(size_t num_locks = MAX_LOCKS) {
+    std::cerr << "[DEBUG] Allocating " << SERVER_ALIGNED_SIZE << " bytes...\n" << std::flush;
     void* ptr = allocate_hugepage_buffer(SERVER_ALIGNED_SIZE);
     if (!ptr) throw std::runtime_error("Could not allocate server RDMA buffer");
+    std::cerr << "[DEBUG] Buffer allocated, memset...\n" << std::flush;
     std::memset(ptr, 0xFF, SERVER_ALIGNED_SIZE);
+    std::cerr << "[DEBUG] Memset done, initializing locks...\n" << std::flush;
 
     // zero lock headers (FAA counters)
     auto* base = static_cast<char*>(ptr);
@@ -315,6 +318,7 @@ inline void* allocate_server_buffer(size_t num_locks = MAX_LOCKS) {
         *reinterpret_cast<uint64_t*>(base + lock_control_offset(l)) = 0;
         *reinterpret_cast<uint64_t*>(base + lock_turn_offset(l)) = 0;
     }
+    std::cerr << "[DEBUG] Server buffer ready\n" << std::flush;
 
     return ptr;
 }
