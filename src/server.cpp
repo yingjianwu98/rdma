@@ -241,8 +241,17 @@ void Server::start(uint16_t port) {
     std::cerr << "[DEBUG] All locks initialized!" << std::endl;
     std::cerr.flush();
 
+    std::cerr << "[DEBUG] Getting cluster size..." << std::endl;
+    std::cerr.flush();
     const size_t num_nodes = CLUSTER_NODES.size();
+    std::cerr << "[DEBUG] num_nodes=" << num_nodes << std::endl;
+    std::cerr.flush();
+
+    std::cerr << "[DEBUG] Calling expected_clients()..." << std::endl;
+    std::cerr.flush();
     const uint32_t num_clients = expected_clients();
+    std::cerr << "[DEBUG] num_clients=" << num_clients << std::endl;
+    std::cerr.flush();
 
     std::cout << "[Server " << node_id_ << "] Listening on port " << port << "\n";
 
