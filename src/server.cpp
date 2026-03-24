@@ -158,14 +158,18 @@ void Server::start(uint16_t port) {
     std::cout << "[Server " << node_id_ << "] Starting (TCP-based QP exchange)...\n" << std::flush;
 
     // Allocate buffer first
+    std::cerr << "[DEBUG] About to allocate buffer...\n" << std::flush;
     buf_ = allocate_server_buffer();
-    std::cout << "[Server " << node_id_ << "] Buffer allocated\n";
+    std::cerr << "[DEBUG] allocate_server_buffer returned, printing message...\n" << std::flush;
+    std::cout << "[Server " << node_id_ << "] Buffer allocated\n" << std::flush;
+    std::cerr << "[DEBUG] Message printed, initializing locks...\n" << std::flush;
 
     auto* base = static_cast<uint8_t*>(buf_);
     for (uint32_t i = 0; i < MAX_LOCKS; ++i) {
         *reinterpret_cast<volatile uint64_t*>(base + lock_control_offset(i)) = 0;
         *reinterpret_cast<volatile uint64_t*>(base + lock_turn_offset(i)) = 0;
     }
+    std::cerr << "[DEBUG] Locks initialized\n" << std::flush;
 
     const size_t num_nodes = CLUSTER_NODES.size();
     const uint32_t num_clients = expected_clients();
