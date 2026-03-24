@@ -281,13 +281,18 @@ void Server::start(uint16_t port) {
     }
 
     // ── Phase 2: Accept from higher-id nodes + all clients ──
+    std::cerr << "[DEBUG] Entering Phase 2 (accept connections)..." << std::endl;
+    std::cerr.flush();
     const uint32_t expect_higher = num_nodes - 1 - node_id_;
+    std::cerr << "[DEBUG] expect_higher=" << expect_higher << std::endl;
+    std::cerr.flush();
     uint32_t higher_connected = 0;
     uint32_t clients_connected = 0;
 
     std::cout << "[Server " << node_id_ << "] Waiting for "
               << expect_higher << " higher nodes + "
               << num_clients << " clients\n";
+    std::cout.flush();
 
     while (higher_connected < expect_higher ||
            clients_connected < num_clients) {
