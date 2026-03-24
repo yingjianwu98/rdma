@@ -253,7 +253,12 @@ void Server::start(uint16_t port) {
     std::cerr << "[DEBUG] num_clients=" << num_clients << std::endl;
     std::cerr.flush();
 
-    std::cout << "[Server " << node_id_ << "] Listening on port " << port << "\n";
+    std::cerr << "[DEBUG] About to print 'Listening' message to stdout..." << std::endl;
+    std::cerr.flush();
+    std::cout << "[Server " << node_id_ << "] Listening on port " << port << std::endl;
+    std::cout.flush();
+    std::cerr << "[DEBUG] 'Listening' message printed!" << std::endl;
+    std::cerr.flush();
 
     // ── Phase 1: Connect to all lower-id nodes ──
     for (uint32_t target = 0; target < node_id_; ++target) {
