@@ -23,13 +23,11 @@
 // ─── Cluster config ───
 
 inline const std::vector<std::string> CLUSTER_NODES = {
-    "192.168.1.1",
-    "192.168.1.2",
-    "192.168.1.3",
-    "192.168.1.4",
-    "192.168.1.5",
-    // "192.168.1.6",
-    // "192.168.1.7"
+    "192.168.1.1",  // apt130 - Node 0
+    "192.168.1.2",  // apt131 - Node 1
+    "192.168.1.3",  // apt129 - Node 2
+    "192.168.1.4",  // apt132 - Node 3
+    "192.168.1.5",  // apt136 - Node 4
 };
 
 // change these two variables together
@@ -206,18 +204,18 @@ inline size_t huge_page_align(const size_t size) {
 }
 
 inline void* allocate_hugepage_buffer(const size_t requested_size) {
-    const size_t aligned_size = huge_page_align(std::max(requested_size, huge_page_size()));
+    const size_t aligned_size = align_up(requested_size, PAGE_SIZE);
     void* ptr = mmap(nullptr, aligned_size, PROT_READ | PROT_WRITE,
-                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (ptr == MAP_FAILED) {
-        throw std::runtime_error("Could not allocate hugepage RDMA buffer");
+        throw std::runtime_error("Could not allocate RDMA buffer");
     }
     return ptr;
 }
 
 inline void free_hugepage_buffer(void* ptr, const size_t requested_size) noexcept {
     if (!ptr) return;
-    const size_t aligned_size = huge_page_align(std::max(requested_size, huge_page_size()));
+    const size_t aligned_size = align_up(requested_size, PAGE_SIZE);
     munmap(ptr, aligned_size);
 }
 

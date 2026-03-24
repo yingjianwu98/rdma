@@ -1,122 +1,100 @@
 #include "rdma/client.h"
-
-// Client RDMA connection management and local buffer lifetime.
 #include "rdma/common.h"
+#include "rdma/tcp_qp_exchange.h"
 
 #include <arpa/inet.h>
+#include <sys/socket.h>
+#include <netinet/tcp.h>
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
 #include <string>
-#include <thread>
-#include <chrono>
+#include <unistd.h>
 #include <sys/mman.h>
 
-#include "rdma/mu_encoding.h"
+// Modified Client to use TCP-based QP exchange instead of rdma_cm
 
-// Wait for one specific CM event and fail fast if the connection state machine
-// deviates from the expected handshake step.
-static rdma_cm_event* wait_for_event(
-    rdma_event_channel* ec,
-    const rdma_cm_event_type expected,
-    const std::string& step
-) {
-    rdma_cm_event* event = nullptr;
-    if (rdma_get_cm_event(ec, &event)) {
-        throw std::runtime_error("rdma_get_cm_event failed during " + step);
-    }
-    if (event->event != expected) {
-        const int status = event->status;
-        const auto actual = event->event;
-        rdma_ack_cm_event(event);
-        throw std::runtime_error(
-            "Expected " + step + " but got event " + std::to_string(actual) + " status " + std::to_string(status));
-    }
-    return event;
-}
-
-// Construct a client shell; RDMA resources are created lazily on connect.
 Client::Client(const uint32_t id, const size_t buffer_size)
     : id_(id)
     , buffer_size_(std::max(align_up(buffer_size, PAGE_SIZE), PAGE_SIZE)) {
 }
 
-// Tear down all client-side RDMA resources and free the huge-page buffer.
 Client::~Client() {
     for (const auto& conn : connections_) {
-        if (conn.id && conn.id->qp) rdma_destroy_qp(conn.id);
-        if (conn.id) rdma_destroy_id(conn.id);
+        if (conn.id) {
+            if (conn.id->qp) ibv_destroy_qp(conn.id->qp);
+            delete conn.id;  // We allocate RemoteNode.id as a placeholder now
+        }
     }
     if (mr_) ibv_dereg_mr(mr_);
     if (cq_) ibv_destroy_cq(cq_);
     if (pd_) ibv_dealloc_pd(pd_);
     if (buf_) free_hugepage_buffer(buf_, buffer_size_);
-    if (ec_) rdma_destroy_event_channel(ec_);
 }
 
-// Connect this client to the target server nodes and initialize the local MR/CQ
-// on the first successful connection.
 void Client::connect(const std::vector<std::string>& node_ips, const uint16_t port) {
-    if (!ec_) {
-        ec_ = rdma_create_event_channel();
-        if (!ec_) throw std::runtime_error("rdma_create_event_channel failed");
-    }
-
     if (!buf_) {
         buf_ = allocate_client_buffer(buffer_size_);
     }
 
-    for (size_t i = 0; i < node_ips.size(); ++i) {
-        std::cout << "[Client " << id_ << "] Connecting to " << node_ips[i] << "...\n";
+    // Get first RDMA device to initialize resources
+    ibv_device** dev_list = ibv_get_device_list(nullptr);
+    if (!dev_list || !dev_list[0]) {
+        throw std::runtime_error("No RDMA devices found");
+    }
 
-        rdma_cm_id* cm_id = nullptr;
-        if (rdma_create_id(ec_, &cm_id, nullptr, RDMA_PS_TCP)) {
-            throw std::runtime_error(
-                "rdma_create_id failed for node " + std::to_string(i));
+    ibv_context* ctx = ibv_open_device(dev_list[0]);
+    if (!ctx) {
+        ibv_free_device_list(dev_list);
+        throw std::runtime_error("Failed to open RDMA device");
+    }
+    ibv_free_device_list(dev_list);
+
+    const int ib_port = 1;
+    const int gid_index = detect_gid_index(ctx, ib_port);
+
+    std::cout << "[Client " << id_ << "] Using GID index: " << gid_index << "\n";
+
+    // Initialize PD, CQ, MR once
+    if (!pd_) {
+        pd_ = ibv_alloc_pd(ctx);
+        if (!pd_) throw std::runtime_error("ibv_alloc_pd failed");
+
+        cq_ = ibv_create_cq(ctx, QP_DEPTH * std::max<size_t>(node_ips.size() * 2, 32), nullptr, nullptr, 0);
+        if (!cq_) throw std::runtime_error("ibv_create_cq failed");
+
+        mr_ = ibv_reg_mr(pd_, buf_, buffer_size_, IBV_ACCESS_LOCAL_WRITE);
+        if (!mr_) throw std::runtime_error("ibv_reg_mr failed");
+    }
+
+    // Connect to each server node via TCP + manual QP setup
+    for (size_t i = 0; i < node_ips.size(); ++i) {
+        std::cout << "[Client " << id_ << "] Connecting to " << node_ips[i] << ":" << port << "...\n";
+
+        // 1. TCP connect to server
+        int sock = socket(AF_INET, SOCK_STREAM, 0);
+        if (sock < 0) {
+            throw std::runtime_error("socket() failed for node " + std::to_string(i));
         }
+
+        // Disable Nagle for lower latency
+        int flag = 1;
+        setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
 
         sockaddr_in addr{};
         addr.sin_family = AF_INET;
         addr.sin_port = htons(port);
         if (inet_pton(AF_INET, node_ips[i].c_str(), &addr.sin_addr) <= 0) {
+            close(sock);
             throw std::runtime_error("Invalid IP: " + node_ips[i]);
         }
 
-        if (rdma_resolve_addr(cm_id, nullptr,
-                              reinterpret_cast<sockaddr*>(&addr), 2000)) {
-            throw std::runtime_error(
-                "rdma_resolve_addr failed for node " + std::to_string(i));
+        if (::connect(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+            close(sock);
+            throw std::runtime_error("TCP connect failed for " + node_ips[i]);
         }
 
-        auto* ev_addr = wait_for_event(ec_, RDMA_CM_EVENT_ADDR_RESOLVED,
-                                       "ADDR_RESOLVE");
-        rdma_ack_cm_event(ev_addr);
-
-        if (rdma_resolve_route(cm_id, 2000)) {
-            throw std::runtime_error(
-                "rdma_resolve_route failed for node " + std::to_string(i));
-        }
-
-        auto* ev_route = wait_for_event(ec_, RDMA_CM_EVENT_ROUTE_RESOLVED,
-                                        "ROUTE_RESOLVE");
-        rdma_ack_cm_event(ev_route);
-
-        if (!pd_) {
-            pd_ = ibv_alloc_pd(cm_id->verbs);
-            if (!pd_) throw std::runtime_error("ibv_alloc_pd failed");
-
-            cq_ = ibv_create_cq(
-                cm_id->verbs,
-                QP_DEPTH * static_cast<int>(std::max<size_t>(node_ips.size() + CLUSTER_NODES.size(), 32)),
-                nullptr, nullptr, 0);
-            if (!cq_) throw std::runtime_error("ibv_create_cq failed");
-
-            mr_ = ibv_reg_mr(
-                pd_, buf_, buffer_size_,
-                IBV_ACCESS_LOCAL_WRITE);
-            if (!mr_) throw std::runtime_error("ibv_reg_mr failed");
-        }
-
+        // 2. Create QP
         ibv_qp_init_attr qp_attr{};
         qp_attr.qp_type = IBV_QPT_RC;
         qp_attr.send_cq = cq_;
@@ -127,56 +105,59 @@ void Client::connect(const std::vector<std::string>& node_ips, const uint16_t po
         qp_attr.cap.max_recv_sge = 1;
         qp_attr.cap.max_inline_data = MAX_INLINE_DEPTH;
 
-        if (rdma_create_qp(cm_id, pd_, &qp_attr)) {
-            throw std::runtime_error(
-                "rdma_create_qp failed for node " + std::to_string(i));
+        ibv_qp* qp = ibv_create_qp(pd_, &qp_attr);
+        if (!qp) {
+            close(sock);
+            throw std::runtime_error("ibv_create_qp failed for node " + std::to_string(i));
         }
 
-        ConnPrivateData priv{};
-        priv.node_id = id_;
-        priv.type = ConnType::CLIENT;
-        priv.addr = reinterpret_cast<uintptr_t>(buf_);
-        priv.rkey = mr_->rkey;
+        // 3. Transition QP to INIT
+        qp_to_init(qp, ib_port);
 
-        rdma_conn_param param{};
-        param.private_data = &priv;
-        param.private_data_len = sizeof(priv);
-        param.responder_resources = RDMA_RESPONDER_RESOURCES;
-        param.initiator_depth = RDMA_INITIATOR_DEPTH;
-        param.rnr_retry_count = 10;
+        // 4. Exchange QP info over TCP
+        QpExchangeInfo local_info = get_local_qp_info(
+            qp, ctx, ib_port, gid_index,
+            reinterpret_cast<uintptr_t>(buf_), mr_->rkey,
+            id_, static_cast<uint8_t>(ConnType::CLIENT)
+        );
 
-        if (rdma_connect(cm_id, &param)) {
-            throw std::runtime_error("rdma_connect failed for node " + std::to_string(i));
+        QpExchangeInfo remote_info{};
+        if (!tcp_exchange_qp_info(sock, &local_info, &remote_info)) {
+            close(sock);
+            ibv_destroy_qp(qp);
+            throw std::runtime_error("QP exchange failed for node " + std::to_string(i));
         }
 
-        auto* ev_conn = wait_for_event(ec_, RDMA_CM_EVENT_ESTABLISHED, "ESTABLISHED");
-        if (!ev_conn->param.conn.private_data ||
-            ev_conn->param.conn.private_data_len < sizeof(ConnPrivateData)) {
-            rdma_ack_cm_event(ev_conn);
-            throw std::runtime_error("No private data from node " + std::to_string(i));
-        }
+        close(sock);  // TCP handshake done
 
-        auto* remote = static_cast<const ConnPrivateData*>(ev_conn->param.conn.private_data);
+        // 5. Transition QP to RTR and RTS
+        qp_to_rtr(qp, ib_port, gid_index, &remote_info);
+        qp_to_rts(qp);
 
-        connections_.push_back({
-            .id = cm_id,
-            .addr = remote->addr,
-            .rkey = remote->rkey,
-        });
-
+        // 6. Pre-post recv for GO signal
         ibv_recv_wr rr{}, *bad_rr = nullptr;
-        rr.wr_id = 0xBEEF0000 | (connections_.size() - 1);
+        rr.wr_id = 0xBEEF0000 | connections_.size();
         rr.sg_list = nullptr;
         rr.num_sge = 0;
-        if (ibv_post_recv(cm_id->qp, &rr, &bad_rr)) {
+        if (ibv_post_recv(qp, &rr, &bad_rr)) {
             throw std::runtime_error("Failed to pre-post GO recv");
         }
 
-        rdma_ack_cm_event(ev_conn);
+        // 7. Store connection info
+        // Create a minimal rdma_cm_id* wrapper just to hold the QP
+        auto* fake_id = new rdma_cm_id{};
+        fake_id->qp = qp;
+        fake_id->verbs = ctx;
 
-        std::cout << "[Client " << id_ << "] Connected to node " << i << "\n";
+        connections_.push_back({
+            .id = fake_id,
+            .addr = remote_info.remote_addr,
+            .rkey = remote_info.rkey
+        });
+
+        std::cout << "[Client " << id_ << "] Connected to node " << i
+                  << " (QP " << qp->qp_num << " <-> " << remote_info.qp_num << ")\n";
     }
 
-    std::cout << "[Client " << id_ << "] All " << node_ips.size() << " node connections established\n";
+    std::cout << "[Client " << id_ << "] All " << node_ips.size() << " connections established\n";
 }
-
