@@ -91,6 +91,13 @@ RemoteConnection Server::connect_to_node(const std::string& ip, uint16_t port) {
         ev = wait_for_event(outbound_ec, RDMA_CM_EVENT_ROUTE_RESOLVED, "ROUTE_RESOLVE");
         rdma_ack_cm_event(ev);
 
+        std::cerr << "[DEBUG] Route resolved to " << ip << std::endl;
+        if (cm_id->verbs) {
+            std::cerr << "[DEBUG] Using device: " << ibv_get_device_name(cm_id->verbs->device)
+                      << " port: " << (int)cm_id->port_num << std::endl;
+        }
+        std::cerr.flush();
+
         // init RDMA resources on first connection
         if (!pd_) {
             pd_ = ibv_alloc_pd(cm_id->verbs);
@@ -173,23 +180,37 @@ void Server::start(uint16_t port) {
     std::cerr << "[DEBUG] Event channel created" << std::endl;
     std::cerr.flush();
 
+    std::cerr << "[DEBUG] Creating listener cm_id..." << std::endl;
+    std::cerr.flush();
     if (rdma_create_id(ec_, &listener_, nullptr, RDMA_PS_TCP))
         throw std::runtime_error("rdma_create_id failed");
+    std::cerr << "[DEBUG] Listener cm_id created" << std::endl;
+    std::cerr.flush();
 
     sockaddr_in addr{};
     addr.sin_family      = AF_INET;
     addr.sin_port        = htons(port);
     addr.sin_addr.s_addr = INADDR_ANY;
 
-    std::cerr << "[DEBUG] Calling rdma_bind_addr..." << std::endl;
+    std::cerr << "[DEBUG] Calling rdma_bind_addr on 0.0.0.0:" << port << "..." << std::endl;
     std::cerr.flush();
     if (rdma_bind_addr(listener_, reinterpret_cast<sockaddr*>(&addr))) {
         std::cerr << "[ERROR] rdma_bind_addr failed with errno=" << errno
                   << " (" << strerror(errno) << ")" << std::endl;
+        if (listener_->verbs) {
+            std::cerr << "[ERROR] Device was: " << ibv_get_device_name(listener_->verbs->device) << std::endl;
+            std::cerr << "[ERROR] Port num: " << (int)listener_->port_num << std::endl;
+        } else {
+            std::cerr << "[ERROR] listener_->verbs is NULL (no device selected yet)" << std::endl;
+        }
         std::cerr.flush();
         throw std::runtime_error("rdma_bind_addr failed: " + std::string(strerror(errno)));
     }
     std::cerr << "[DEBUG] rdma_bind_addr succeeded" << std::endl;
+    if (listener_->verbs) {
+        std::cerr << "[DEBUG] Bound to device: " << ibv_get_device_name(listener_->verbs->device)
+                  << " port: " << (int)listener_->port_num << std::endl;
+    }
     std::cerr.flush();
 
     std::cerr << "[DEBUG] Calling rdma_listen..." << std::endl;
