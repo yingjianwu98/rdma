@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 cmake_policy(SET CMP0069 NEW)
 
 file(GLOB_RECURSE SOURCES src/*.cpp)
+list(FILTER SOURCES EXCLUDE REGEX ".*_old\\.cpp$")
 add_executable(rdma ${SOURCES})
 
 target_include_directories(rdma PRIVATE ${CMAKE_SOURCE_DIR}/include)
