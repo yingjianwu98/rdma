@@ -297,14 +297,26 @@ void Server::start(uint16_t port) {
     while (higher_connected < expect_higher ||
            clients_connected < num_clients) {
 
+        std::cerr << "[DEBUG] Calling rdma_get_cm_event (expecting " << (expect_higher - higher_connected)
+                  << " peers, " << (num_clients - clients_connected) << " clients)..." << std::endl;
+        std::cerr.flush();
+
         rdma_cm_event* event = nullptr;
         if (rdma_get_cm_event(ec_, &event))
             throw std::runtime_error("rdma_get_cm_event failed");
 
+        std::cerr << "[DEBUG] Got event type: " << event->event << std::endl;
+        std::cerr.flush();
+
         if (event->event != RDMA_CM_EVENT_CONNECT_REQUEST) {
+            std::cerr << "[DEBUG] Ignoring event (not CONNECT_REQUEST)" << std::endl;
+            std::cerr.flush();
             rdma_ack_cm_event(event);
             continue;
         }
+
+        std::cerr << "[DEBUG] Processing CONNECT_REQUEST..." << std::endl;
+        std::cerr.flush();
 
         rdma_cm_id* new_id = event->id;
         auto* incoming = static_cast<const ConnPrivateData*>(
