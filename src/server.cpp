@@ -162,8 +162,15 @@ RemoteConnection Server::connect_to_node(const std::string& ip, uint16_t port) {
 // Start the server listener, build the server mesh, accept clients, then enter
 // the subclass-specific run loop.
 void Server::start(uint16_t port) {
+    std::cerr << "[DEBUG] Server::start() called for node " << node_id_ << std::endl;
+    std::cerr.flush();
+
+    std::cerr << "[DEBUG] Creating event channel..." << std::endl;
+    std::cerr.flush();
     ec_ = rdma_create_event_channel();
     if (!ec_) throw std::runtime_error("rdma_create_event_channel failed");
+    std::cerr << "[DEBUG] Event channel created" << std::endl;
+    std::cerr.flush();
 
     if (rdma_create_id(ec_, &listener_, nullptr, RDMA_PS_TCP))
         throw std::runtime_error("rdma_create_id failed");
@@ -173,12 +180,26 @@ void Server::start(uint16_t port) {
     addr.sin_port        = htons(port);
     addr.sin_addr.s_addr = INADDR_ANY;
 
+    std::cerr << "[DEBUG] Calling rdma_bind_addr..." << std::endl;
+    std::cerr.flush();
     if (rdma_bind_addr(listener_, reinterpret_cast<sockaddr*>(&addr)))
         throw std::runtime_error("rdma_bind_addr failed");
+    std::cerr << "[DEBUG] rdma_bind_addr succeeded" << std::endl;
+    std::cerr.flush();
+
+    std::cerr << "[DEBUG] Calling rdma_listen..." << std::endl;
+    std::cerr.flush();
     if (rdma_listen(listener_, 32))
         throw std::runtime_error("rdma_listen failed");
+    std::cerr << "[DEBUG] rdma_listen succeeded" << std::endl;
+    std::cerr.flush();
 
+    std::cerr << "[DEBUG] About to allocate server buffer ("
+              << (SERVER_ALIGNED_SIZE / 1024 / 1024) << " MB)..." << std::endl;
+    std::cerr.flush();
     buf_ = allocate_server_buffer();
+    std::cerr << "[DEBUG] Server buffer allocated!" << std::endl;
+    std::cerr.flush();
 
     auto* base = static_cast<uint8_t*>(buf_);
     for (uint32_t i = 0; i < MAX_LOCKS; ++i) {
