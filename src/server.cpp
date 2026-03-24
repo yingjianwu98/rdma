@@ -3,6 +3,7 @@
 // Generic server/node RDMA endpoint setup and shared lock-table MR registration.
 
 #include <arpa/inet.h>
+#include <cerrno>
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
@@ -182,8 +183,12 @@ void Server::start(uint16_t port) {
 
     std::cerr << "[DEBUG] Calling rdma_bind_addr..." << std::endl;
     std::cerr.flush();
-    if (rdma_bind_addr(listener_, reinterpret_cast<sockaddr*>(&addr)))
-        throw std::runtime_error("rdma_bind_addr failed");
+    if (rdma_bind_addr(listener_, reinterpret_cast<sockaddr*>(&addr))) {
+        std::cerr << "[ERROR] rdma_bind_addr failed with errno=" << errno
+                  << " (" << strerror(errno) << ")" << std::endl;
+        std::cerr.flush();
+        throw std::runtime_error("rdma_bind_addr failed: " + std::string(strerror(errno)));
+    }
     std::cerr << "[DEBUG] rdma_bind_addr succeeded" << std::endl;
     std::cerr.flush();
 
