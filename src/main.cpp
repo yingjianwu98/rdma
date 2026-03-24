@@ -25,23 +25,35 @@
 constexpr const char* STRATEGY = "cas";      // "mu", "ticket_faa", "cas", or "simple_cas"
 
 int main() {
+    std::cerr << "[DEBUG] main() started" << std::endl;
+    std::cerr.flush();
     try {
+        std::cerr << "[DEBUG] In try block, loading config..." << std::endl;
+        std::cerr.flush();
         // Each pipeline exposes a config struct plus a client buffer-size helper.
         // New pipelines should follow that pattern so main stays uniform.
         const bool is_mu  = (std::string(STRATEGY) == "mu");
         const bool is_ticket_faa = (std::string(STRATEGY) == "ticket_faa");
         const bool is_cas = (std::string(STRATEGY) == "cas");
         const bool is_simple_cas = (std::string(STRATEGY) == "simple_cas");
+        std::cerr << "[DEBUG] Strategy flags set, loading pipeline configs..." << std::endl;
+        std::cerr.flush();
         const CasPipelineConfig cas_config = is_cas ? load_cas_pipeline_config() : CasPipelineConfig{};
         const SimpleCasPipelineConfig simple_cas_config =
             is_simple_cas ? load_simple_cas_pipeline_config() : SimpleCasPipelineConfig{};
         const TicketFaaLockPipelineConfig ticket_faa_config =
             is_ticket_faa ? load_ticket_faa_lock_pipeline_config() : TicketFaaLockPipelineConfig{};
         const MuPipelineConfig mu_config = is_mu ? load_mu_pipeline_config() : MuPipelineConfig{};
+        std::cerr << "[DEBUG] Pipeline configs loaded" << std::endl;
+        std::cerr.flush();
 
         // Client mode runs worker threads for the selected pipeline. Server mode
         // below launches either the MU leader/follower path or generic nodes.
+        std::cerr << "[DEBUG] Checking IS_CLIENT env var..." << std::endl;
+        std::cerr.flush();
         if (get_uint_env("IS_CLIENT") != 0) {
+            std::cerr << "[DEBUG] IS_CLIENT=1, entering client mode..." << std::endl;
+            std::cerr.flush();
             const uint32_t machine_id = get_uint_env("MACHINE_ID");
 
             auto all_latencies = std::make_unique<std::array<uint64_t, NUM_TOTAL_OPS>>();
@@ -262,20 +274,44 @@ int main() {
                       << std::endl;
 
         } else {
+            std::cerr << "[DEBUG] Server mode, getting NODE_ID..." << std::endl;
+            std::cerr.flush();
             const uint32_t node_id = get_uint_env("NODE_ID");
+            std::cerr << "[DEBUG] NODE_ID=" << node_id << std::endl;
+            std::cerr.flush();
 
             if (is_mu) {
+                std::cerr << "[DEBUG] MU mode, pinning to CPU 0..." << std::endl;
+                std::cerr.flush();
                 pin_thread_to_cpu(0);
+                std::cerr << "[DEBUG] Pinned to CPU 0" << std::endl;
+                std::cerr.flush();
                 if (node_id == 0) {
+                    std::cerr << "[DEBUG] Creating MuLeader..." << std::endl;
+                    std::cerr.flush();
                     MuLeader leader(node_id, 0, MAX_LOCKS);
+                    std::cerr << "[DEBUG] MuLeader created, starting..." << std::endl;
+                    std::cerr.flush();
                     leader.start(RDMA_PORT);
                 } else {
+                    std::cerr << "[DEBUG] Creating MuFollower..." << std::endl;
+                    std::cerr.flush();
                     MuFollower follower(node_id, 0, MAX_LOCKS);
+                    std::cerr << "[DEBUG] MuFollower created, starting..." << std::endl;
+                    std::cerr.flush();
                     follower.start(RDMA_PORT);
                 }
             } else {
+                std::cerr << "[DEBUG] Non-MU mode, pinning to CPU 1..." << std::endl;
+                std::cerr.flush();
                 pin_thread_to_cpu(1);
+                std::cerr << "[DEBUG] Pinned to CPU 1" << std::endl;
+                std::cerr.flush();
+                std::cerr << "[DEBUG] Creating SynraNode..." << std::endl;
+                std::cerr.flush();
                 SynraNode node(node_id);
+                std::cerr << "[DEBUG] SynraNode created, starting..." << std::endl;
+                std::cerr.flush();
                 node.start(RDMA_PORT);
             }
         }
