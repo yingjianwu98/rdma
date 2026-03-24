@@ -227,11 +227,19 @@ void Server::start(uint16_t port) {
     std::cerr << "[DEBUG] Server buffer allocated!" << std::endl;
     std::cerr.flush();
 
+    std::cerr << "[DEBUG] Initializing " << MAX_LOCKS << " locks..." << std::endl;
+    std::cerr.flush();
     auto* base = static_cast<uint8_t*>(buf_);
     for (uint32_t i = 0; i < MAX_LOCKS; ++i) {
         *reinterpret_cast<volatile uint64_t*>(base + lock_control_offset(i)) = 0;
         *reinterpret_cast<volatile uint64_t*>(base + lock_turn_offset(i)) = 0;
+        if (i % 200 == 0) {
+            std::cerr << "[DEBUG] Initialized " << i << " locks..." << std::endl;
+            std::cerr.flush();
+        }
     }
+    std::cerr << "[DEBUG] All locks initialized!" << std::endl;
+    std::cerr.flush();
 
     const size_t num_nodes = CLUSTER_NODES.size();
     const uint32_t num_clients = expected_clients();
