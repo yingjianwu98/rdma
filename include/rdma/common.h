@@ -128,7 +128,7 @@ constexpr size_t SIMPLE_MU_LOG_CAPACITY = NUM_OPS;
 // ─── Synra FAA primitive config ───
 // Clients reserve one flat-log slot via FAA, then CAS the client id into it.
 
-constexpr size_t SYNRA_FAA_ACTIVE_WINDOW = 4;
+constexpr size_t SYNRA_FAA_ACTIVE_WINDOW = 8;
 constexpr size_t SYNRA_FAA_CQ_BATCH = 32;
 constexpr size_t SYNRA_FAA_LOG_CAPACITY = NUM_OPS;
 
