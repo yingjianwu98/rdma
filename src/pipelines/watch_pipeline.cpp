@@ -205,6 +205,14 @@ void post_write_id(Client& client, WatchOpCtx& op, const RegisteredWatchBuffers&
     op.responses = 0;
     op.response_target = static_cast<uint32_t>(conns.size());
 
+    const uint64_t write_offset = watch_id_slot_offset(op.object_id, op.watcher_slot);
+    if (op.slot == 0) {  // Log first operation only
+        std::cerr << "[DEBUG] WRITE_ID: object_id=" << op.object_id
+                  << " watcher_slot=" << op.watcher_slot
+                  << " watch_id_slot_offset=" << write_offset
+                  << " (MAX_WATCHERS=" << MAX_WATCHERS_PER_OBJECT << ")" << std::endl;
+    }
+
     // Write our watcher ID to all nodes in parallel
     for (size_t i = 0; i < conns.size(); ++i) {
         results[i] = op.watcher_id;
@@ -220,8 +228,14 @@ void post_write_id(Client& client, WatchOpCtx& op, const RegisteredWatchBuffers&
         wr.send_flags = IBV_SEND_SIGNALED;
         wr.sg_list = &sge;
         wr.num_sge = 1;
-        wr.wr.rdma.remote_addr = conns[i].addr + watch_id_slot_offset(op.object_id, op.watcher_slot);
+        wr.wr.rdma.remote_addr = conns[i].addr + write_offset;
         wr.wr.rdma.rkey = conns[i].rkey;
+
+        if (op.slot == 0 && i == 0) {
+            std::cerr << "[DEBUG] WRITE_ID to node " << i << ": remote_addr=0x" << std::hex
+                      << wr.wr.rdma.remote_addr << std::dec
+                      << " rkey=" << wr.wr.rdma.rkey << std::endl;
+        }
 
         if (ibv_post_send(conns[i].id->qp, &wr, &bad_wr)) {
             throw std::runtime_error("watch pipeline: write ID post failed");
