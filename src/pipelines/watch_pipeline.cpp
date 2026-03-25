@@ -407,6 +407,12 @@ void run_watch_pipeline(
     const size_t notification_ops = NUM_OPS_PER_CLIENT - registration_ops;
     bool in_registration_phase = true;
 
+    // Verification statistics
+    uint64_t total_watchers_seen = 0;
+    uint64_t max_watchers = 0;
+    uint64_t min_watchers = UINT64_MAX;
+    size_t zero_watcher_objects = 0;
+
     auto submit_op = [&](const size_t slot) {
         auto& op = ops[slot];
         op.active = true;
@@ -540,6 +546,16 @@ void run_watch_pipeline(
             if (phase == WatchPhase::read_count) {
                 // Got watcher count, now read all watcher IDs (notification phase only)
                 op.total_watchers = buffers.count_result[op.slot];
+
+                // Track verification stats
+                total_watchers_seen += op.total_watchers;
+                max_watchers = std::max(max_watchers, op.total_watchers);
+                if (op.total_watchers > 0) {
+                    min_watchers = std::min(min_watchers, op.total_watchers);
+                } else {
+                    zero_watcher_objects++;
+                }
+
                 if (op.total_watchers > 0) {
                     post_read_watcher_ids(client, op, buffers);
                 } else {
@@ -584,5 +600,26 @@ void run_watch_pipeline(
                 }
             }
         }
+    }
+
+    // Print verification statistics
+    std::cout << "\n[Client " << client.id() << "] Watch Verification:\n";
+    std::cout << "  Registration ops: " << registration_ops << "\n";
+    std::cout << "  Notification ops: " << notification_ops << "\n";
+    std::cout << "  Total watchers seen: " << total_watchers_seen << "\n";
+    std::cout << "  Avg watchers/object: " << (notification_ops > 0 ? total_watchers_seen / notification_ops : 0) << "\n";
+    std::cout << "  Min watchers: " << (min_watchers == UINT64_MAX ? 0 : min_watchers) << "\n";
+    std::cout << "  Max watchers: " << max_watchers << "\n";
+    std::cout << "  Objects with 0 watchers: " << zero_watcher_objects << "\n";
+
+    // Expected: Each client registers 937,500 times across 1000 objects
+    // With uniform distribution: ~937 registrations per object per client
+    // Total across 8 clients: ~7,500 watchers per object
+    const uint64_t expected_avg = (registration_ops * 8) / 1000;  // Total registrations / objects
+    const uint64_t actual_avg = notification_ops > 0 ? total_watchers_seen / notification_ops : 0;
+    if (actual_avg < expected_avg * 0.9 || actual_avg > expected_avg * 1.1) {
+        std::cout << "  WARNING: Expected ~" << expected_avg << " watchers/object, got " << actual_avg << "\n";
+    } else {
+        std::cout << "  ✓ Watcher counts look correct (expected ~" << expected_avg << ")\n";
     }
 }
