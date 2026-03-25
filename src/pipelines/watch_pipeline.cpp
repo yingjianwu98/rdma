@@ -157,6 +157,12 @@ void post_faa_slot(Client& client, WatchOpCtx& op, const RegisteredWatchBuffers&
     op.response_target = static_cast<uint32_t>(conns.size());
     op.quorum_hits = 0;
 
+    if (op.slot == 0) {  // Log first operation only
+        std::cerr << "[DEBUG] FAA: object_id=" << op.object_id
+                  << " watch_counter_offset=" << watch_counter_offset(op.object_id)
+                  << " posting to " << conns.size() << " nodes" << std::endl;
+    }
+
     // Post FAA to all nodes in parallel
     for (size_t i = 0; i < conns.size(); ++i) {
         results[i] = 0;
@@ -175,6 +181,12 @@ void post_faa_slot(Client& client, WatchOpCtx& op, const RegisteredWatchBuffers&
         wr.wr.atomic.remote_addr = conns[i].addr + watch_counter_offset(op.object_id);
         wr.wr.atomic.rkey = conns[i].rkey;
         wr.wr.atomic.compare_add = 1;  // Increment by 1
+
+        if (op.slot == 0 && i == 0) {
+            std::cerr << "[DEBUG] FAA to node " << i << ": remote_addr=0x" << std::hex
+                      << wr.wr.atomic.remote_addr << std::dec
+                      << " rkey=" << wr.wr.atomic.rkey << std::endl;
+        }
 
         if (ibv_post_send(conns[i].id->qp, &wr, &bad_wr)) {
             throw std::runtime_error("watch pipeline: FAA slot post failed");
@@ -423,6 +435,23 @@ void run_watch_pipeline(
         for (int i = 0; i < polled; ++i) {
             const ibv_wc& wc = completions[static_cast<size_t>(i)];
             if (wc.status != IBV_WC_SUCCESS) {
+                const uint32_t slot = wr_slot(wc.wr_id);
+                const WatchPhase phase = wr_phase(wc.wr_id);
+                const uint8_t conn_idx = wr_conn(wc.wr_id);
+                const char* phase_name = "unknown";
+                if (phase == WatchPhase::faa_slot) phase_name = "faa_slot";
+                else if (phase == WatchPhase::write_id) phase_name = "write_id";
+                else if (phase == WatchPhase::read_count) phase_name = "read_count";
+                else if (phase == WatchPhase::read_watcher_ids) phase_name = "read_watcher_ids";
+                else if (phase == WatchPhase::notify_watchers) phase_name = "notify_watchers";
+
+                std::cerr << "[ERROR] WC failed: status=" << wc.status
+                          << " vendor_err=" << wc.vendor_err
+                          << " phase=" << phase_name
+                          << " slot=" << slot
+                          << " conn=" << static_cast<int>(conn_idx)
+                          << " opcode=" << wc.opcode
+                          << " byte_len=" << wc.byte_len << std::endl;
                 throw std::runtime_error("watch pipeline: WC error status=" + std::to_string(wc.status));
             }
 
