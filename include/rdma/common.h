@@ -62,12 +62,12 @@ constexpr uint8_t RDMA_INITIATOR_DEPTH = 16;
 // ─── Benchmark / workload config ───
 // These knobs define the workload shape shared across all pipelines.
 
-constexpr size_t NUM_OPS = 10000;
+constexpr size_t NUM_OPS = 200000;
 constexpr size_t NUM_CLIENTS_PER_MACHINE = 1;
 constexpr size_t TOTAL_CLIENTS = NUM_CLIENTS_PER_MACHINE * TOTAL_CLIENT_MACHINES;
 constexpr size_t NUM_OPS_PER_CLIENT = NUM_OPS / TOTAL_CLIENTS;
 constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * TOTAL_CLIENTS;
-constexpr size_t MAX_LOCKS = 1000;
+constexpr size_t MAX_LOCKS = 1;
 
 // ─── CAS config ───
 // Wrapped per-lock replicated log plus owner-node control word.
