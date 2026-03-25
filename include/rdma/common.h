@@ -120,7 +120,7 @@ constexpr size_t MU_GLOBAL_LOG_CAPACITY = NUM_OPS * 2;
 // ─── Simple MU primitive config ───
 // Leader appends one flat-log entry and responds after quorum replication.
 
-constexpr size_t SIMPLE_MU_ACTIVE_WINDOW = 2;
+constexpr size_t SIMPLE_MU_ACTIVE_WINDOW = 4;
 constexpr size_t SIMPLE_MU_CQ_BATCH = 32;
 constexpr uint32_t SIMPLE_MU_CLIENT_SEND_SIGNAL_EVERY = 64;
 constexpr size_t SIMPLE_MU_LOG_CAPACITY = NUM_OPS;
