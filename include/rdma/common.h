@@ -62,8 +62,8 @@ constexpr uint8_t RDMA_INITIATOR_DEPTH = 16;
 // ─── Benchmark / workload config ───
 // These knobs define the workload shape shared across all pipelines.
 
-constexpr size_t NUM_OPS = 15000000;
-constexpr size_t NUM_CLIENTS_PER_MACHINE = 8;
+constexpr size_t NUM_OPS = 10000;
+constexpr size_t NUM_CLIENTS_PER_MACHINE = 1;
 constexpr size_t TOTAL_CLIENTS = NUM_CLIENTS_PER_MACHINE * TOTAL_CLIENT_MACHINES;
 constexpr size_t NUM_OPS_PER_CLIENT = NUM_OPS / TOTAL_CLIENTS;
 constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * TOTAL_CLIENTS;
@@ -117,6 +117,21 @@ constexpr bool MU_DEBUG = false;
 constexpr bool MU_REPL_SIGNAL_QUORUM_ONLY = true;
 constexpr size_t MU_GLOBAL_LOG_CAPACITY = NUM_OPS * 2;
 
+// ─── Simple MU primitive config ───
+// Leader appends one flat-log entry and responds after quorum replication.
+
+constexpr size_t SIMPLE_MU_ACTIVE_WINDOW = 1;
+constexpr size_t SIMPLE_MU_CQ_BATCH = 32;
+constexpr uint32_t SIMPLE_MU_CLIENT_SEND_SIGNAL_EVERY = 64;
+constexpr size_t SIMPLE_MU_LOG_CAPACITY = NUM_OPS;
+
+// ─── Synra FAA primitive config ───
+// Clients reserve one flat-log slot via FAA, then CAS the client id into it.
+
+constexpr size_t SYNRA_FAA_ACTIVE_WINDOW = 16;
+constexpr size_t SYNRA_FAA_CQ_BATCH = 32;
+constexpr size_t SYNRA_FAA_LOG_CAPACITY = NUM_OPS;
+
 // ─── Lock table layout ───
 // The physical server layout is shared even though pipelines use it differently.
 
@@ -146,6 +161,8 @@ static_assert(LOCK_TABLE_SIZE <= SERVER_ALIGNED_SIZE, "Lock table exceeds server
 static_assert(CAS_LOG_CAPACITY <= MAX_LOG_PER_LOCK, "CAS log capacity exceeds allocated per-lock log size");
 static_assert(TICKET_FAA_LOG_CAPACITY <= MAX_LOG_PER_LOCK, "Ticket FAA log capacity exceeds allocated per-lock log size");
 static_assert(MU_GLOBAL_LOG_CAPACITY <= MAX_LOCKS * MAX_LOG_PER_LOCK, "MU global log exceeds allocated total log size");
+static_assert(SIMPLE_MU_LOG_CAPACITY <= MAX_LOCKS * MAX_LOG_PER_LOCK, "Simple MU flat log exceeds allocated total log size");
+static_assert(SYNRA_FAA_LOG_CAPACITY <= MAX_LOCKS * MAX_LOG_PER_LOCK, "Synra FAA flat log exceeds allocated total log size");
 
 // ─── Per-lock offset helpers ───
 
@@ -171,6 +188,31 @@ inline constexpr size_t mu_global_log_slot_offset(const uint64_t slot) {
         static_cast<uint32_t>(slot / MAX_LOG_PER_LOCK),
         slot % MAX_LOG_PER_LOCK);
 }
+
+inline constexpr size_t metadata_base_offset() {
+    return LOCK_TABLE_SIZE;
+}
+
+inline constexpr size_t simple_mu_counter_offset() {
+    return metadata_base_offset();
+}
+
+inline constexpr size_t synra_faa_counter_offset() {
+    return metadata_base_offset() + sizeof(uint64_t);
+}
+
+inline constexpr size_t simple_mu_log_slot_offset(const uint64_t slot) {
+    return mu_global_log_slot_offset(slot);
+}
+
+inline constexpr size_t synra_faa_log_slot_offset(const uint64_t slot) {
+    return mu_global_log_slot_offset(slot);
+}
+
+static_assert(simple_mu_counter_offset() + sizeof(uint64_t) <= SERVER_POOL_SIZE, "Simple MU counter exceeds server pool");
+static_assert(synra_faa_counter_offset() + sizeof(uint64_t) <= SERVER_POOL_SIZE, "Synra FAA counter exceeds server pool");
+static_assert(simple_mu_counter_offset() - metadata_base_offset() + sizeof(uint64_t) <= METADATA_SIZE, "Simple MU counter exceeds metadata region");
+static_assert(synra_faa_counter_offset() - metadata_base_offset() + sizeof(uint64_t) <= METADATA_SIZE, "Synra FAA counter exceeds metadata region");
 
 inline constexpr size_t align_up(const size_t value, const size_t alignment) {
     return ((value + alignment - 1) / alignment) * alignment;
@@ -317,6 +359,8 @@ inline void* allocate_server_buffer(size_t num_locks = MAX_LOCKS) {
         *reinterpret_cast<uint64_t*>(base + lock_control_offset(l)) = 0;
         *reinterpret_cast<uint64_t*>(base + lock_turn_offset(l)) = 0;
     }
+    *reinterpret_cast<uint64_t*>(base + simple_mu_counter_offset()) = 0;
+    *reinterpret_cast<uint64_t*>(base + synra_faa_counter_offset()) = 0;
 
     return ptr;
 }

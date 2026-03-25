@@ -2,11 +2,14 @@
 #include "rdma/server.h"
 #include "rdma/servers/mu_leader.h"
 #include "rdma/servers/mu_follower.h"
+#include "rdma/servers/simple_mu_leader.h"
 #include "rdma/servers/synra_node.h"
 #include "rdma/client.h"
 #include "rdma/pipelines/cas_pipeline.h"
 #include "rdma/pipelines/mu_pipeline.h"
+#include "rdma/pipelines/simple_mu_pipeline.h"
 #include "rdma/pipelines/simple_cas_pipeline.h"
+#include "rdma/pipelines/synra_faa_pipeline.h"
 #include "rdma/pipelines/ticket_faa_lock_pipeline.h"
 #include "rdma/mu_encoding.h"
 
@@ -22,19 +25,25 @@
 // ─── Configuration ───
 // Add new strategies here and wire them into the config load, buffer sizing,
 // dispatch, and summary branches below.
-constexpr const char* STRATEGY = "cas";      // "mu", "ticket_faa", "cas", or "simple_cas"
+constexpr const char* STRATEGY = "simple_mu";      // "mu", "simple_mu", "ticket_faa", "cas", "simple_cas", or "synra_faa"
 
 int main() {
     try {
         // Each pipeline exposes a config struct plus a client buffer-size helper.
         // New pipelines should follow that pattern so main stays uniform.
         const bool is_mu  = (std::string(STRATEGY) == "mu");
+        const bool is_simple_mu = (std::string(STRATEGY) == "simple_mu");
         const bool is_ticket_faa = (std::string(STRATEGY) == "ticket_faa");
         const bool is_cas = (std::string(STRATEGY) == "cas");
         const bool is_simple_cas = (std::string(STRATEGY) == "simple_cas");
+        const bool is_synra_faa = (std::string(STRATEGY) == "synra_faa");
         const CasPipelineConfig cas_config = is_cas ? load_cas_pipeline_config() : CasPipelineConfig{};
         const SimpleCasPipelineConfig simple_cas_config =
             is_simple_cas ? load_simple_cas_pipeline_config() : SimpleCasPipelineConfig{};
+        const SimpleMuPipelineConfig simple_mu_config =
+            is_simple_mu ? load_simple_mu_pipeline_config() : SimpleMuPipelineConfig{};
+        const SynraFaaPipelineConfig synra_faa_config =
+            is_synra_faa ? load_synra_faa_pipeline_config() : SynraFaaPipelineConfig{};
         const TicketFaaLockPipelineConfig ticket_faa_config =
             is_ticket_faa ? load_ticket_faa_lock_pipeline_config() : TicketFaaLockPipelineConfig{};
         const MuPipelineConfig mu_config = is_mu ? load_mu_pipeline_config() : MuPipelineConfig{};
@@ -58,21 +67,33 @@ int main() {
                 const uint32_t global_id = machine_id * NUM_CLIENTS_PER_MACHINE + i;
 
                 workers.emplace_back(
-                    [i, global_id, is_mu, is_ticket_faa, is_cas, is_simple_cas,
-                     &start_latch, &all_latencies, &lock_counts, &verify_client,
-                     &cas_config, &simple_cas_config, &ticket_faa_config, &mu_config]() {
+                    [i, global_id, is_mu, is_simple_mu, is_ticket_faa, is_cas, is_simple_cas, is_synra_faa,
+                      &start_latch, &all_latencies, &lock_counts, &verify_client,
+                      &cas_config, &simple_cas_config, &simple_mu_config, &synra_faa_config,
+                      &ticket_faa_config, &mu_config]() {
                         try {
                             pin_thread_to_cpu(pick_cpu_for_client(i));
 
+                            size_t client_buffer_size = CLIENT_ALIGNED_SIZE;
+                            if (is_cas) {
+                                client_buffer_size = cas_pipeline_client_buffer_size(cas_config);
+                            } else if (is_simple_cas) {
+                                client_buffer_size = simple_cas_pipeline_client_buffer_size(simple_cas_config);
+                            } else if (is_simple_mu) {
+                                client_buffer_size = simple_mu_pipeline_client_buffer_size(simple_mu_config);
+                            } else if (is_synra_faa) {
+                                client_buffer_size = synra_faa_pipeline_client_buffer_size(synra_faa_config);
+                            } else if (is_ticket_faa) {
+                                client_buffer_size = ticket_faa_lock_pipeline_client_buffer_size(ticket_faa_config);
+                            } else if (is_mu) {
+                                client_buffer_size = mu_pipeline_client_buffer_size(mu_config);
+                            }
+
                             auto client = std::make_unique<Client>(
                                 global_id,
-                                is_cas ? cas_pipeline_client_buffer_size(cas_config)
-                                        : (is_simple_cas ? simple_cas_pipeline_client_buffer_size(simple_cas_config)
-                                                         : (is_ticket_faa ? ticket_faa_lock_pipeline_client_buffer_size(ticket_faa_config)
-                                                                          : (is_mu ? mu_pipeline_client_buffer_size(mu_config)
-                                                                                   : CLIENT_ALIGNED_SIZE))));
+                                client_buffer_size);
 
-                            if (is_mu) {
+                            if (is_mu || is_simple_mu) {
                                 std::vector leader_only = {CLUSTER_NODES[0]};
                                 client->connect(leader_only, RDMA_PORT);
                             } else {
@@ -80,7 +101,7 @@ int main() {
                             }
 
                             {
-                                const size_t num_go = is_mu ? 1 : CLUSTER_NODES.size();
+                                const size_t num_go = (is_mu || is_simple_mu) ? 1 : CLUSTER_NODES.size();
                                 auto* cq = client->cq();
 
                                 size_t got = 0;
@@ -110,6 +131,18 @@ int main() {
                                     latencies,
                                     (*lock_counts)[global_id].data(),
                                     simple_cas_config);
+                            } else if (is_simple_mu) {
+                                run_simple_mu_pipeline(
+                                    *client,
+                                    latencies,
+                                    (*lock_counts)[global_id].data(),
+                                    simple_mu_config);
+                            } else if (is_synra_faa) {
+                                run_synra_faa_pipeline(
+                                    *client,
+                                    latencies,
+                                    (*lock_counts)[global_id].data(),
+                                    synra_faa_config);
                             } else if (is_ticket_faa) {
                                 run_ticket_faa_lock_pipeline(
                                     *client,
@@ -198,6 +231,16 @@ int main() {
                           << (simple_cas_config.shard_owner ? "sharded" : "leader") << "\n";
                 std::cout << "Release Mode:   " << std::setw(14)
                           << (simple_cas_config.release_with_cas ? "cas" : "write") << "\n";
+            } else if (is_simple_mu) {
+                std::cout << "Active Window:  " << std::setw(14) << simple_mu_config.active_window << "\n";
+                std::cout << "Log Mode:       " << std::setw(14) << "flat" << "\n";
+                std::cout << "Entry Value:    " << std::setw(14) << "client_id" << "\n";
+            } else if (is_synra_faa) {
+                std::cout << "Active Window:  " << std::setw(14) << synra_faa_config.active_window << "\n";
+                std::cout << "Owner Node:     " << std::setw(14) << 0 << "\n";
+                std::cout << "Replicate Mode: " << std::setw(14) << "cas_to_empty" << "\n";
+                std::cout << "Log Mode:       " << std::setw(14) << "flat" << "\n";
+                std::cout << "Entry Value:    " << std::setw(14) << "client_id" << "\n";
             } else if (is_ticket_faa) {
                 std::cout << "Active Window:  " << std::setw(14) << ticket_faa_config.active_window << "\n";
                 std::cout << "Zipf Skew:      " << std::setw(14) << std::fixed << std::setprecision(2)
@@ -238,14 +281,27 @@ int main() {
 
             // ─── CSV row for spreadsheets ───
             // Paste this line into a cell, then use "Split text to columns" with comma delimiter
+            const size_t csv_active_window =
+                is_cas ? cas_config.active_window
+                : (is_simple_cas ? simple_cas_config.active_window
+                : (is_simple_mu ? simple_mu_config.active_window
+                : (is_synra_faa ? synra_faa_config.active_window
+                : (is_ticket_faa ? ticket_faa_config.active_window
+                : (is_mu ? mu_config.active_window : 0)))));
+            const double csv_zipf_skew =
+                is_cas ? cas_config.zipf_skew
+                : (is_simple_cas ? simple_cas_config.zipf_skew
+                : (is_ticket_faa ? ticket_faa_config.zipf_skew
+                : (is_mu ? mu_config.zipf_skew : 0.0)));
+
             std::cout << "\nCSV: "
                       << STRATEGY
                       << "," << machine_id
                       << "," << TOTAL_CLIENTS
                       << "," << MAX_LOCKS
-                      << "," << (is_cas ? cas_config.active_window : (is_simple_cas ? simple_cas_config.active_window : (is_ticket_faa ? ticket_faa_config.active_window : (is_mu ? mu_config.active_window : 0))))
+                      << "," << csv_active_window
                       << "," << std::fixed << std::setprecision(2)
-                      << (is_cas ? cas_config.zipf_skew : (is_simple_cas ? simple_cas_config.zipf_skew : (is_ticket_faa ? ticket_faa_config.zipf_skew : (is_mu ? mu_config.zipf_skew : 0.0))))
+                      << csv_zipf_skew
                       << "," << local_total_ops
                       << "," << std::fixed << std::setprecision(3) << wall_s
                       << "," << std::setprecision(0) << goodput
@@ -268,6 +324,15 @@ int main() {
                 pin_thread_to_cpu(0);
                 if (node_id == 0) {
                     MuLeader leader(node_id, 0, MAX_LOCKS);
+                    leader.start(RDMA_PORT);
+                } else {
+                    MuFollower follower(node_id, 0, MAX_LOCKS);
+                    follower.start(RDMA_PORT);
+                }
+            } else if (is_simple_mu) {
+                pin_thread_to_cpu(0);
+                if (node_id == 0) {
+                    SimpleMuLeader leader(node_id);
                     leader.start(RDMA_PORT);
                 } else {
                     MuFollower follower(node_id, 0, MAX_LOCKS);
