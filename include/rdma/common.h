@@ -21,17 +21,26 @@
 #include <infiniband/verbs.h>
 
 // ─── Cluster config ───
-// NOTE: Update these IPs to match your 3 cloud servers!
 
 inline const std::vector<std::string> CLUSTER_NODES = {
-    "192.168.1.3",  // Node0 (apt129) - IPoIB network - Working node
-    "192.168.1.4",  // Node1 (apt132) - IPoIB network - Working node
-    "192.168.1.5",  // Node2 (apt136) - IPoIB network - Working node
+    "192.168.1.1",
+    "192.168.1.2",
+    "192.168.1.3",
+    "192.168.1.4",
+    "192.168.1.5",
+    // "192.168.1.6",
+    // "192.168.1.7"
 };
 
-// Client machine (can be one of the servers or separate)
+// change these two variables together
 inline const std::vector<std::string> CLIENT_NODES = {
-    "192.168.1.3",  // Client on Node0 (apt129)
+     // "192.168.1.4",
+   // "192.168.1.5",
+    "192.168.1.6",
+    // "192.168.1.7",
+    // "192.168.1.8",
+    // "192.168.1.9",
+    // "192.168.1.10",
 };
 
 constexpr size_t TOTAL_CLIENT_MACHINES = 1;
@@ -52,10 +61,9 @@ constexpr uint8_t RDMA_INITIATOR_DEPTH = 16;
 
 // ─── Benchmark / workload config ───
 // These knobs define the workload shape shared across all pipelines.
-// Reduced for 3-node testing - increase for full benchmarks
 
-constexpr size_t NUM_OPS = 32000;  // Minimum to satisfy log capacity requirements (quick test)
-constexpr size_t NUM_CLIENTS_PER_MACHINE = 4;  // Reduced from 8 for testing
+constexpr size_t NUM_OPS = 15000000;
+constexpr size_t NUM_CLIENTS_PER_MACHINE = 8;
 constexpr size_t TOTAL_CLIENTS = NUM_CLIENTS_PER_MACHINE * TOTAL_CLIENT_MACHINES;
 constexpr size_t NUM_OPS_PER_CLIENT = NUM_OPS / TOTAL_CLIENTS;
 constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * TOTAL_CLIENTS;
