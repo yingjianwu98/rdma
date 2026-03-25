@@ -335,6 +335,15 @@ void post_notify_watchers(Client& client, WatchOpCtx& op, const RegisteredWatchB
     op.notify_sent = static_cast<uint32_t>(notify_count);
     op.notify_completed = 0;
 
+    // Log notification broadcasting
+    static int notify_log = 0;
+    if (client.id() == 0 && notify_log < 10) {
+        std::cerr << "[Client 0] POST_NOTIFY_WATCHERS object " << op.object_id
+                  << " total_watchers=" << op.total_watchers
+                  << " sending to " << notify_count << " (MAX_NOTIFY_BATCH=" << MAX_NOTIFY_BATCH << ")\n";
+        notify_log++;
+    }
+
     // For each watcher, WRITE invalidation (simulate by writing to metadata area)
     for (uint64_t i = 0; i < notify_count; ++i) {
         notify_buf[i] = 1;  // Invalidation flag
@@ -412,10 +421,14 @@ void run_watch_pipeline(
     size_t active = 0;
     uint32_t next_req_id = 0;
 
-    // Two-phase benchmark: first half measures registration, second half measures notification
-    const size_t registration_ops = NUM_OPS_PER_CLIENT / 2;
-    const size_t notification_ops = NUM_OPS_PER_CLIENT - registration_ops;
+    // Two-phase benchmark: mostly registration, small number of notifications
+    const size_t registration_ops = NUM_OPS_PER_CLIENT * 99 / 100;  // 99% registration
+    const size_t notification_ops = NUM_OPS_PER_CLIENT - registration_ops;  // 1% notification
     bool in_registration_phase = true;
+
+    std::cerr << "[Client " << client.id() << "] Benchmark plan: "
+              << registration_ops << " registrations, "
+              << notification_ops << " notifications\n";
 
     // Verification statistics
     uint64_t total_watchers_seen = 0;
@@ -620,6 +633,11 @@ void run_watch_pipeline(
 
             if (phase == WatchPhase::read_watcher_ids) {
                 // Got watcher IDs, now broadcast notifications
+                if (client.id() == 0 && (completed - registration_ops) < 10) {
+                    std::cerr << "[Client 0] READ_WATCHER_IDS complete notify_op "
+                              << (completed - registration_ops) << " object " << op.object_id
+                              << " total_watchers=" << op.total_watchers << "\n";
+                }
                 post_notify_watchers(client, op, buffers);
                 continue;
             }
@@ -627,8 +645,19 @@ void run_watch_pipeline(
             if (phase == WatchPhase::notify_watchers) {
                 // Count completed notifications
                 op.notify_completed++;
+
+                if (client.id() == 0 && (completed - registration_ops) < 10 && op.notify_completed <= 5) {
+                    std::cerr << "[Client 0] NOTIFY_WATCHER ack " << op.notify_completed
+                              << "/" << op.notify_sent << " for object " << op.object_id << "\n";
+                }
+
                 if (op.notify_completed >= op.notify_sent) {
                     // All notifications sent! E2E operation complete
+                    if (client.id() == 0 && (completed - registration_ops) < 10) {
+                        std::cerr << "[Client 0] NOTIFY complete notify_op " << (completed - registration_ops)
+                                  << " object " << op.object_id << " sent " << op.notify_sent << " notifications\n";
+                    }
+
                     latencies[op.latency_index] = std::chrono::duration_cast<std::chrono::nanoseconds>(
                         std::chrono::steady_clock::now() - op.started_at).count();
                     object_counts[op.object_id]++;
