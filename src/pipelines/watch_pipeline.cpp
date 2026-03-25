@@ -157,11 +157,11 @@ void post_faa_slot(Client& client, WatchOpCtx& op, const RegisteredWatchBuffers&
     op.response_target = static_cast<uint32_t>(conns.size());
     op.quorum_hits = 0;
 
-    if (op.slot == 0) {  // Log first operation only
-        std::cerr << "[DEBUG] FAA: object_id=" << op.object_id
-                  << " watch_counter_offset=" << watch_counter_offset(op.object_id)
-                  << " posting to " << conns.size() << " nodes" << std::endl;
-    }
+    // if (op.slot == 0) {  // Log first operation only
+    //     std::cerr << "[DEBUG] FAA: object_id=" << op.object_id
+    //               << " watch_counter_offset=" << watch_counter_offset(op.object_id)
+    //               << " posting to " << conns.size() << " nodes" << std::endl;
+    // }
 
     // Post FAA to all nodes in parallel
     for (size_t i = 0; i < conns.size(); ++i) {
@@ -182,11 +182,11 @@ void post_faa_slot(Client& client, WatchOpCtx& op, const RegisteredWatchBuffers&
         wr.wr.atomic.rkey = conns[i].rkey;
         wr.wr.atomic.compare_add = 1;  // Increment by 1
 
-        if (op.slot == 0 && i == 0) {
-            std::cerr << "[DEBUG] FAA to node " << i << ": remote_addr=0x" << std::hex
-                      << wr.wr.atomic.remote_addr << std::dec
-                      << " rkey=" << wr.wr.atomic.rkey << std::endl;
-        }
+        // if (op.slot == 0 && i == 0) {
+        //     std::cerr << "[DEBUG] FAA to node " << i << ": remote_addr=0x" << std::hex
+        //               << wr.wr.atomic.remote_addr << std::dec
+        //               << " rkey=" << wr.wr.atomic.rkey << std::endl;
+        // }
 
         if (ibv_post_send(conns[i].id->qp, &wr, &bad_wr)) {
             throw std::runtime_error("watch pipeline: FAA slot post failed");
@@ -206,12 +206,12 @@ void post_write_id(Client& client, WatchOpCtx& op, const RegisteredWatchBuffers&
     op.response_target = static_cast<uint32_t>(conns.size());
 
     const uint64_t write_offset = watch_id_slot_offset(op.object_id, op.watcher_slot);
-    if (op.slot == 0) {  // Log first operation only
-        std::cerr << "[DEBUG] WRITE_ID: object_id=" << op.object_id
-                  << " watcher_slot=" << op.watcher_slot
-                  << " watch_id_slot_offset=" << write_offset
-                  << " (MAX_WATCHERS=" << MAX_WATCHERS_PER_OBJECT << ")" << std::endl;
-    }
+    // if (op.slot == 0) {  // Log first operation only
+    //     std::cerr << "[DEBUG] WRITE_ID: object_id=" << op.object_id
+    //               << " watcher_slot=" << op.watcher_slot
+    //               << " watch_id_slot_offset=" << write_offset
+    //               << " (MAX_WATCHERS=" << MAX_WATCHERS_PER_OBJECT << ")" << std::endl;
+    // }
 
     // Write our watcher ID to all nodes in parallel
     for (size_t i = 0; i < conns.size(); ++i) {
@@ -231,11 +231,11 @@ void post_write_id(Client& client, WatchOpCtx& op, const RegisteredWatchBuffers&
         wr.wr.rdma.remote_addr = conns[i].addr + write_offset;
         wr.wr.rdma.rkey = conns[i].rkey;
 
-        if (op.slot == 0 && i == 0) {
-            std::cerr << "[DEBUG] WRITE_ID to node " << i << ": remote_addr=0x" << std::hex
-                      << wr.wr.rdma.remote_addr << std::dec
-                      << " rkey=" << wr.wr.rdma.rkey << std::endl;
-        }
+        // if (op.slot == 0 && i == 0) {
+        //     std::cerr << "[DEBUG] WRITE_ID to node " << i << ": remote_addr=0x" << std::hex
+        //               << wr.wr.rdma.remote_addr << std::dec
+        //               << " rkey=" << wr.wr.rdma.rkey << std::endl;
+        // }
 
         if (ibv_post_send(conns[i].id->qp, &wr, &bad_wr)) {
             throw std::runtime_error("watch pipeline: write ID post failed");

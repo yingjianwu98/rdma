@@ -1,3 +1,0 @@
-/rdma/build/CMakeFiles/rdma.dir
-/rdma/build/CMakeFiles/edit_cache.dir
-/rdma/build/CMakeFiles/rebuild_cache.dir
