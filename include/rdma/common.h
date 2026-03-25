@@ -122,9 +122,9 @@ constexpr size_t MU_GLOBAL_LOG_CAPACITY = NUM_OPS * 2;
 
 constexpr size_t WATCH_ACTIVE_WINDOW = 8;
 constexpr size_t WATCH_CQ_BATCH = 32;
-constexpr double WATCH_ZIPF_SKEW = 0.5;
+constexpr double WATCH_ZIPF_SKEW = 0.0;  // Uniform distribution to avoid hot object overflow
 constexpr bool WATCH_SHARD_OWNER = true;
-constexpr size_t MAX_WATCHERS_PER_OBJECT = 10000;  // Max watchers that can register per object
+constexpr size_t MAX_WATCHERS_PER_OBJECT = 20000;  // Max watchers that can register per object
 
 // ─── Lock table layout ───
 // The physical server layout is shared even though pipelines use it differently.
