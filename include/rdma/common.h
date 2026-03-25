@@ -151,8 +151,8 @@ constexpr size_t WATCH_TABLE_SIZE = WATCH_REGION_SIZE * MAX_LOCKS;  // Reuse MAX
 constexpr size_t METADATA_SIZE = 4096;
 constexpr size_t PAGE_SIZE = 4096;
 
-// Server: full lock table + metadata
-constexpr size_t SERVER_POOL_SIZE = LOCK_TABLE_SIZE + METADATA_SIZE;
+// Server: full lock table + watch table + metadata
+constexpr size_t SERVER_POOL_SIZE = LOCK_TABLE_SIZE + WATCH_TABLE_SIZE + METADATA_SIZE;
 constexpr size_t SERVER_ALIGNED_SIZE = ((SERVER_POOL_SIZE + PAGE_SIZE - 1) / PAGE_SIZE) * PAGE_SIZE;
 
 // Client: just LocalState + padding (a few KB)
@@ -192,7 +192,7 @@ inline constexpr size_t mu_global_log_slot_offset(const uint64_t slot) {
 // ─── Per-object watch offset helpers ───
 
 inline constexpr size_t watch_base_offset(const uint32_t object_id) {
-    return object_id * WATCH_REGION_SIZE;
+    return LOCK_TABLE_SIZE + object_id * WATCH_REGION_SIZE;
 }
 
 inline constexpr size_t watch_counter_offset(const uint32_t object_id) {
@@ -351,6 +351,12 @@ inline void* allocate_server_buffer(size_t num_locks = MAX_LOCKS) {
     for (size_t l = 0; l < num_locks; ++l) {
         *reinterpret_cast<uint64_t*>(base + lock_control_offset(l)) = 0;
         *reinterpret_cast<uint64_t*>(base + lock_turn_offset(l)) = 0;
+    }
+
+    // zero watch table headers (watcher count and version)
+    for (size_t obj = 0; obj < num_locks; ++obj) {
+        *reinterpret_cast<uint64_t*>(base + watch_counter_offset(obj)) = 0;
+        *reinterpret_cast<uint64_t*>(base + watch_version_offset(obj)) = 0;
     }
 
     return ptr;
