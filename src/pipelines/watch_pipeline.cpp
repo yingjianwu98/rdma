@@ -515,28 +515,23 @@ void run_watch_pipeline(
             if (phase == WatchPhase::write_id) {
                 // Wait for super-quorum writes to complete
                 if (op.responses >= SUPER_QUORUM) {
-                    if (in_registration_phase) {
-                        // Registration phase: measure registration latency and complete
-                        latencies[op.latency_index] = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                            std::chrono::steady_clock::now() - op.started_at).count();
-                        object_counts[op.object_id]++;
+                    // Complete write_id regardless of phase (handles late completions)
+                    latencies[op.latency_index] = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now() - op.started_at).count();
+                    object_counts[op.object_id]++;
 
-                        op.active = false;
-                        op.phase = WatchPhase::idle;
-                        completed++;
-                        active--;
+                    op.active = false;
+                    op.phase = WatchPhase::idle;
+                    completed++;
+                    active--;
 
-                        // Check if registration phase is complete
-                        if (completed >= registration_ops) {
-                            in_registration_phase = false;
-                        }
+                    // Check if registration phase is complete (switch only after draining active ops)
+                    if (in_registration_phase && completed >= registration_ops && active == 0) {
+                        in_registration_phase = false;
+                    }
 
-                        if (submitted < NUM_OPS_PER_CLIENT) {
-                            submit_op(slot);
-                        }
-                    } else {
-                        // Notification phase: shouldn't be in write_id phase
-                        throw std::runtime_error("watch pipeline: unexpected write_id in notification phase");
+                    if (submitted < NUM_OPS_PER_CLIENT) {
+                        submit_op(slot);
                     }
                 }
                 continue;
