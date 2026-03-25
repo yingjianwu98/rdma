@@ -270,6 +270,16 @@ void post_read_count(Client& client, WatchOpCtx& op, const RegisteredWatchBuffer
     wr.wr.rdma.remote_addr = owner.addr + watch_counter_offset(op.object_id);
     wr.wr.rdma.rkey = owner.rkey;
 
+    // Log first few read_count operations
+    static int read_count_log = 0;
+    if (client.id() == 0 && read_count_log < 5) {
+        std::cerr << "[Client 0] POST_READ_COUNT object " << op.object_id
+                  << " owner=" << op.owner_node << " remote_addr=0x" << std::hex
+                  << wr.wr.rdma.remote_addr << std::dec
+                  << " offset=" << watch_counter_offset(op.object_id) << "\n";
+        read_count_log++;
+    }
+
     if (ibv_post_send(owner.id->qp, &wr, &bad_wr)) {
         throw std::runtime_error("watch pipeline: read count post failed");
     }
@@ -430,6 +440,10 @@ void run_watch_pipeline(
             post_faa_slot(client, op, buffers);
         } else {
             // Notification phase: read watcher count
+            if (client.id() == 0 && submitted < registration_ops + 5) {
+                std::cerr << "[Client 0] submit_op: notification op " << (submitted - registration_ops)
+                          << " object " << op.object_id << "\n";
+            }
             post_read_count(client, op, buffers);
         }
         submitted++;
@@ -506,6 +520,13 @@ void run_watch_pipeline(
                     }
                 }
 
+                // Log FAA results for first few operations on client 0
+                if (client.id() == 0 && completed < 5) {
+                    std::cerr << "[Client 0] FAA op " << completed << " object " << op.object_id
+                              << ": slot=" << this_slot << " matches=" << matches << "/" << op.responses
+                              << " (need " << SUPER_QUORUM << ")\n";
+                }
+
                 if (matches >= SUPER_QUORUM) {
                     // Got super-quorum agreement on slot!
                     op.watcher_slot = this_slot;
@@ -513,6 +534,9 @@ void run_watch_pipeline(
                     post_write_id(client, op, buffers);
                 } else if (op.responses >= op.response_target) {
                     // All responses received but no super-quorum - retry
+                    if (client.id() == 0 && completed < 5) {
+                        std::cerr << "[Client 0] FAA retry needed - no super-quorum\n";
+                    }
                     post_faa_slot(client, op, buffers);
                 }
                 continue;
@@ -521,6 +545,12 @@ void run_watch_pipeline(
             if (phase == WatchPhase::write_id) {
                 // Wait for super-quorum writes to complete
                 if (op.responses >= SUPER_QUORUM) {
+                    // Log write completion for first few operations on client 0
+                    if (client.id() == 0 && completed < 5) {
+                        std::cerr << "[Client 0] WRITE_ID complete op " << completed << " object " << op.object_id
+                                  << " slot " << op.watcher_slot << " responses=" << op.responses << "\n";
+                    }
+
                     // Complete write_id regardless of phase (handles late completions)
                     latencies[op.latency_index] = std::chrono::duration_cast<std::chrono::nanoseconds>(
                         std::chrono::steady_clock::now() - op.started_at).count();
@@ -531,12 +561,18 @@ void run_watch_pipeline(
                     completed++;
                     active--;
 
-                    // Check if registration phase is complete (switch only after draining active ops)
-                    if (in_registration_phase && completed >= registration_ops && active == 0) {
+                    // Check if registration phase is complete - switch immediately when count reached
+                    if (in_registration_phase && completed >= registration_ops) {
                         in_registration_phase = false;
+                        std::cerr << "[Client " << client.id() << "] Switching to notification phase at completed="
+                                  << completed << " active=" << active << "\n";
                     }
 
                     if (submitted < NUM_OPS_PER_CLIENT) {
+                        if (!in_registration_phase && submitted == registration_ops) {
+                            std::cerr << "[Client " << client.id() << "] First notification op (submitted="
+                                      << submitted << ")\n";
+                        }
                         submit_op(slot);
                     }
                 }
@@ -546,6 +582,14 @@ void run_watch_pipeline(
             if (phase == WatchPhase::read_count) {
                 // Got watcher count, now read all watcher IDs (notification phase only)
                 op.total_watchers = buffers.count_result[op.slot];
+
+                // Log read_count for first notification operations
+                if (client.id() == 0 && (completed - registration_ops) < 10) {
+                    std::cerr << "[Client 0] READ_COUNT notify_op " << (completed - registration_ops)
+                              << " object " << op.object_id << " owner=" << op.owner_node
+                              << " count=" << op.total_watchers << " offset="
+                              << watch_counter_offset(op.object_id) << "\n";
+                }
 
                 // Track verification stats
                 total_watchers_seen += op.total_watchers;
