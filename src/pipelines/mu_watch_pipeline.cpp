@@ -14,6 +14,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -196,6 +197,8 @@ void run_mu_watch_pipeline(
     std::vector<MuWatchOpCtx> ops(config.active_window);
     std::vector<ibv_wc> completions(config.cq_batch);
     ZipfLockPicker picker(config.zipf_skew);  // Reuse for object selection
+    std::unordered_map<uint32_t, uint32_t> req_to_slot;
+    req_to_slot.reserve(config.active_window * 2);
 
     // Post all receive buffers upfront
     for (size_t i = 0; i < recv_ring; ++i) {
@@ -223,6 +226,7 @@ void run_mu_watch_pipeline(
         op.req_id = next_req_id++;
         op.latency_index = submitted;
         op.started_at = std::chrono::steady_clock::now();
+        req_to_slot[op.req_id] = op.slot;
 
         MuRequest req{};
         req.client_id = static_cast<uint16_t>(client.id());
@@ -274,15 +278,18 @@ void run_mu_watch_pipeline(
                 }
 
                 const MuResponse& resp = buffers.responses[recv_slot];
-                const uint32_t op_slot = resp.req_id % config.active_window;  // Map to op slot
 
-                if (op_slot >= ops.size()) {
-                    // Repost and continue
+                // Look up op slot from req_id
+                const auto it = req_to_slot.find(resp.req_id);
+                if (it == req_to_slot.end()) {
+                    // Unknown req_id, repost and continue
                     post_recv(client, &buffers.responses[recv_slot], recv_slot);
                     continue;
                 }
 
+                const uint32_t op_slot = it->second;
                 auto& op = ops[op_slot];
+
                 if (!op.active || op.req_id != resp.req_id) {
                     // Stale response, repost
                     post_recv(client, &buffers.responses[recv_slot], recv_slot);
@@ -295,6 +302,7 @@ void run_mu_watch_pipeline(
                         std::chrono::steady_clock::now() - op.started_at).count();
                     object_counts[op.object_id]++;
 
+                    req_to_slot.erase(it);
                     op.active = false;
                     op.phase = MuWatchPhase::idle;
                     completed++;
@@ -314,6 +322,7 @@ void run_mu_watch_pipeline(
                         std::chrono::steady_clock::now() - op.started_at).count();
                     object_counts[op.object_id]++;
 
+                    req_to_slot.erase(it);
                     op.active = false;
                     op.phase = MuWatchPhase::idle;
                     completed++;

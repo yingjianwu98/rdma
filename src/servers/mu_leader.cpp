@@ -595,6 +595,128 @@ void handle_recv_cqe(MuLeaderRuntime& rt, const ibv_wc& comp) {
         return;
     }
 
+    if (req.op == static_cast<uint8_t>(MuRpcOp::WatchRegister)) {
+        // Register a watcher: atomically allocate a slot and record the watcher ID
+        const uint32_t object_id = req.lock_id;  // Reuse lock_id field for object_id
+        auto* counter_ptr = reinterpret_cast<uint64_t*>(
+            rt.local_buf + watch_counter_offset(object_id));
+
+        // Atomically increment to get our slot
+        const uint64_t slot = __sync_fetch_and_add(counter_ptr, 1);
+
+        if (slot >= MAX_WATCHERS_PER_OBJECT) {
+            MuResponse resp{};
+            resp.op = static_cast<uint8_t>(MuRpcOp::WatchRegister);
+            resp.status = static_cast<uint8_t>(MuRpcStatus::QueueFull);
+            resp.client_id = req.client_id;
+            resp.lock_id = object_id;
+            resp.req_id = req.req_id;
+            resp.granted_slot = 0;
+            send_response(rt, resp);
+            return;
+        }
+
+        // Write the watcher ID (client_id) to the allocated slot
+        auto* watcher_slot = reinterpret_cast<uint64_t*>(
+            rt.local_buf + watch_id_slot_offset(object_id, slot));
+        *watcher_slot = req.client_id;
+
+        MuResponse resp{};
+        resp.op = static_cast<uint8_t>(MuRpcOp::WatchRegister);
+        resp.status = static_cast<uint8_t>(MuRpcStatus::Ok);
+        resp.client_id = req.client_id;
+        resp.lock_id = object_id;
+        resp.req_id = req.req_id;
+        resp.granted_slot = static_cast<uint32_t>(slot);
+        send_response(rt, resp);
+        return;
+    }
+
+    if (req.op == static_cast<uint8_t>(MuRpcOp::WatchNotify)) {
+        // Notify all watchers: increment version and distribute notifications via RDMA
+        // Like Synra, we post RDMA_WRITE operations to simulate notification delivery
+        const uint32_t object_id = req.lock_id;
+
+        // Increment the version counter
+        auto* version_ptr = reinterpret_cast<uint64_t*>(
+            rt.local_buf + watch_version_offset(object_id));
+        const uint64_t new_version = __sync_add_and_fetch(version_ptr, 1);
+
+        // Read the number of registered watchers
+        auto* counter_ptr = reinterpret_cast<uint64_t*>(
+            rt.local_buf + watch_counter_offset(object_id));
+        const uint64_t num_watchers = *counter_ptr;
+
+        // Post RDMA_WRITE operations to followers to simulate notification delivery
+        // Distribute writes across followers in round-robin fashion
+        const size_t metadata_offset = WATCH_TABLE_SIZE;
+        const size_t num_followers = rt.follower_indices.size();
+        constexpr size_t NOTIFY_BATCH_SIZE = 1024;  // Post in batches to avoid QP overflow
+
+        for (uint64_t i = 0; i < num_watchers && i < MAX_WATCHERS_PER_OBJECT; ++i) {
+            if (num_followers == 0) {
+                // No followers - just write locally (for single-node testing)
+                auto* invalidation_marker = reinterpret_cast<uint64_t*>(
+                    rt.local_buf + metadata_offset + (i * sizeof(uint64_t)));
+                *invalidation_marker = new_version;
+                continue;
+            }
+
+            // Choose follower in round-robin fashion
+            const size_t follower_idx = rt.follower_indices[i % num_followers];
+            auto& follower = rt.peers[follower_idx];
+
+            // Prepare notification data (write version as invalidation marker)
+            auto* local_data = reinterpret_cast<uint64_t*>(
+                rt.local_buf + metadata_offset + (i * sizeof(uint64_t)));
+            *local_data = new_version;
+
+            ibv_sge sge{};
+            sge.addr = reinterpret_cast<uintptr_t>(local_data);
+            sge.length = sizeof(uint64_t);
+            sge.lkey = rt.local_mr->lkey;
+
+            ibv_send_wr wr{}, *bad_wr = nullptr;
+            wr.wr_id = MU_RESP_WR_TAG | 0xFFFF;  // Special tag for notifications
+            wr.opcode = IBV_WR_RDMA_WRITE;
+            wr.sg_list = &sge;
+            wr.num_sge = 1;
+            wr.send_flags = IBV_SEND_INLINE;
+
+            // Signal every Nth write to avoid QP overflow
+            if (i % MU_SERVER_SEND_SIGNAL_EVERY == 0) {
+                wr.send_flags |= IBV_SEND_SIGNALED;
+            }
+
+            // Write to follower's metadata region
+            wr.wr.rdma.remote_addr = follower.remote_addr + metadata_offset + (i * sizeof(uint64_t));
+            wr.wr.rdma.rkey = follower.rkey;
+
+            if (ibv_post_send(follower.cm_id->qp, &wr, &bad_wr)) {
+                throw std::runtime_error("MuLeader: failed to post notification write");
+            }
+
+            // Poll CQ periodically to drain completions and avoid QP overflow
+            if ((i + 1) % NOTIFY_BATCH_SIZE == 0) {
+                ibv_wc wc[32];
+                const int polled = ibv_poll_cq(rt.cq, 32, wc);
+                // Just drain, don't need to process notification write completions
+                (void)polled;
+            }
+        }
+
+        // Send acknowledgment to the notifier
+        MuResponse resp{};
+        resp.op = static_cast<uint8_t>(MuRpcOp::WatchNotify);
+        resp.status = static_cast<uint8_t>(MuRpcStatus::Ok);
+        resp.client_id = req.client_id;
+        resp.lock_id = object_id;
+        resp.req_id = req.req_id;
+        resp.granted_slot = static_cast<uint32_t>(num_watchers);
+        send_response(rt, resp);
+        return;
+    }
+
     MuResponse resp{};
     resp.op = req.op;
     resp.status = static_cast<uint8_t>(MuRpcStatus::InternalError);

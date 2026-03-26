@@ -40,7 +40,7 @@ enum class WatchPhase : uint8_t {
     notify_watchers = 5,   // Notification: Broadcast invalidations to all watchers
 };
 
-constexpr size_t MAX_NOTIFY_BATCH = 128;  // Max watchers to notify per batch
+constexpr size_t MAX_NOTIFY_BATCH = 2048;  // Max watchers to notify per batch (distributed across 5 QPs = ~410/QP)
 
 struct RegisteredWatchBuffers {
     uint64_t* faa_results = nullptr;         // FAA slot results from each replica
@@ -324,27 +324,28 @@ void post_notify_watchers(Client& client, WatchOpCtx& op, const RegisteredWatchB
     const auto& conns = client.connections();
     auto* mr = client.mr();
 
-    // Notify up to MAX_NOTIFY_BATCH watchers
-    const uint64_t notify_count = std::min(op.total_watchers, static_cast<uint64_t>(MAX_NOTIFY_BATCH));
+    // Calculate how many watchers remain to be notified
+    const uint64_t watchers_remaining = op.total_watchers - op.notify_sent;
+    const uint64_t notify_count = std::min(watchers_remaining, static_cast<uint64_t>(MAX_NOTIFY_BATCH));
     uint64_t* notify_buf = &buffers.notify_results[op.slot * MAX_NOTIFY_BATCH];
 
     op.round++;
     op.phase = WatchPhase::notify_watchers;
     op.responses = 0;
     op.response_target = static_cast<uint32_t>(notify_count);
-    op.notify_sent = static_cast<uint32_t>(notify_count);
-    op.notify_completed = 0;
+    const uint32_t batch_start = op.notify_sent;
 
     // Log notification broadcasting
     static int notify_log = 0;
     if (client.id() == 0 && notify_log < 10) {
         std::cerr << "[Client 0] POST_NOTIFY_WATCHERS object " << op.object_id
                   << " total_watchers=" << op.total_watchers
-                  << " sending to " << notify_count << " (MAX_NOTIFY_BATCH=" << MAX_NOTIFY_BATCH << ")\n";
+                  << " sending batch [" << batch_start << ".." << (batch_start + notify_count) << ")"
+                  << " (MAX_NOTIFY_BATCH=" << MAX_NOTIFY_BATCH << ")\n";
         notify_log++;
     }
 
-    // For each watcher, WRITE invalidation (simulate by writing to metadata area)
+    // For each watcher in this batch, WRITE invalidation (simulate by writing to metadata area)
     for (uint64_t i = 0; i < notify_count; ++i) {
         notify_buf[i] = 1;  // Invalidation flag
 
@@ -363,13 +364,16 @@ void post_notify_watchers(Client& client, WatchOpCtx& op, const RegisteredWatchB
         wr.sg_list = &sge;
         wr.num_sge = 1;
         // Write to metadata area at end of watch table (simulating dirty bit)
-        wr.wr.rdma.remote_addr = conns[target_node].addr + WATCH_TABLE_SIZE + (i * sizeof(uint64_t));
+        wr.wr.rdma.remote_addr = conns[target_node].addr + WATCH_TABLE_SIZE + ((batch_start + i) * sizeof(uint64_t));
         wr.wr.rdma.rkey = conns[target_node].rkey;
 
         if (ibv_post_send(conns[target_node].id->qp, &wr, &bad_wr)) {
             throw std::runtime_error("watch pipeline: notify watcher post failed");
         }
     }
+
+    // Track how many notifications we've sent so far
+    op.notify_sent += static_cast<uint32_t>(notify_count);
 }
 
 } // namespace
@@ -453,6 +457,8 @@ void run_watch_pipeline(
             post_faa_slot(client, op, buffers);
         } else {
             // Notification phase: read watcher count
+            op.notify_sent = 0;
+            op.notify_completed = 0;
             if (client.id() == 0 && submitted < registration_ops + 5) {
                 std::cerr << "[Client 0] submit_op: notification op " << (submitted - registration_ops)
                           << " object " << op.object_id << "\n";
@@ -651,11 +657,23 @@ void run_watch_pipeline(
                               << "/" << op.notify_sent << " for object " << op.object_id << "\n";
                 }
 
-                if (op.notify_completed >= op.notify_sent) {
+                if (op.notify_completed >= op.response_target) {
+                    // Completed current batch - check if more watchers remain
+                    if (op.notify_sent < op.total_watchers) {
+                        // More watchers to notify - send next batch
+                        if (client.id() == 0 && (completed - registration_ops) < 10) {
+                            std::cerr << "[Client 0] NOTIFY batch complete, sending next batch (sent "
+                                      << op.notify_sent << "/" << op.total_watchers << ")\n";
+                        }
+                        post_notify_watchers(client, op, buffers);
+                        continue;
+                    }
+
                     // All notifications sent! E2E operation complete
                     if (client.id() == 0 && (completed - registration_ops) < 10) {
                         std::cerr << "[Client 0] NOTIFY complete notify_op " << (completed - registration_ops)
-                                  << " object " << op.object_id << " sent " << op.notify_sent << " notifications\n";
+                                  << " object " << op.object_id << " sent " << op.notify_sent << " notifications (total_watchers="
+                                  << op.total_watchers << ")\n";
                     }
 
                     latencies[op.latency_index] = std::chrono::duration_cast<std::chrono::nanoseconds>(

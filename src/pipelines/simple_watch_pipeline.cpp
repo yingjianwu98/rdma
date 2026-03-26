@@ -18,7 +18,7 @@
 
 namespace {
 
-constexpr size_t MAX_NOTIFY_BATCH = 128;
+constexpr size_t MAX_NOTIFY_BATCH = 2048;  // Match Synra's batch size
 
 enum class SimpleWatchPhase : uint8_t {
     idle = 0,
@@ -46,6 +46,7 @@ struct SimpleWatchOpCtx {
     uint64_t total_watchers = 0;
     uint64_t notify_sent = 0;
     uint64_t notify_completed = 0;
+    uint64_t notify_batch_size = 0;  // Size of current batch
     std::vector<uint64_t> watcher_ids;
 
     std::chrono::steady_clock::time_point started_at{};
@@ -212,18 +213,41 @@ void post_read_watcher_ids(Client& client, SimpleWatchOpCtx& op, const SimpleWat
 
 void post_notify_watchers(Client& client, SimpleWatchOpCtx& op, const SimpleWatchBuffers& buffers) {
     const auto& conns = client.connections();
-    const size_t start_idx = op.notify_sent;
-    const size_t notify_count = std::min(
-        MAX_NOTIFY_BATCH,
-        static_cast<size_t>(op.total_watchers - op.notify_sent)
-    );
+    auto* mr = client.mr();
 
-    // Simulate notification by counting (no actual network sends needed for baseline)
-    // In a real system, this would send invalidation messages to watchers
-    op.notify_sent += notify_count;
-    op.notify_completed = op.notify_sent; // Mark as completed immediately
+    // Calculate how many watchers remain to be notified
+    const uint64_t watchers_remaining = op.total_watchers - op.notify_sent;
+    const uint64_t notify_count = std::min(watchers_remaining, static_cast<uint64_t>(MAX_NOTIFY_BATCH));
+    const uint32_t batch_start = static_cast<uint32_t>(op.notify_sent);
 
-    // No actual RDMA operations posted - this is just a fast baseline
+    // For each watcher in this batch, post RDMA_WRITE to simulate notification
+    for (uint64_t i = 0; i < notify_count; ++i) {
+        ibv_sge sge{};
+        sge.addr = reinterpret_cast<uintptr_t>(&op.total_watchers);  // Dummy data
+        sge.length = sizeof(uint64_t);
+        sge.lkey = mr->lkey;
+
+        // Write to metadata area at end of watch table (simulating notification)
+        // Distribute writes across servers in round-robin fashion
+        const uint32_t target_node = static_cast<uint32_t>((batch_start + i) % conns.size());
+
+        ibv_send_wr wr{}, *bad_wr = nullptr;
+        wr.wr_id = encode_wr_id(op, SimpleWatchPhase::notify_watchers);
+        wr.opcode = IBV_WR_RDMA_WRITE;
+        wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE;
+        wr.sg_list = &sge;
+        wr.num_sge = 1;
+        wr.wr.rdma.remote_addr = conns[target_node].addr + WATCH_TABLE_SIZE + ((batch_start + i) * sizeof(uint64_t));
+        wr.wr.rdma.rkey = conns[target_node].rkey;
+
+        if (ibv_post_send(conns[target_node].id->qp, &wr, &bad_wr)) {
+            throw std::runtime_error("simple_watch pipeline: notify watcher post failed");
+        }
+    }
+
+    op.notify_sent += static_cast<uint32_t>(notify_count);
+    op.notify_batch_size = notify_count;  // Track current batch size
+    op.notify_completed = 0;  // Reset completion counter for this batch
     op.phase = SimpleWatchPhase::notify_watchers;
 }
 
@@ -293,6 +317,7 @@ void run_simple_watch_pipeline(
         op.total_watchers = 0;
         op.notify_sent = 0;
         op.notify_completed = 0;
+        op.notify_batch_size = 0;
         op.started_at = std::chrono::steady_clock::now();
 
         if (in_registration_phase) {
@@ -401,21 +426,38 @@ void run_simple_watch_pipeline(
             }
 
             if (phase == SimpleWatchPhase::read_watcher_ids) {
-                // Simulate notifications (simple baseline - no actual sends)
+                // Start sending notifications in batches
+                op.notify_sent = 0;
+                op.notify_completed = 0;
                 post_notify_watchers(client, op, buffers);
+                continue;
+            }
 
-                // Complete immediately since no actual operations posted
-                latencies[op.latency_index] = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::steady_clock::now() - op.started_at).count();
-                object_counts[op.object_id]++;
+            if (phase == SimpleWatchPhase::notify_watchers) {
+                // Count completed notifications
+                op.notify_completed++;
 
-                completed++;
-                active--;
-                op.active = false;
-                op.phase = SimpleWatchPhase::idle;
+                if (op.notify_completed >= op.notify_batch_size) {
+                    // Completed current batch - check if more watchers remain
+                    if (op.notify_sent < op.total_watchers) {
+                        // More watchers to notify - send next batch
+                        post_notify_watchers(client, op, buffers);
+                        continue;
+                    }
 
-                if (submitted < NUM_OPS_PER_CLIENT) {
-                    submit_op(slot);
+                    // All notifications sent! E2E operation complete
+                    latencies[op.latency_index] = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now() - op.started_at).count();
+                    object_counts[op.object_id]++;
+
+                    completed++;
+                    active--;
+                    op.active = false;
+                    op.phase = SimpleWatchPhase::idle;
+
+                    if (submitted < NUM_OPS_PER_CLIENT) {
+                        submit_op(slot);
+                    }
                 }
                 continue;
             }
