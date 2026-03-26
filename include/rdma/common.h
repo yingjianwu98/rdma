@@ -23,22 +23,14 @@
 // ─── Cluster config ───
 
 inline const std::vector<std::string> CLUSTER_NODES = {
-    "192.168.1.1",  // apt130
-    "192.168.1.2",  // apt131
-    "192.168.1.3",  // apt129
-    "192.168.1.4",  // apt132
-    "192.168.1.5",  // apt136
+    "128.110.96.129",  // apt129
+    "128.110.96.132",  // apt132
+    "128.110.96.136",  // apt136
 };
 
 // change these two variables together
 inline const std::vector<std::string> CLIENT_NODES = {
-     // "192.168.1.4",
-   // "192.168.1.5",
-    "192.168.1.6",
-    // "192.168.1.7",
-    // "192.168.1.8",
-    // "192.168.1.9",
-    // "192.168.1.10",
+    "128.110.96.130",  // apt130
 };
 
 constexpr size_t TOTAL_CLIENT_MACHINES = 1;
