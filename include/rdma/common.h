@@ -63,7 +63,7 @@ constexpr uint8_t RDMA_INITIATOR_DEPTH = 16;
 // These knobs define the workload shape shared across all pipelines.
 
 constexpr size_t NUM_OPS = 20'000'000;
-constexpr size_t NUM_CLIENTS_PER_MACHINE = 16;
+constexpr size_t NUM_CLIENTS_PER_MACHINE = 1;
 constexpr size_t TOTAL_CLIENTS = NUM_CLIENTS_PER_MACHINE * TOTAL_CLIENT_MACHINES;
 constexpr size_t NUM_OPS_PER_CLIENT = NUM_OPS / TOTAL_CLIENTS;
 constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * TOTAL_CLIENTS;
@@ -132,6 +132,14 @@ constexpr size_t SYNRA_FAA_ACTIVE_WINDOW = 32;
 constexpr size_t SYNRA_FAA_CQ_BATCH = 32;
 constexpr size_t SYNRA_FAA_LOG_CAPACITY = NUM_OPS;
 
+// ─── TAS primitive config ───
+// Each round has active_window * total_clients contenders on one shared TAS word.
+
+constexpr size_t TAS_ACTIVE_WINDOW = 1;
+constexpr size_t TAS_CQ_BATCH = 64;
+constexpr size_t TAS_ROUNDS = 1000;
+constexpr size_t TAS_LOG_CAPACITY = TAS_ROUNDS;
+
 // ─── Lock table layout ───
 // The physical server layout is shared even though pipelines use it differently.
 
@@ -163,6 +171,7 @@ static_assert(TICKET_FAA_LOG_CAPACITY <= MAX_LOG_PER_LOCK, "Ticket FAA log capac
 static_assert(MU_GLOBAL_LOG_CAPACITY <= MAX_LOCKS * MAX_LOG_PER_LOCK, "MU global log exceeds allocated total log size");
 static_assert(SIMPLE_MU_LOG_CAPACITY <= MAX_LOCKS * MAX_LOG_PER_LOCK, "Simple MU flat log exceeds allocated total log size");
 static_assert(SYNRA_FAA_LOG_CAPACITY <= MAX_LOCKS * MAX_LOG_PER_LOCK, "Synra FAA flat log exceeds allocated total log size");
+static_assert(TAS_LOG_CAPACITY <= MAX_LOCKS * MAX_LOG_PER_LOCK, "TAS flat log exceeds allocated total log size");
 
 // ─── Per-lock offset helpers ───
 
@@ -201,6 +210,14 @@ inline constexpr size_t synra_faa_counter_offset() {
     return metadata_base_offset() + sizeof(uint64_t);
 }
 
+inline constexpr size_t tas_owner_word_offset() {
+    return metadata_base_offset() + (2 * sizeof(uint64_t));
+}
+
+inline constexpr size_t tas_round_done_offset() {
+    return metadata_base_offset() + (3 * sizeof(uint64_t));
+}
+
 inline constexpr size_t simple_mu_log_slot_offset(const uint64_t slot) {
     return mu_global_log_slot_offset(slot);
 }
@@ -209,10 +226,18 @@ inline constexpr size_t synra_faa_log_slot_offset(const uint64_t slot) {
     return mu_global_log_slot_offset(slot);
 }
 
+inline constexpr size_t tas_log_slot_offset(const uint64_t slot) {
+    return mu_global_log_slot_offset(slot);
+}
+
 static_assert(simple_mu_counter_offset() + sizeof(uint64_t) <= SERVER_POOL_SIZE, "Simple MU counter exceeds server pool");
 static_assert(synra_faa_counter_offset() + sizeof(uint64_t) <= SERVER_POOL_SIZE, "Synra FAA counter exceeds server pool");
+static_assert(tas_owner_word_offset() + sizeof(uint64_t) <= SERVER_POOL_SIZE, "TAS owner word exceeds server pool");
+static_assert(tas_round_done_offset() + sizeof(uint64_t) <= SERVER_POOL_SIZE, "TAS round-done counter exceeds server pool");
 static_assert(simple_mu_counter_offset() - metadata_base_offset() + sizeof(uint64_t) <= METADATA_SIZE, "Simple MU counter exceeds metadata region");
 static_assert(synra_faa_counter_offset() - metadata_base_offset() + sizeof(uint64_t) <= METADATA_SIZE, "Synra FAA counter exceeds metadata region");
+static_assert(tas_owner_word_offset() - metadata_base_offset() + sizeof(uint64_t) <= METADATA_SIZE, "TAS owner word exceeds metadata region");
+static_assert(tas_round_done_offset() - metadata_base_offset() + sizeof(uint64_t) <= METADATA_SIZE, "TAS round-done counter exceeds metadata region");
 
 inline constexpr size_t align_up(const size_t value, const size_t alignment) {
     return ((value + alignment - 1) / alignment) * alignment;
@@ -361,6 +386,8 @@ inline void* allocate_server_buffer(size_t num_locks = MAX_LOCKS) {
     }
     *reinterpret_cast<uint64_t*>(base + simple_mu_counter_offset()) = 0;
     *reinterpret_cast<uint64_t*>(base + synra_faa_counter_offset()) = 0;
+    *reinterpret_cast<uint64_t*>(base + tas_owner_word_offset()) = 0;
+    *reinterpret_cast<uint64_t*>(base + tas_round_done_offset()) = 0;
 
     return ptr;
 }

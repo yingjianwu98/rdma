@@ -10,6 +10,7 @@
 #include "rdma/pipelines/simple_mu_pipeline.h"
 #include "rdma/pipelines/simple_cas_pipeline.h"
 #include "rdma/pipelines/synra_faa_pipeline.h"
+#include "rdma/pipelines/tas_pipeline.h"
 #include "rdma/pipelines/ticket_faa_lock_pipeline.h"
 #include "rdma/mu_encoding.h"
 
@@ -25,7 +26,7 @@
 // ─── Configuration ───
 // Add new strategies here and wire them into the config load, buffer sizing,
 // dispatch, and summary branches below.
-constexpr const char* STRATEGY = "synra_faa";      // "mu", "simple_mu", "ticket_faa", "cas", "simple_cas", or "synra_faa"
+constexpr const char* STRATEGY = "tas";      // "mu", "simple_mu", "ticket_faa", "cas", "simple_cas", "synra_faa", or "tas"
 
 int main() {
     try {
@@ -37,6 +38,7 @@ int main() {
         const bool is_cas = (std::string(STRATEGY) == "cas");
         const bool is_simple_cas = (std::string(STRATEGY) == "simple_cas");
         const bool is_synra_faa = (std::string(STRATEGY) == "synra_faa");
+        const bool is_tas = (std::string(STRATEGY) == "tas");
         const CasPipelineConfig cas_config = is_cas ? load_cas_pipeline_config() : CasPipelineConfig{};
         const SimpleCasPipelineConfig simple_cas_config =
             is_simple_cas ? load_simple_cas_pipeline_config() : SimpleCasPipelineConfig{};
@@ -44,16 +46,19 @@ int main() {
             is_simple_mu ? load_simple_mu_pipeline_config() : SimpleMuPipelineConfig{};
         const SynraFaaPipelineConfig synra_faa_config =
             is_synra_faa ? load_synra_faa_pipeline_config() : SynraFaaPipelineConfig{};
+        const TasPipelineConfig tas_config = is_tas ? load_tas_pipeline_config() : TasPipelineConfig{};
         const TicketFaaLockPipelineConfig ticket_faa_config =
             is_ticket_faa ? load_ticket_faa_lock_pipeline_config() : TicketFaaLockPipelineConfig{};
         const MuPipelineConfig mu_config = is_mu ? load_mu_pipeline_config() : MuPipelineConfig{};
+        const size_t latency_count_per_client = is_tas ? tas_pipeline_latency_count(tas_config) : NUM_OPS_PER_CLIENT;
+        const size_t total_local_latency_count = latency_count_per_client * NUM_CLIENTS_PER_MACHINE;
 
         // Client mode runs worker threads for the selected pipeline. Server mode
         // below launches either the MU leader/follower path or generic nodes.
         if (get_uint_env("IS_CLIENT") != 0) {
             const uint32_t machine_id = get_uint_env("MACHINE_ID");
 
-            auto all_latencies = std::make_unique<std::array<uint64_t, NUM_TOTAL_OPS>>();
+            auto all_latencies = std::make_unique<std::vector<uint64_t>>(total_local_latency_count);
             std::latch start_latch(NUM_CLIENTS_PER_MACHINE + 1);
             std::vector<std::thread> workers;
 
@@ -67,10 +72,10 @@ int main() {
                 const uint32_t global_id = machine_id * NUM_CLIENTS_PER_MACHINE + i;
 
                 workers.emplace_back(
-                    [i, global_id, is_mu, is_simple_mu, is_ticket_faa, is_cas, is_simple_cas, is_synra_faa,
+                    [i, global_id, is_mu, is_simple_mu, is_ticket_faa, is_cas, is_simple_cas, is_synra_faa, is_tas,
                       &start_latch, &all_latencies, &lock_counts, &verify_client,
-                      &cas_config, &simple_cas_config, &simple_mu_config, &synra_faa_config,
-                      &ticket_faa_config, &mu_config]() {
+                      &cas_config, &simple_cas_config, &simple_mu_config, &synra_faa_config, &tas_config,
+                      &ticket_faa_config, &mu_config, latency_count_per_client]() {
                         try {
                             pin_thread_to_cpu(pick_cpu_for_client(i));
 
@@ -83,6 +88,8 @@ int main() {
                                 client_buffer_size = simple_mu_pipeline_client_buffer_size(simple_mu_config);
                             } else if (is_synra_faa) {
                                 client_buffer_size = synra_faa_pipeline_client_buffer_size(synra_faa_config);
+                            } else if (is_tas) {
+                                client_buffer_size = tas_pipeline_client_buffer_size(tas_config);
                             } else if (is_ticket_faa) {
                                 client_buffer_size = ticket_faa_lock_pipeline_client_buffer_size(ticket_faa_config);
                             } else if (is_mu) {
@@ -117,7 +124,7 @@ int main() {
 
                             start_latch.arrive_and_wait();
 
-                            uint64_t* latencies = &((*all_latencies)[i * NUM_OPS_PER_CLIENT]);
+                            uint64_t* latencies = all_latencies->data() + (i * latency_count_per_client);
 
                             if (is_cas) {
                                 run_cas_pipeline(
@@ -143,6 +150,12 @@ int main() {
                                     latencies,
                                     (*lock_counts)[global_id].data(),
                                     synra_faa_config);
+                            } else if (is_tas) {
+                                run_tas_pipeline(
+                                    *client,
+                                    latencies,
+                                    (*lock_counts)[global_id].data(),
+                                    tas_config);
                             } else if (is_ticket_faa) {
                                 run_ticket_faa_lock_pipeline(
                                     *client,
@@ -178,11 +191,11 @@ int main() {
 
             // ─── Post-benchmark stats ───
 
-            const size_t local_total_ops = NUM_CLIENTS_PER_MACHINE * NUM_OPS_PER_CLIENT;
+            const size_t local_total_ops = total_local_latency_count;
             const double wall_s = std::chrono::duration_cast<std::chrono::microseconds>(
                 wall_end - wall_start).count() / 1'000'000.0;
 
-            std::sort(all_latencies->begin(), all_latencies->begin() + local_total_ops);
+            std::sort(all_latencies->begin(), all_latencies->end());
 
             auto get_p = [&](double p) -> double {
                 size_t idx = static_cast<size_t>(p * (local_total_ops - 1));
@@ -241,6 +254,14 @@ int main() {
                 std::cout << "Replicate Mode: " << std::setw(14) << "cas_to_empty" << "\n";
                 std::cout << "Log Mode:       " << std::setw(14) << "flat" << "\n";
                 std::cout << "Entry Value:    " << std::setw(14) << "client_id" << "\n";
+            } else if (is_tas) {
+                std::cout << "Active Window:  " << std::setw(14) << tas_config.active_window << "\n";
+                std::cout << "Rounds:         " << std::setw(14) << tas_config.rounds << "\n";
+                std::cout << "Owner Node:     " << std::setw(14) << 0 << "\n";
+                std::cout << "Acquire Mode:   " << std::setw(14) << "cas" << "\n";
+                std::cout << "Replicate Mode: " << std::setw(14) << "quorum_cas" << "\n";
+                std::cout << "Log Mode:       " << std::setw(14) << "flat" << "\n";
+                std::cout << "Entry Value:    " << std::setw(14) << "client_id" << "\n";
             } else if (is_ticket_faa) {
                 std::cout << "Active Window:  " << std::setw(14) << ticket_faa_config.active_window << "\n";
                 std::cout << "Zipf Skew:      " << std::setw(14) << std::fixed << std::setprecision(2)
@@ -260,8 +281,13 @@ int main() {
             }
             std::cout << "Clients:        " << std::setw(14) << TOTAL_CLIENTS
                       << " (" << NUM_CLIENTS_PER_MACHINE << " on this machine)\n";
-            std::cout << "Ops/Client:     " << std::setw(14) << NUM_OPS_PER_CLIENT << "\n";
-            std::cout << "Total Ops:      " << std::setw(14) << local_total_ops << "\n";
+            if (is_tas) {
+                std::cout << "Samples/Client: " << std::setw(14) << latency_count_per_client << "\n";
+                std::cout << "Total Samples:  " << std::setw(14) << local_total_ops << "\n";
+            } else {
+                std::cout << "Ops/Client:     " << std::setw(14) << latency_count_per_client << "\n";
+                std::cout << "Total Ops:      " << std::setw(14) << local_total_ops << "\n";
+            }
             std::cout << std::string(50, '-') << "\n";
             std::cout << "Wall Clock:     " << std::setw(14) << std::fixed
                       << std::setprecision(3) << wall_s << " s\n";
@@ -286,8 +312,9 @@ int main() {
                 : (is_simple_cas ? simple_cas_config.active_window
                 : (is_simple_mu ? simple_mu_config.active_window
                 : (is_synra_faa ? synra_faa_config.active_window
+                : (is_tas ? tas_config.active_window
                 : (is_ticket_faa ? ticket_faa_config.active_window
-                : (is_mu ? mu_config.active_window : 0)))));
+                : (is_mu ? mu_config.active_window : 0))))));
             const double csv_zipf_skew =
                 is_cas ? cas_config.zipf_skew
                 : (is_simple_cas ? simple_cas_config.zipf_skew
