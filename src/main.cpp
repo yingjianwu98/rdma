@@ -7,6 +7,7 @@
 #include "rdma/pipelines/cas_pipeline.h"
 #include "rdma/pipelines/mu_pipeline.h"
 #include "rdma/pipelines/simple_cas_pipeline.h"
+#include "rdma/pipelines/simple_watch_pipeline.h"
 #include "rdma/pipelines/ticket_faa_lock_pipeline.h"
 #include "rdma/pipelines/watch_pipeline.h"
 #include "rdma/pipelines/mu_watch_pipeline.h"
@@ -24,7 +25,7 @@
 // ─── Configuration ───
 // Add new strategies here and wire them into the config load, buffer sizing,
 // dispatch, and summary branches below.
-constexpr const char* STRATEGY = "watch";      // "mu", "ticket_faa", "cas", "simple_cas", "watch", or "mu_watch"
+constexpr const char* STRATEGY = "simple_watch";      // "mu", "ticket_faa", "cas", "simple_cas", "watch", "simple_watch", or "mu_watch"
 
 int main() {
     std::cerr << "[DEBUG] main() started" << std::endl;
@@ -39,6 +40,7 @@ int main() {
         const bool is_cas = (std::string(STRATEGY) == "cas");
         const bool is_simple_cas = (std::string(STRATEGY) == "simple_cas");
         const bool is_watch = (std::string(STRATEGY) == "watch");
+        const bool is_simple_watch = (std::string(STRATEGY) == "simple_watch");
         const bool is_mu_watch = (std::string(STRATEGY) == "mu_watch");
         std::cerr << "[DEBUG] Strategy flags set, loading pipeline configs..." << std::endl;
         std::cerr.flush();
@@ -49,6 +51,8 @@ int main() {
             is_ticket_faa ? load_ticket_faa_lock_pipeline_config() : TicketFaaLockPipelineConfig{};
         const MuPipelineConfig mu_config = is_mu ? load_mu_pipeline_config() : MuPipelineConfig{};
         const WatchPipelineConfig watch_config = is_watch ? load_watch_pipeline_config() : WatchPipelineConfig{};
+        const SimpleWatchPipelineConfig simple_watch_config =
+            is_simple_watch ? load_simple_watch_pipeline_config() : SimpleWatchPipelineConfig{};
         const MuWatchPipelineConfig mu_watch_config = is_mu_watch ? load_mu_watch_pipeline_config() : MuWatchPipelineConfig{};
         std::cerr << "[DEBUG] Pipeline configs loaded" << std::endl;
         std::cerr.flush();
@@ -76,9 +80,9 @@ int main() {
                 const uint32_t global_id = machine_id * NUM_CLIENTS_PER_MACHINE + i;
 
                 workers.emplace_back(
-                    [i, global_id, is_mu, is_ticket_faa, is_cas, is_simple_cas, is_watch, is_mu_watch,
+                    [i, global_id, is_mu, is_ticket_faa, is_cas, is_simple_cas, is_watch, is_simple_watch, is_mu_watch,
                      &start_latch, &all_latencies, &lock_counts, &verify_client,
-                     &cas_config, &simple_cas_config, &ticket_faa_config, &mu_config, &watch_config, &mu_watch_config]() {
+                     &cas_config, &simple_cas_config, &ticket_faa_config, &mu_config, &watch_config, &simple_watch_config, &mu_watch_config]() {
                         try {
                             pin_thread_to_cpu(pick_cpu_for_client(i));
 
@@ -89,8 +93,9 @@ int main() {
                                                          : (is_ticket_faa ? ticket_faa_lock_pipeline_client_buffer_size(ticket_faa_config)
                                                                           : (is_mu ? mu_pipeline_client_buffer_size(mu_config)
                                                                                    : (is_watch ? watch_pipeline_client_buffer_size(watch_config)
-                                                                                               : (is_mu_watch ? mu_watch_pipeline_client_buffer_size(mu_watch_config)
-                                                                                                              : CLIENT_ALIGNED_SIZE))))));
+                                                                                               : (is_simple_watch ? simple_watch_pipeline_client_buffer_size(simple_watch_config)
+                                                                                                                  : (is_mu_watch ? mu_watch_pipeline_client_buffer_size(mu_watch_config)
+                                                                                                                                 : CLIENT_ALIGNED_SIZE)))))));
 
                             if (is_mu || is_mu_watch) {
                                 std::vector leader_only = {CLUSTER_NODES[0]};
@@ -148,6 +153,12 @@ int main() {
                                     latencies,
                                     (*lock_counts)[global_id].data(),
                                     watch_config);
+                            } else if (is_simple_watch) {
+                                run_simple_watch_pipeline(
+                                    *client,
+                                    latencies,
+                                    (*lock_counts)[global_id].data(),
+                                    simple_watch_config);
                             } else if (is_mu_watch) {
                                 run_mu_watch_pipeline(
                                     *client,
@@ -252,6 +263,12 @@ int main() {
                           << watch_config.zipf_skew << "\n";
                 std::cout << "Owner Mode:     " << std::setw(14)
                           << (watch_config.shard_owner ? "sharded" : "leader") << "\n";
+            } else if (is_simple_watch) {
+                std::cout << "Active Window:  " << std::setw(14) << simple_watch_config.active_window << "\n";
+                std::cout << "Zipf Skew:      " << std::setw(14) << std::fixed << std::setprecision(2)
+                          << simple_watch_config.zipf_skew << "\n";
+                std::cout << "Owner Mode:     " << std::setw(14)
+                          << (simple_watch_config.shard_owner ? "sharded" : "leader") << "\n";
             } else if (is_mu_watch) {
                 std::cout << "Active Window:  " << std::setw(14) << mu_watch_config.active_window << "\n";
                 std::cout << "Zipf Skew:      " << std::setw(14) << std::fixed << std::setprecision(2)
@@ -285,9 +302,9 @@ int main() {
                       << "," << machine_id
                       << "," << TOTAL_CLIENTS
                       << "," << MAX_LOCKS
-                      << "," << (is_cas ? cas_config.active_window : (is_simple_cas ? simple_cas_config.active_window : (is_ticket_faa ? ticket_faa_config.active_window : (is_mu ? mu_config.active_window : (is_watch ? watch_config.active_window : (is_mu_watch ? mu_watch_config.active_window : 0))))))
+                      << "," << (is_cas ? cas_config.active_window : (is_simple_cas ? simple_cas_config.active_window : (is_ticket_faa ? ticket_faa_config.active_window : (is_mu ? mu_config.active_window : (is_watch ? watch_config.active_window : (is_simple_watch ? simple_watch_config.active_window : (is_mu_watch ? mu_watch_config.active_window : 0)))))))
                       << "," << std::fixed << std::setprecision(2)
-                      << (is_cas ? cas_config.zipf_skew : (is_simple_cas ? simple_cas_config.zipf_skew : (is_ticket_faa ? ticket_faa_config.zipf_skew : (is_mu ? mu_config.zipf_skew : (is_watch ? watch_config.zipf_skew : (is_mu_watch ? mu_watch_config.zipf_skew : 0.0))))))
+                      << (is_cas ? cas_config.zipf_skew : (is_simple_cas ? simple_cas_config.zipf_skew : (is_ticket_faa ? ticket_faa_config.zipf_skew : (is_mu ? mu_config.zipf_skew : (is_watch ? watch_config.zipf_skew : (is_simple_watch ? simple_watch_config.zipf_skew : (is_mu_watch ? mu_watch_config.zipf_skew : 0.0)))))))
                       << "," << local_total_ops
                       << "," << std::fixed << std::setprecision(3) << wall_s
                       << "," << std::setprecision(0) << goodput

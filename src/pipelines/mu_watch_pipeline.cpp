@@ -209,8 +209,8 @@ void run_mu_watch_pipeline(
     uint32_t send_signal_count = 0;
     size_t recv_posted = recv_ring;
 
-    // Two-phase benchmark: first half measures registration, second half measures notification
-    const size_t registration_ops = NUM_OPS_PER_CLIENT / 2;
+    // Two-phase benchmark: mostly registration, small number of notifications (match watch_pipeline)
+    const size_t registration_ops = NUM_OPS_PER_CLIENT * 99 / 100;
     const size_t notification_ops = NUM_OPS_PER_CLIENT - registration_ops;
     bool in_registration_phase = true;
 

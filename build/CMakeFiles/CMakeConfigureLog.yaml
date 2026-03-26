@@ -1825,3 +1825,91 @@ events:
       CMAKE_SYSTEM_APPBUNDLE_PATH:
         - "/Applications"
 ...
+
+---
+events:
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/CheckIPOSupported.cmake:197 (try_compile)"
+      - "/opt/homebrew/share/cmake/Modules/CheckIPOSupported.cmake:320 (_ipo_run_language_check)"
+      - "CMakeLists.txt:17 (check_ipo_supported)"
+    directories:
+      source: "/Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-CXX/src"
+      binary: "/Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-CXX/bin"
+    buildResult:
+      variable: "_IPO_LANGUAGE_CHECK_RESULT"
+      cached: true
+      stdout: |
+        Change Dir: '/Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-CXX/bin'
+        
+        Run Build Command(s): /opt/homebrew/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile
+        /opt/homebrew/bin/cmake -S/Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-CXX/src -B/Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-CXX/bin --check-build-system CMakeFiles/Makefile.cmake 0
+        /opt/homebrew/bin/cmake -E cmake_progress_start /Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles /Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-CXX/bin//CMakeFiles/progress.marks
+        /Library/Developer/CommandLineTools/usr/bin/make  -f CMakeFiles/Makefile2 all
+        /Library/Developer/CommandLineTools/usr/bin/make  -f CMakeFiles/foo.dir/build.make CMakeFiles/foo.dir/depend
+        cd /Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-CXX/bin && /opt/homebrew/bin/cmake -E cmake_depends "Unix Makefiles" /Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-CXX/src /Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-CXX/src /Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-CXX/bin /Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-CXX/bin /Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/foo.dir/DependInfo.cmake foo
+        /Library/Developer/CommandLineTools/usr/bin/make  -f CMakeFiles/foo.dir/build.make CMakeFiles/foo.dir/build
+        [ 25%] Building CXX object CMakeFiles/foo.dir/foo.cpp.o
+        /usr/bin/c++   -flto=thin -arch arm64 -MD -MT CMakeFiles/foo.dir/foo.cpp.o -MF CMakeFiles/foo.dir/foo.cpp.o.d -o CMakeFiles/foo.dir/foo.cpp.o -c /Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-CXX/src/foo.cpp
+        [ 50%] Linking CXX static library libfoo.a
+        /opt/homebrew/bin/cmake -P CMakeFiles/foo.dir/cmake_clean_target.cmake
+        /opt/homebrew/bin/cmake -E cmake_link_script CMakeFiles/foo.dir/link.txt --verbose=1
+        "/usr/bin/ar" qc libfoo.a CMakeFiles/foo.dir/foo.cpp.o
+        "/usr/bin/ranlib" libfoo.a
+        [ 50%] Built target foo
+        /Library/Developer/CommandLineTools/usr/bin/make  -f CMakeFiles/boo.dir/build.make CMakeFiles/boo.dir/depend
+        cd /Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-CXX/bin && /opt/homebrew/bin/cmake -E cmake_depends "Unix Makefiles" /Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-CXX/src /Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-CXX/src /Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-CXX/bin /Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-CXX/bin /Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/boo.dir/DependInfo.cmake boo
+        /Library/Developer/CommandLineTools/usr/bin/make  -f CMakeFiles/boo.dir/build.make CMakeFiles/boo.dir/build
+        [ 75%] Building CXX object CMakeFiles/boo.dir/main.cpp.o
+        /usr/bin/c++   -flto=thin -arch arm64 -MD -MT CMakeFiles/boo.dir/main.cpp.o -MF CMakeFiles/boo.dir/main.cpp.o.d -o CMakeFiles/boo.dir/main.cpp.o -c /Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-CXX/src/main.cpp
+        [100%] Linking CXX executable boo
+        /opt/homebrew/bin/cmake -E cmake_link_script CMakeFiles/boo.dir/link.txt --verbose=1
+        /usr/bin/c++ -flto=thin -arch arm64 -Wl,-search_paths_first -Wl,-headerpad_max_install_names CMakeFiles/boo.dir/main.cpp.o -o boo  libfoo.a
+        [100%] Built target boo
+        /opt/homebrew/bin/cmake -E cmake_progress_start /Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles 0
+        
+      exitCode: 0
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/CheckIPOSupported.cmake:197 (try_compile)"
+      - "/opt/homebrew/share/cmake/Modules/CheckIPOSupported.cmake:320 (_ipo_run_language_check)"
+      - "CMakeLists.txt:17 (check_ipo_supported)"
+    directories:
+      source: "/Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-C/src"
+      binary: "/Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-C/bin"
+    buildResult:
+      variable: "_IPO_LANGUAGE_CHECK_RESULT"
+      cached: true
+      stdout: |
+        Change Dir: '/Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-C/bin'
+        
+        Run Build Command(s): /opt/homebrew/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile
+        /opt/homebrew/bin/cmake -S/Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-C/src -B/Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-C/bin --check-build-system CMakeFiles/Makefile.cmake 0
+        /opt/homebrew/bin/cmake -E cmake_progress_start /Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-C/bin/CMakeFiles /Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-C/bin//CMakeFiles/progress.marks
+        /Library/Developer/CommandLineTools/usr/bin/make  -f CMakeFiles/Makefile2 all
+        /Library/Developer/CommandLineTools/usr/bin/make  -f CMakeFiles/foo.dir/build.make CMakeFiles/foo.dir/depend
+        cd /Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-C/bin && /opt/homebrew/bin/cmake -E cmake_depends "Unix Makefiles" /Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-C/src /Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-C/src /Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-C/bin /Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-C/bin /Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-C/bin/CMakeFiles/foo.dir/DependInfo.cmake foo
+        /Library/Developer/CommandLineTools/usr/bin/make  -f CMakeFiles/foo.dir/build.make CMakeFiles/foo.dir/build
+        [ 25%] Building C object CMakeFiles/foo.dir/foo.c.o
+        /usr/bin/cc   -flto=thin -arch arm64 -MD -MT CMakeFiles/foo.dir/foo.c.o -MF CMakeFiles/foo.dir/foo.c.o.d -o CMakeFiles/foo.dir/foo.c.o -c /Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-C/src/foo.c
+        [ 50%] Linking C static library libfoo.a
+        /opt/homebrew/bin/cmake -P CMakeFiles/foo.dir/cmake_clean_target.cmake
+        /opt/homebrew/bin/cmake -E cmake_link_script CMakeFiles/foo.dir/link.txt --verbose=1
+        "/usr/bin/ar" qc libfoo.a CMakeFiles/foo.dir/foo.c.o
+        "/usr/bin/ranlib" libfoo.a
+        [ 50%] Built target foo
+        /Library/Developer/CommandLineTools/usr/bin/make  -f CMakeFiles/boo.dir/build.make CMakeFiles/boo.dir/depend
+        cd /Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-C/bin && /opt/homebrew/bin/cmake -E cmake_depends "Unix Makefiles" /Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-C/src /Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-C/src /Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-C/bin /Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-C/bin /Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-C/bin/CMakeFiles/boo.dir/DependInfo.cmake boo
+        /Library/Developer/CommandLineTools/usr/bin/make  -f CMakeFiles/boo.dir/build.make CMakeFiles/boo.dir/build
+        [ 75%] Building C object CMakeFiles/boo.dir/main.c.o
+        /usr/bin/cc   -flto=thin -arch arm64 -MD -MT CMakeFiles/boo.dir/main.c.o -MF CMakeFiles/boo.dir/main.c.o.d -o CMakeFiles/boo.dir/main.c.o -c /Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-C/src/main.c
+        [100%] Linking C executable boo
+        /opt/homebrew/bin/cmake -E cmake_link_script CMakeFiles/boo.dir/link.txt --verbose=1
+        /usr/bin/cc -flto=thin -arch arm64 -Wl,-search_paths_first -Wl,-headerpad_max_install_names CMakeFiles/boo.dir/main.c.o -o boo  libfoo.a
+        [100%] Built target boo
+        /opt/homebrew/bin/cmake -E cmake_progress_start /Users/yingjianwu/Desktop/rdma/build/CMakeFiles/_CMakeLTOTest-C/bin/CMakeFiles 0
+        
+      exitCode: 0
+...

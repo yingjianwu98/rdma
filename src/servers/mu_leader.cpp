@@ -652,6 +652,7 @@ void MuLeader::run() {
 
     std::cout << "[MuLeader " << node_id_ << "] locks ["
               << lock_start_ << ", " << lock_end_ << ")\n";
+    std::cout.flush();
 
     // Build the explicit runtime object that all helper functions operate on.
     // This replaces the old lambda-captured state and makes the event loop easier
