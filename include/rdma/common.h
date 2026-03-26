@@ -135,7 +135,7 @@ constexpr size_t SYNRA_FAA_LOG_CAPACITY = NUM_OPS;
 // ─── TAS primitive config ───
 // Each round has active_window * total_clients contenders on one shared TAS word.
 
-constexpr size_t TAS_ACTIVE_WINDOW = 1;
+constexpr size_t TAS_ACTIVE_WINDOW = 2;
 constexpr size_t TAS_CQ_BATCH = 64;
 constexpr size_t TAS_ROUNDS = 1000;
 constexpr size_t TAS_LOG_CAPACITY = TAS_ROUNDS;
