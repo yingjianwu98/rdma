@@ -298,6 +298,9 @@ void run_simple_watch_pipeline(
     uint64_t max_watchers = 0;
     uint64_t min_watchers = UINT64_MAX;
     size_t zero_watcher_objects = 0;
+    uint64_t total_registrations = 0;
+    uint64_t total_notifications_sent = 0;
+    uint64_t invalid_watcher_ids = 0;
 
     size_t submitted = 0;
     size_t completed = 0;
@@ -377,6 +380,9 @@ void run_simple_watch_pipeline(
                     std::chrono::steady_clock::now() - op.started_at).count();
                 object_counts[op.object_id]++;
 
+                // Track registration
+                total_registrations++;
+
                 completed++;
                 active--;
                 op.active = false;
@@ -426,6 +432,15 @@ void run_simple_watch_pipeline(
             }
 
             if (phase == SimpleWatchPhase::read_watcher_ids) {
+                // Verify watcher IDs are valid (within client ID range)
+                const size_t read_count = std::min(op.total_watchers, static_cast<uint64_t>(MAX_WATCHERS_PER_OBJECT));
+                const uint64_t* watcher_ids = &buffers.watcher_array[op.slot * MAX_WATCHERS_PER_OBJECT];
+                for (size_t i = 0; i < read_count; ++i) {
+                    if (watcher_ids[i] >= TOTAL_CLIENTS) {
+                        invalid_watcher_ids++;
+                    }
+                }
+
                 // Start sending notifications in batches
                 op.notify_sent = 0;
                 op.notify_completed = 0;
@@ -436,6 +451,7 @@ void run_simple_watch_pipeline(
             if (phase == SimpleWatchPhase::notify_watchers) {
                 // Count completed notifications
                 op.notify_completed++;
+                total_notifications_sent++;
 
                 if (op.notify_completed >= op.notify_batch_size) {
                     // Completed current batch - check if more watchers remain
@@ -465,22 +481,62 @@ void run_simple_watch_pipeline(
     }
 
     // Print verification statistics
-    std::cout << "\n[Client " << client.id() << "] Watch Verification:\n";
-    std::cout << "  Registration ops: " << registration_ops << "\n";
-    std::cout << "  Notification ops: " << notification_ops << "\n";
+    std::cout << "\n========================================\n";
+    std::cout << "[Client " << client.id() << "] Watch Verification\n";
+    std::cout << "========================================\n";
+    std::cout << "REGISTRATION PHASE:\n";
+    std::cout << "  Completed registrations: " << total_registrations << " / " << registration_ops;
+    if (total_registrations == registration_ops) {
+        std::cout << " ✓\n";
+    } else {
+        std::cout << " ✗ MISMATCH\n";
+    }
+
+    std::cout << "\nNOTIFICATION PHASE:\n";
+    std::cout << "  Completed notifications: " << notification_ops << "\n";
     std::cout << "  Total watchers seen: " << total_watchers_seen << "\n";
+    std::cout << "  Total notification messages sent: " << total_notifications_sent << "\n";
     std::cout << "  Avg watchers/object: " << (notification_ops > 0 ? total_watchers_seen / notification_ops : 0) << "\n";
     std::cout << "  Min watchers: " << (min_watchers == UINT64_MAX ? 0 : min_watchers) << "\n";
     std::cout << "  Max watchers: " << max_watchers << "\n";
     std::cout << "  Objects with 0 watchers: " << zero_watcher_objects << "\n";
+    std::cout << "  Invalid watcher IDs: " << invalid_watcher_ids;
+    if (invalid_watcher_ids == 0) {
+        std::cout << " ✓\n";
+    } else {
+        std::cout << " ✗ ERROR\n";
+    }
 
-    const size_t expected_avg = (registration_ops * TOTAL_CLIENTS) / MAX_LOCKS;
+    std::cout << "\nCORRECTNESS CHECKS:\n";
+
+    // Check 1: Expected watcher count
+    const size_t expected_total_registrations = registration_ops * TOTAL_CLIENTS;
+    const size_t expected_avg = expected_total_registrations / MAX_LOCKS;
     if (notification_ops > 0) {
         const size_t actual_avg = total_watchers_seen / notification_ops;
+        std::cout << "  Expected avg watchers/object: ~" << expected_avg << "\n";
+        std::cout << "  Actual avg watchers/object: " << actual_avg << "\n";
         if (actual_avg >= expected_avg * 0.9 && actual_avg <= expected_avg * 1.1) {
-            std::cout << "  ✓ Watcher counts look correct (expected ~" << expected_avg << ")\n";
+            std::cout << "  ✓ Watcher counts are correct (within 10%)\n";
         } else {
-            std::cout << "  ⚠ Watcher counts unexpected (expected ~" << expected_avg << ")\n";
+            std::cout << "  ✗ Watcher counts are incorrect!\n";
         }
     }
+
+    // Check 2: Notifications match watchers
+    if (total_notifications_sent == total_watchers_seen) {
+        std::cout << "  ✓ All watchers were notified\n";
+    } else {
+        std::cout << "  ✗ Notification count mismatch: sent=" << total_notifications_sent
+                  << " expected=" << total_watchers_seen << "\n";
+    }
+
+    // Check 3: No invalid IDs
+    if (invalid_watcher_ids == 0) {
+        std::cout << "  ✓ All watcher IDs are valid\n";
+    } else {
+        std::cout << "  ✗ Found " << invalid_watcher_ids << " invalid watcher IDs\n";
+    }
+
+    std::cout << "========================================\n";
 }
