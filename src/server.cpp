@@ -186,9 +186,9 @@ void Server::start(uint16_t port) {
     sockaddr_in addr{};
     addr.sin_family      = AF_INET;
     addr.sin_port        = htons(port);
-    addr.sin_addr.s_addr = INADDR_ANY;
+    inet_pton(AF_INET, CLUSTER_NODES[node_id_].c_str(), &addr.sin_addr);
 
-    std::cerr << "[DEBUG] Calling rdma_bind_addr on 0.0.0.0:" << port << "..." << std::endl;
+    std::cerr << "[DEBUG] Calling rdma_bind_addr on " << CLUSTER_NODES[node_id_] << ":" << port << "..." << std::endl;
     std::cerr.flush();
     if (rdma_bind_addr(listener_, reinterpret_cast<sockaddr*>(&addr))) {
         std::cerr << "[ERROR] rdma_bind_addr failed with errno=" << errno
