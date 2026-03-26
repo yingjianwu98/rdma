@@ -23,13 +23,9 @@
 // ─── Cluster config ───
 
 inline const std::vector<std::string> CLUSTER_NODES = {
-    "192.168.1.1",
-    "192.168.1.2",
-    "192.168.1.3",
-    "192.168.1.4",
-    "192.168.1.5",
-    // "192.168.1.6",
-    // "192.168.1.7"
+    "192.168.1.3",  // apt129
+    "192.168.1.4",  // apt132
+    "192.168.1.5",  // apt136
 };
 
 // change these two variables together
