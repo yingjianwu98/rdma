@@ -656,10 +656,14 @@ void handle_recv_cqe(MuLeaderRuntime& rt, const ibv_wc& comp) {
             std::cerr << "[MuLeader debug] No followers available for notifications\n";
         }
 
+        // Limit notifications per object to avoid queue overflow (match watch_pipeline behavior)
+        constexpr uint64_t MAX_NOTIFY_PER_OBJECT = 1024;
+        const uint64_t notify_limit = std::min(num_watchers, MAX_NOTIFY_PER_OBJECT);
+
         // Drain more frequently to avoid QP overflow (QP_DEPTH=2048, so drain every 256 to be safe)
         constexpr size_t DRAIN_EVERY = 256;
 
-        for (uint64_t i = 0; i < num_watchers && i < MAX_WATCHERS_PER_OBJECT; ++i) {
+        for (uint64_t i = 0; i < notify_limit && i < MAX_WATCHERS_PER_OBJECT; ++i) {
             if (num_followers == 0) {
                 // No followers - just write locally (for single-node testing)
                 auto* invalidation_marker = reinterpret_cast<uint64_t*>(
