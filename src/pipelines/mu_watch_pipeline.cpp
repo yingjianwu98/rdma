@@ -268,8 +268,17 @@ void run_mu_watch_pipeline(
         submit_op(active);
     }
 
+    std::cerr << "[DEBUG] Client " << client.id() << " submitted " << submitted << " initial requests, entering completion loop..." << std::endl;
+    std::cerr.flush();
+
     // Main completion loop
+    uint64_t poll_count = 0;
     while (completed < NUM_OPS_PER_CLIENT) {
+        poll_count++;
+        if (poll_count % 100000000 == 0) {
+            std::cerr << "[DEBUG] Client " << client.id() << " still polling... completed=" << completed << "/" << NUM_OPS_PER_CLIENT << " poll_count=" << poll_count << std::endl;
+            std::cerr.flush();
+        }
         const int polled = ibv_poll_cq(client.cq(), static_cast<int>(completions.size()),
                                       completions.data());
         if (polled < 0) {
@@ -277,6 +286,11 @@ void run_mu_watch_pipeline(
         }
         if (polled == 0) {
             continue;
+        }
+
+        if (completed < 5) {
+            std::cerr << "[DEBUG] Client " << client.id() << " got " << polled << " completions" << std::endl;
+            std::cerr.flush();
         }
 
         for (int i = 0; i < polled; ++i) {
