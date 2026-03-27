@@ -689,8 +689,9 @@ void handle_recv_cqe(MuLeaderRuntime& rt, const ibv_wc& comp) {
             wr.num_sge = 1;
             wr.send_flags = IBV_SEND_INLINE;
 
-            // Signal every Nth write to avoid QP overflow
-            if (i % MU_SERVER_SEND_SIGNAL_EVERY == 0) {
+            // Signal every 16th write (more frequent for watch notifications to ensure CQ draining works)
+            // With QP_DEPTH=2048 and drain every 256, we need at least 256/16=16 CQEs to drain effectively
+            if (i % 16 == 0) {
                 wr.send_flags |= IBV_SEND_SIGNALED;
             }
 
