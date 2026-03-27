@@ -424,6 +424,10 @@ void run_watch_pipeline(
     bool registration_timing_done = false;
     bool notification_timing_started = false;
 
+    // Track phase-separated latency indices
+    size_t registration_latency_start = 0;
+    size_t notification_latency_start = registration_ops;
+
     auto submit_op = [&](const size_t slot) {
         auto& op = ops[slot];
         op.active = true;
@@ -712,6 +716,33 @@ void run_watch_pipeline(
                       << " (" << notification_ops << " ops in " << std::fixed << std::setprecision(3)
                       << notif_duration_s << "s)\n";
         }
+    }
+
+    // Phase-separated latency reporting
+    auto calculate_percentile = [](uint64_t* lats, size_t start, size_t count, double percentile) -> double {
+        if (count == 0) return 0.0;
+        std::vector<uint64_t> sorted(lats + start, lats + start + count);
+        std::sort(sorted.begin(), sorted.end());
+        const size_t idx = static_cast<size_t>(percentile * count / 100.0);
+        return sorted[std::min(idx, count - 1)] / 1000.0;  // Convert ns to μs
+    };
+
+    if (registration_ops > 0) {
+        std::cerr << "\nREGISTRATION LATENCY (μs):\n";
+        std::cerr << "  P50: " << std::fixed << std::setprecision(2)
+                  << calculate_percentile(latencies, registration_latency_start, registration_ops, 50.0) << "\n";
+        std::cerr << "  P90: " << calculate_percentile(latencies, registration_latency_start, registration_ops, 90.0) << "\n";
+        std::cerr << "  P99: " << calculate_percentile(latencies, registration_latency_start, registration_ops, 99.0) << "\n";
+        std::cerr << "  P99.9: " << calculate_percentile(latencies, registration_latency_start, registration_ops, 99.9) << "\n";
+    }
+
+    if (notification_ops > 0) {
+        std::cerr << "\nNOTIFICATION LATENCY (μs):\n";
+        std::cerr << "  P50: " << std::fixed << std::setprecision(2)
+                  << calculate_percentile(latencies, notification_latency_start, notification_ops, 50.0) << "\n";
+        std::cerr << "  P90: " << calculate_percentile(latencies, notification_latency_start, notification_ops, 90.0) << "\n";
+        std::cerr << "  P99: " << calculate_percentile(latencies, notification_latency_start, notification_ops, 99.0) << "\n";
+        std::cerr << "  P99.9: " << calculate_percentile(latencies, notification_latency_start, notification_ops, 99.9) << "\n";
     }
 
     std::cerr << "========================================\n" << std::flush;
