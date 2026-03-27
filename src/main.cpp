@@ -25,7 +25,7 @@
 // ─── Configuration ───
 // Add new strategies here and wire them into the config load, buffer sizing,
 // dispatch, and summary branches below.
-constexpr const char* STRATEGY = "watch";      // "mu", "ticket_faa", "cas", "simple_cas", "watch", "simple_watch", or "mu_watch"
+constexpr const char* STRATEGY = "mu_watch";   // "mu", "ticket_faa", "cas", "simple_cas", "watch", "simple_watch", or "mu_watch"
 
 int main() {
     std::cerr << "[DEBUG] main() started" << std::endl;
