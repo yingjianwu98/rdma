@@ -432,6 +432,16 @@ void post_mutation_writes(MuLeaderRuntime& rt, const uint32_t mutation_id) {
 
 // Replicate watch registration to followers (same pattern as post_mutation_writes)
 void post_watch_writes(MuLeaderRuntime& rt, const uint32_t mutation_id, const uint32_t object_id, const uint64_t slot) {
+    static uint64_t call_count = 0;
+    if (call_count < 5) {
+        std::cerr << "[MuLeader] post_watch_writes #" << call_count
+                  << " mutation_id=" << mutation_id
+                  << " object=" << object_id
+                  << " slot=" << slot << std::endl;
+        std::cerr.flush();
+    }
+    call_count++;
+
     auto& ctx = rt.mutations[mutation_id];
     auto* watcher_slot_ptr = rt.local_buf + watch_id_slot_offset(object_id, slot);
     const size_t followers = rt.follower_indices.size();
@@ -688,6 +698,15 @@ void handle_recv_cqe(MuLeaderRuntime& rt, const ibv_wc& comp) {
     if (req.op == static_cast<uint8_t>(MuRpcOp::WatchRegister)) {
         // Register a watcher using async replication (reuse mutation pool like mu_lock)
         const uint32_t object_id = req.lock_id;
+
+        static uint64_t watch_reg_count = 0;
+        if (watch_reg_count < 5 || watch_reg_count % 10000 == 0) {
+            std::cerr << "[MuLeader] WatchRegister req #" << watch_reg_count
+                      << " from client=" << req.client_id
+                      << " object=" << object_id << std::endl;
+            std::cerr.flush();
+        }
+        watch_reg_count++;
 
         // Atomically allocate a watch slot
         auto* counter_ptr = reinterpret_cast<uint64_t*>(
