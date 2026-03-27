@@ -970,8 +970,16 @@ void MuLeader::run() {
     ibv_wc wc[64];
     uint64_t debug_poll_count = 0;
     uint64_t debug_recv_count = 0;
+    uint64_t total_poll_count = 0;
     while (true) {
         const int n = ibv_poll_cq(rt.cq, 64, wc);
+        total_poll_count++;
+        if (total_poll_count % 100000000 == 0) {
+            std::cerr << "[MuLeader " << rt.node_id << "] poll_count=" << total_poll_count
+                      << " free_mutations=" << rt.free_mutations.size()
+                      << " global_commit=" << rt.global_commit_tail << std::endl;
+            std::cerr.flush();
+        }
         if (n < 0) {
             throw std::runtime_error("MuLeader: CQ poll failed");
         }
