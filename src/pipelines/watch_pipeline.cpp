@@ -354,7 +354,11 @@ void post_notify_watchers(Client& client, WatchOpCtx& op, const RegisteredWatchB
         wr.wr.rdma.rkey = conns[target_node].rkey;
 
         if (ibv_post_send(conns[target_node].id->qp, &wr, &bad_wr)) {
-            throw std::runtime_error("watch pipeline: notify watcher post failed");
+            // Send queue overflow - stop posting for this batch and continue
+            std::cerr << "[Client " << client.id() << " error] watch pipeline: notify watcher post failed"
+                      << " (sent " << i << "/" << notify_count << " in this batch)\n";
+            op.notify_sent += static_cast<uint32_t>(i);
+            return;
         }
     }
 
