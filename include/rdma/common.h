@@ -54,7 +54,7 @@ constexpr uint8_t RDMA_INITIATOR_DEPTH = 16;
 // ─── Benchmark / workload config ───
 // These knobs define the workload shape shared across all pipelines.
 
-constexpr size_t NUM_OPS = 320000;  // Experiment 2: 320K ops (40K watchers)
+constexpr size_t NUM_OPS = 640000;  // Experiment 3: 640K ops (80K watchers)
 constexpr size_t NUM_CLIENTS_PER_MACHINE = 8;
 constexpr size_t TOTAL_CLIENTS = NUM_CLIENTS_PER_MACHINE * TOTAL_CLIENT_MACHINES;
 constexpr size_t NUM_OPS_PER_CLIENT = NUM_OPS / TOTAL_CLIENTS;
