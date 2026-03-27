@@ -19,6 +19,7 @@ namespace {
 enum class MutationKind : uint8_t {
     append_lock = 1,
     append_unlock = 2,
+    register_watch = 3,
 };
 
 struct CommittedWaiter {
@@ -234,10 +235,11 @@ void release_mutation(MuLeaderRuntime& rt, const uint32_t mutation_id) {
         if (lock.append_inflight > 0) {
             lock.append_inflight--;
         }
+        enqueue_ready(rt, ctx.lock_id);
     }
+    // register_watch doesn't need lock state management
     ctx.in_use = false;
     rt.free_mutations.push_back(mutation_id);
-    enqueue_ready(rt, ctx.lock_id);
 }
 
 // Release a mutation context only after it has been applied and all tracked
@@ -278,6 +280,23 @@ void apply_mutation(MuLeaderRuntime& rt, const uint32_t mutation_id) {
     // here. Grants and unlock acks are emitted from that in-memory state, not by
     // scanning a replicated per-lock log.
     auto& ctx = rt.mutations[mutation_id];
+
+    if (ctx.kind == MutationKind::register_watch) {
+        // Watch registration: simply ACK the client after quorum is reached
+        MuResponse resp{};
+        resp.op = static_cast<uint8_t>(MuRpcOp::WatchRegister);
+        resp.status = static_cast<uint8_t>(MuRpcStatus::Ok);
+        resp.client_id = ctx.client_id;
+        resp.lock_id = ctx.lock_id;  // object_id stored in lock_id field
+        resp.req_id = ctx.req_id;
+        resp.granted_slot = ctx.granted_slot;  // watch slot stored here
+        send_response(rt, resp);
+
+        ctx.applied = true;
+        maybe_release_mutation(rt, mutation_id);
+        return;
+    }
+
     auto& lock = rt.locks[ctx.lock_id];
 
     if (ctx.kind == MutationKind::append_lock) {
@@ -407,6 +426,71 @@ void post_mutation_writes(MuLeaderRuntime& rt, const uint32_t mutation_id) {
     if (ctx.pending_followers == 0) {
         ctx.quorum_done = true;
         advance_commit_tail(rt);
+        maybe_release_mutation(rt, mutation_id);
+    }
+}
+
+// Replicate watch registration to followers (same pattern as post_mutation_writes)
+void post_watch_writes(MuLeaderRuntime& rt, const uint32_t mutation_id, const uint32_t object_id, const uint64_t slot) {
+    auto& ctx = rt.mutations[mutation_id];
+    auto* watcher_slot_ptr = rt.local_buf + watch_id_slot_offset(object_id, slot);
+    const size_t followers = rt.follower_indices.size();
+    const size_t quorum_needed = (QUORUM > 0) ? std::min<size_t>(QUORUM - 1, followers) : 0;
+    const size_t signaled_to_track = rt.quorum_only_signal ? quorum_needed : followers;
+    const size_t signal_start = followers == 0 ? 0 : (rt.repl_signal_cursor % followers);
+    if (followers != 0 && signaled_to_track != 0) {
+        rt.repl_signal_cursor = (rt.repl_signal_cursor + signaled_to_track) % followers;
+    }
+
+    for (size_t follower_pos = 0; follower_pos < rt.follower_indices.size(); ++follower_pos) {
+        const size_t follower_idx = rt.follower_indices[follower_pos];
+        auto& follower = rt.peers[follower_idx];
+        bool should_signal = !rt.quorum_only_signal;
+        if (rt.quorum_only_signal && followers != 0) {
+            should_signal = false;
+            for (size_t i = 0; i < signaled_to_track; ++i) {
+                if (follower_pos == ((signal_start + i) % followers)) {
+                    should_signal = true;
+                    break;
+                }
+            }
+        }
+
+        ibv_sge sge{};
+        sge.addr = reinterpret_cast<uintptr_t>(watcher_slot_ptr);
+        sge.length = sizeof(uint64_t);
+        sge.lkey = rt.local_mr->lkey;
+
+        ibv_send_wr wr{}, *bad_wr = nullptr;
+        wr.wr_id = make_repl_wr_id(mutation_id, ctx.generation);
+        wr.opcode = IBV_WR_RDMA_WRITE;
+        wr.sg_list = &sge;
+        wr.num_sge = 1;
+        wr.send_flags = IBV_SEND_INLINE | (should_signal ? IBV_SEND_SIGNALED : 0);
+        wr.wr.rdma.remote_addr = follower.remote_addr + watch_id_slot_offset(object_id, slot);
+        wr.wr.rdma.rkey = follower.rkey;
+
+        if (ibv_post_send(follower.cm_id->qp, &wr, &bad_wr)) {
+            throw std::runtime_error("MuLeader: failed to replicate watch registration");
+        }
+
+        if (should_signal) {
+            ctx.pending_followers++;
+        }
+    }
+
+    if (ctx.pending_followers == 0) {
+        ctx.quorum_done = true;
+        ctx.applied = true;
+        // Respond immediately if no followers
+        MuResponse resp{};
+        resp.op = static_cast<uint8_t>(MuRpcOp::WatchRegister);
+        resp.status = static_cast<uint8_t>(MuRpcStatus::Ok);
+        resp.client_id = ctx.client_id;
+        resp.lock_id = ctx.lock_id;
+        resp.req_id = ctx.req_id;
+        resp.granted_slot = ctx.granted_slot;
+        send_response(rt, resp);
         maybe_release_mutation(rt, mutation_id);
     }
 }
@@ -614,12 +698,12 @@ void handle_recv_cqe(MuLeaderRuntime& rt, const ibv_wc& comp) {
     }
 
     if (req.op == static_cast<uint8_t>(MuRpcOp::WatchRegister)) {
-        // Register a watcher: atomically allocate a slot and record the watcher ID
-        const uint32_t object_id = req.lock_id;  // Reuse lock_id field for object_id
+        // Register a watcher using async replication (reuse mutation pool like mu_lock)
+        const uint32_t object_id = req.lock_id;
+
+        // Atomically allocate a watch slot
         auto* counter_ptr = reinterpret_cast<uint64_t*>(
             rt.local_buf + watch_counter_offset(object_id));
-
-        // Atomically increment to get our slot
         const uint64_t slot = __sync_fetch_and_add(counter_ptr, 1);
 
         if (slot >= MAX_WATCHERS_PER_OBJECT) {
@@ -634,70 +718,35 @@ void handle_recv_cqe(MuLeaderRuntime& rt, const ibv_wc& comp) {
             return;
         }
 
-        // Write the watcher ID (client_id) to the allocated slot locally
+        // Allocate mutation context for async tracking
+        const auto mutation_id_opt = try_alloc_mutation(rt);
+        if (!mutation_id_opt.has_value()) {
+            MuResponse resp{};
+            resp.op = static_cast<uint8_t>(MuRpcOp::WatchRegister);
+            resp.status = static_cast<uint8_t>(MuRpcStatus::QueueFull);
+            resp.client_id = req.client_id;
+            resp.lock_id = object_id;
+            resp.req_id = req.req_id;
+            resp.granted_slot = 0;
+            send_response(rt, resp);
+            return;
+        }
+
+        const uint32_t mutation_id = *mutation_id_opt;
+        auto& ctx = rt.mutations[mutation_id];
+        ctx.kind = MutationKind::register_watch;
+        ctx.lock_id = object_id;
+        ctx.granted_slot = static_cast<uint32_t>(slot);
+        ctx.client_id = req.client_id;
+        ctx.req_id = req.req_id;
+
+        // Write watcher ID locally
         auto* watcher_slot = reinterpret_cast<uint64_t*>(
             rt.local_buf + watch_id_slot_offset(object_id, slot));
         *watcher_slot = req.client_id;
 
-        // Replicate to followers with quorum (like regular mu mutations)
-        const size_t num_followers = rt.follower_indices.size();
-        const size_t quorum_needed = (QUORUM > 0) ? std::min<size_t>(QUORUM - 1, num_followers) : 0;
-
-        // Post RDMA writes to all followers
-        uint32_t pending_writes = 0;
-        for (size_t follower_pos = 0; follower_pos < num_followers; ++follower_pos) {
-            const size_t follower_idx = rt.follower_indices[follower_pos];
-            auto& follower = rt.peers[follower_idx];
-
-            ibv_sge sge{};
-            sge.addr = reinterpret_cast<uintptr_t>(watcher_slot);
-            sge.length = sizeof(uint64_t);
-            sge.lkey = rt.local_mr->lkey;
-
-            ibv_send_wr wr{}, *bad_wr = nullptr;
-            wr.wr_id = (MU_WATCH_REPL_WR_TAG << MU_WR_TAG_SHIFT) | (follower_pos & 0xFF);  // Tag for watch replication
-            wr.opcode = IBV_WR_RDMA_WRITE;
-            wr.sg_list = &sge;
-            wr.num_sge = 1;
-            wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE;
-            wr.wr.rdma.remote_addr = follower.remote_addr + watch_id_slot_offset(object_id, slot);
-            wr.wr.rdma.rkey = follower.rkey;
-
-            if (ibv_post_send(follower.cm_id->qp, &wr, &bad_wr)) {
-                throw std::runtime_error("MuLeader: failed to replicate watch registration");
-            }
-            pending_writes++;
-        }
-
-        // Poll for quorum ACKs (inline replication)
-        uint32_t ack_count = 1;  // Leader counts as first ACK
-        while (ack_count < QUORUM && pending_writes > 0) {
-            ibv_wc wc[16];
-            const int polled = ibv_poll_cq(rt.cq, 16, wc);
-            if (polled < 0) {
-                throw std::runtime_error("MuLeader: watch replication CQ poll failed");
-            }
-
-            for (int i = 0; i < polled; ++i) {
-                if ((wc[i].wr_id >> 56) == MU_WATCH_REPL_WR_TAG) {
-                    if (wc[i].status != IBV_WC_SUCCESS) {
-                        throw std::runtime_error("MuLeader: watch replication write failed");
-                    }
-                    pending_writes--;
-                    ack_count++;
-                }
-            }
-        }
-
-        // Send ACK to client after quorum reached
-        MuResponse resp{};
-        resp.op = static_cast<uint8_t>(MuRpcOp::WatchRegister);
-        resp.status = static_cast<uint8_t>(MuRpcStatus::Ok);
-        resp.client_id = req.client_id;
-        resp.lock_id = object_id;
-        resp.req_id = req.req_id;
-        resp.granted_slot = static_cast<uint32_t>(slot);
-        send_response(rt, resp);
+        // Async replicate (post_watch_writes will handle response after quorum)
+        post_watch_writes(rt, mutation_id, object_id, slot);
         return;
     }
 
