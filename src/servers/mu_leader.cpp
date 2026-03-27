@@ -732,6 +732,9 @@ void handle_recv_cqe(MuLeaderRuntime& rt, const ibv_wc& comp) {
             return;
         }
 
+        // Assign global slot for MU commit ordering
+        const uint32_t global_slot = rt.global_next_append_slot++;
+
         const uint32_t mutation_id = *mutation_id_opt;
         auto& ctx = rt.mutations[mutation_id];
         ctx.kind = MutationKind::register_watch;
@@ -739,6 +742,8 @@ void handle_recv_cqe(MuLeaderRuntime& rt, const ibv_wc& comp) {
         ctx.granted_slot = static_cast<uint32_t>(slot);
         ctx.client_id = req.client_id;
         ctx.req_id = req.req_id;
+        ctx.global_slot = global_slot;
+        rt.slot_to_mutation[global_slot] = mutation_id;
 
         // Write watcher ID locally
         auto* watcher_slot = reinterpret_cast<uint64_t*>(
