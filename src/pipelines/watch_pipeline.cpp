@@ -332,6 +332,7 @@ void post_notify_watchers(Client& client, WatchOpCtx& op, const RegisteredWatchB
     }
 
     // For each watcher in this batch, WRITE invalidation (simulate by writing to metadata area)
+    uint64_t actually_posted = 0;
     for (uint64_t i = 0; i < notify_count; ++i) {
         notify_buf[i] = 1;  // Invalidation flag
 
@@ -354,16 +355,23 @@ void post_notify_watchers(Client& client, WatchOpCtx& op, const RegisteredWatchB
         wr.wr.rdma.rkey = conns[target_node].rkey;
 
         if (ibv_post_send(conns[target_node].id->qp, &wr, &bad_wr)) {
-            // Send queue overflow - stop posting for this batch and continue
-            std::cerr << "[Client " << client.id() << " error] watch pipeline: notify watcher post failed"
-                      << " (sent " << i << "/" << notify_count << " in this batch)\n";
-            op.notify_sent += static_cast<uint32_t>(i);
-            return;
+            // Send queue overflow - adjust response_target and stop posting
+            static int error_log = 0;
+            if (error_log < 5) {
+                std::cerr << "[Client " << client.id() << " error] watch pipeline: notify watcher post failed"
+                          << " (posted " << actually_posted << "/" << notify_count << " in this batch)"
+                          << " - adjusting response_target and continuing\n";
+                error_log++;
+            }
+            break;
         }
+        actually_posted++;
     }
 
+    // Update response_target to match actually posted count
+    op.response_target = static_cast<uint32_t>(actually_posted);
     // Track how many notifications we've sent so far
-    op.notify_sent += static_cast<uint32_t>(notify_count);
+    op.notify_sent += static_cast<uint32_t>(actually_posted);
 }
 
 } // namespace
