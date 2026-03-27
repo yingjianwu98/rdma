@@ -175,6 +175,9 @@ void run_mu_watch_pipeline(
     uint64_t* object_counts,
     const MuWatchPipelineConfig& config
 ) {
+    std::cerr << "[DEBUG] run_mu_watch_pipeline started for client " << client.id() << std::endl;
+    std::cerr.flush();
+
     const auto& conns = client.connections();
     if (conns.empty()) {
         throw std::runtime_error("MU watch pipeline: no leader connection");
@@ -182,6 +185,9 @@ void run_mu_watch_pipeline(
     if (config.active_window > static_cast<size_t>(std::numeric_limits<uint16_t>::max())) {
         throw std::runtime_error("MU watch pipeline: active window exceeds wr_id slot encoding");
     }
+
+    std::cerr << "[DEBUG] Client " << client.id() << " posting " << std::max(config.active_window * 2, MU_CLIENT_RECV_RING_MIN) << " receive buffers..." << std::endl;
+    std::cerr.flush();
 
     const size_t recv_ring = std::max(config.active_window * 2, MU_CLIENT_RECV_RING_MIN);
     auto buffers = map_client_buffers(client.buffer(), client.buffer_size(), recv_ring);
@@ -196,6 +202,9 @@ void run_mu_watch_pipeline(
     for (size_t i = 0; i < recv_ring; ++i) {
         post_recv(client, &buffers.responses[i], static_cast<uint32_t>(i));
     }
+
+    std::cerr << "[DEBUG] Client " << client.id() << " posted " << recv_ring << " receive buffers, starting benchmark..." << std::endl;
+    std::cerr.flush();
 
     size_t submitted = 0;
     size_t completed = 0;

@@ -169,7 +169,11 @@ int main() {
                                 std::cerr.flush();
                             }
 
+                            std::cerr << "[DEBUG Client " << i << "] Arriving at latch..." << std::endl;
+                            std::cerr.flush();
                             start_latch.arrive_and_wait();
+                            std::cerr << "[DEBUG Client " << i << "] Passed latch, starting benchmark..." << std::endl;
+                            std::cerr.flush();
 
                             uint64_t* latencies = &((*all_latencies)[i * NUM_OPS_PER_CLIENT]);
 
@@ -210,6 +214,8 @@ int main() {
                                     (*lock_counts)[global_id].data(),
                                     simple_watch_config);
                             } else if (is_mu_watch) {
+                                std::cerr << "[DEBUG Client " << i << "] Calling run_mu_watch_pipeline..." << std::endl;
+                                std::cerr.flush();
                                 run_mu_watch_pipeline(
                                     *client,
                                     latencies,
