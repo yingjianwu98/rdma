@@ -127,9 +127,7 @@ void post_recv(Client& client, MuResponse* response, const uint32_t recv_slot) {
 void post_request(
     Client& client,
     const MuWatchOpCtx& op,
-    const MuRequest& request,
-    uint32_t& signal_count,
-    const uint32_t signal_every
+    const MuRequest& request
 ) {
     auto& leader = client.connections().front();
 
@@ -143,14 +141,7 @@ void post_request(
     wr.opcode = IBV_WR_SEND;
     wr.sg_list = &sge;
     wr.num_sge = 1;
-    wr.send_flags = IBV_SEND_INLINE;
-
-    // Signal every Nth send
-    signal_count++;
-    if (signal_count >= signal_every) {
-        wr.send_flags |= IBV_SEND_SIGNALED;
-        signal_count = 0;
-    }
+    wr.send_flags = IBV_SEND_INLINE | IBV_SEND_SIGNALED;
 
     if (ibv_post_send(leader.id->qp, &wr, &bad_wr)) {
         throw std::runtime_error("MU watch pipeline: send request failed");
@@ -209,7 +200,6 @@ void run_mu_watch_pipeline(
     size_t completed = 0;
     size_t active = 0;
     uint32_t next_req_id = 0;
-    uint32_t send_signal_count = 0;
     size_t recv_posted = recv_ring;
 
     // Two-phase benchmark: mostly registration, small number of notifications (match watch_pipeline)
@@ -243,7 +233,7 @@ void run_mu_watch_pipeline(
             req.op = static_cast<uint8_t>(MuRpcOp::WatchNotify);
         }
 
-        post_request(client, op, req, send_signal_count, config.client_send_signal_every);
+        post_request(client, op, req);
         submitted++;
         active++;
     };

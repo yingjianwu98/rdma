@@ -40,7 +40,7 @@ enum class WatchPhase : uint8_t {
     notify_watchers = 5,   // Notification: Broadcast invalidations to all watchers
 };
 
-constexpr size_t MAX_NOTIFY_BATCH = 2048;  // Max watchers to notify per batch (distributed across 5 QPs = ~410/QP)
+constexpr size_t MAX_NOTIFY_BATCH = 1024;  // Max watchers to notify per batch (safe with active_window=8)
 
 struct RegisteredWatchBuffers {
     uint64_t* faa_results = nullptr;         // FAA slot result (single per op)
@@ -332,7 +332,6 @@ void post_notify_watchers(Client& client, WatchOpCtx& op, const RegisteredWatchB
     }
 
     // For each watcher in this batch, WRITE invalidation (simulate by writing to metadata area)
-    uint64_t actually_posted = 0;
     for (uint64_t i = 0; i < notify_count; ++i) {
         notify_buf[i] = 1;  // Invalidation flag
 
@@ -355,35 +354,12 @@ void post_notify_watchers(Client& client, WatchOpCtx& op, const RegisteredWatchB
         wr.wr.rdma.rkey = conns[target_node].rkey;
 
         if (ibv_post_send(conns[target_node].id->qp, &wr, &bad_wr)) {
-            // Send queue overflow - adjust response_target and stop posting
-            static int error_log = 0;
-            if (error_log < 5) {
-                std::cerr << "[Client " << client.id() << " error] watch pipeline: notify watcher post failed"
-                          << " (posted " << actually_posted << "/" << notify_count << " in this batch)"
-                          << " - adjusting response_target and continuing\n";
-                error_log++;
-            }
-            break;
+            throw std::runtime_error("watch pipeline: notify watcher post failed");
         }
-        actually_posted++;
     }
 
-    // Update response_target to match actually posted count
-    op.response_target = static_cast<uint32_t>(actually_posted);
     // Track how many notifications we've sent so far
-    op.notify_sent += static_cast<uint32_t>(actually_posted);
-
-    // If we couldn't post anything (queue completely full), force completion
-    // by setting notify_sent = total_watchers to avoid infinite retry loop
-    if (actually_posted == 0) {
-        static int skip_log = 0;
-        if (skip_log < 3) {
-            std::cerr << "[Client " << client.id() << " error] Send queue completely full, skipping remaining "
-                      << (op.total_watchers - op.notify_sent) << " notifications for object " << op.object_id << "\n";
-            skip_log++;
-        }
-        op.notify_sent = op.total_watchers;  // Force completion
-    }
+    op.notify_sent += static_cast<uint32_t>(notify_count);
 }
 
 } // namespace
@@ -487,16 +463,8 @@ void run_watch_pipeline(
         submit_op(active);
     }
 
-    std::cerr << "[Client " << client.id() << "] Starting run_watch_pipeline, target=" << NUM_OPS_PER_CLIENT << "\n" << std::flush;
-
     // Main completion loop
     while (completed < NUM_OPS_PER_CLIENT) {
-        // Debug: print progress every 100k completions
-        if (completed % 100000 == 0 && completed > 0) {
-            std::cerr << "[Client " << client.id() << "] Progress: completed=" << completed
-                      << "/" << NUM_OPS_PER_CLIENT << "\n" << std::flush;
-        }
-
         const int polled = ibv_poll_cq(client.cq(), static_cast<int>(completions.size()),
                                       completions.data());
         if (polled < 0) {
@@ -712,10 +680,7 @@ void run_watch_pipeline(
         }
     }
 
-    std::cerr << "[Client " << client.id() << "] Exited main loop, completed=" << completed << "\n" << std::flush;
-
     // Print verification statistics (use cerr for immediate visibility)
-    std::cerr << "[Client " << client.id() << "] DEBUG: About to print verification (completed=" << completed << ")\n" << std::flush;
     std::cerr << "\n========================================\n";
     std::cerr << "[Client " << client.id() << "] Watch Verification\n";
     std::cerr << "========================================\n";

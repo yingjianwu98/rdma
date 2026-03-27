@@ -18,7 +18,7 @@
 
 namespace {
 
-constexpr size_t MAX_NOTIFY_BATCH = 2048;  // Match Synra's batch size
+constexpr size_t MAX_NOTIFY_BATCH = 1024;  // Safe with active_window (match watch_pipeline)
 
 enum class SimpleWatchPhase : uint8_t {
     idle = 0,
