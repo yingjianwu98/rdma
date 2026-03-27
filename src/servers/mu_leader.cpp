@@ -655,7 +655,7 @@ void handle_recv_cqe(MuLeaderRuntime& rt, const ibv_wc& comp) {
             sge.lkey = rt.local_mr->lkey;
 
             ibv_send_wr wr{}, *bad_wr = nullptr;
-            wr.wr_id = MU_WATCH_REPL_WR_TAG | (follower_pos & 0xFF);  // Tag for watch replication
+            wr.wr_id = (MU_WATCH_REPL_WR_TAG << MU_WR_TAG_SHIFT) | (follower_pos & 0xFF);  // Tag for watch replication
             wr.opcode = IBV_WR_RDMA_WRITE;
             wr.sg_list = &sge;
             wr.num_sge = 1;
