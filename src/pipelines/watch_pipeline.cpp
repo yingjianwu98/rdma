@@ -491,6 +491,12 @@ void run_watch_pipeline(
 
     // Main completion loop
     while (completed < NUM_OPS_PER_CLIENT) {
+        // Debug: print progress every 100k completions
+        if (completed % 100000 == 0 && completed > 0) {
+            std::cerr << "[Client " << client.id() << "] Progress: completed=" << completed
+                      << "/" << NUM_OPS_PER_CLIENT << "\n" << std::flush;
+        }
+
         const int polled = ibv_poll_cq(client.cq(), static_cast<int>(completions.size()),
                                       completions.data());
         if (polled < 0) {
