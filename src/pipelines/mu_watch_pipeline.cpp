@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -207,6 +208,17 @@ void run_mu_watch_pipeline(
     const size_t notification_ops = NUM_OPS_PER_CLIENT - registration_ops;
     bool in_registration_phase = true;
 
+    // Phase timing for separate throughput reporting
+    auto registration_start_time = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point registration_end_time;
+    std::chrono::steady_clock::time_point notification_start_time;
+    bool registration_timing_done = false;
+    bool notification_timing_started = false;
+
+    // Track phase-separated latency indices
+    size_t registration_latency_start = 0;
+    size_t notification_latency_start = registration_ops;
+
     auto submit_op = [&](const size_t slot) {
         auto& op = ops[slot];
         op.active = true;
@@ -229,6 +241,10 @@ void run_mu_watch_pipeline(
             req.op = static_cast<uint8_t>(MuRpcOp::WatchRegister);
         } else {
             // Notification phase: send WatchNotify
+            if (!notification_timing_started) {
+                notification_start_time = std::chrono::steady_clock::now();
+                notification_timing_started = true;
+            }
             op.phase = MuWatchPhase::wait_notify_ack;
             req.op = static_cast<uint8_t>(MuRpcOp::WatchNotify);
         }
@@ -301,6 +317,10 @@ void run_mu_watch_pipeline(
                     // Check if registration phase is complete
                     if (completed >= registration_ops) {
                         in_registration_phase = false;
+                        if (!registration_timing_done) {
+                            registration_end_time = std::chrono::steady_clock::now();
+                            registration_timing_done = true;
+                        }
                     }
 
                     if (submitted < NUM_OPS_PER_CLIENT) {
@@ -332,4 +352,59 @@ void run_mu_watch_pipeline(
             }
         }
     }
+
+    // Report phase-separated metrics
+    std::cerr << "\n========================================\n";
+    std::cerr << "[Client " << client.id() << "] MU Watch Results\n";
+    std::cerr << "========================================\n";
+
+    // Phase-separated throughput reporting
+    if (registration_timing_done) {
+        const double reg_duration_s = std::chrono::duration<double>(
+            registration_end_time - registration_start_time).count();
+        const double reg_throughput = registration_ops / reg_duration_s;
+        std::cerr << "\nPHASE THROUGHPUT:\n";
+        std::cerr << "  Registration: " << static_cast<uint64_t>(reg_throughput) << " ops/s"
+                  << " (" << registration_ops << " ops in " << std::fixed << std::setprecision(3)
+                  << reg_duration_s << "s)\n";
+
+        if (notification_timing_started) {
+            const auto notification_end_time = std::chrono::steady_clock::now();
+            const double notif_duration_s = std::chrono::duration<double>(
+                notification_end_time - notification_start_time).count();
+            const double notif_throughput = notification_ops / notif_duration_s;
+            std::cerr << "  Notification: " << static_cast<uint64_t>(notif_throughput) << " ops/s"
+                      << " (" << notification_ops << " ops in " << std::fixed << std::setprecision(3)
+                      << notif_duration_s << "s)\n";
+        }
+    }
+
+    // Phase-separated latency reporting
+    auto calculate_percentile = [](uint64_t* lats, size_t start, size_t count, double percentile) -> double {
+        if (count == 0) return 0.0;
+        std::vector<uint64_t> sorted(lats + start, lats + start + count);
+        std::sort(sorted.begin(), sorted.end());
+        const size_t idx = static_cast<size_t>(percentile * count / 100.0);
+        return sorted[std::min(idx, count - 1)] / 1000.0;  // Convert ns to μs
+    };
+
+    if (registration_ops > 0) {
+        std::cerr << "\nREGISTRATION LATENCY (μs):\n";
+        std::cerr << "  P50: " << std::fixed << std::setprecision(2)
+                  << calculate_percentile(latencies, registration_latency_start, registration_ops, 50.0) << "\n";
+        std::cerr << "  P90: " << calculate_percentile(latencies, registration_latency_start, registration_ops, 90.0) << "\n";
+        std::cerr << "  P99: " << calculate_percentile(latencies, registration_latency_start, registration_ops, 99.0) << "\n";
+        std::cerr << "  P99.9: " << calculate_percentile(latencies, registration_latency_start, registration_ops, 99.9) << "\n";
+    }
+
+    if (notification_ops > 0) {
+        std::cerr << "\nNOTIFICATION LATENCY (μs):\n";
+        std::cerr << "  P50: " << std::fixed << std::setprecision(2)
+                  << calculate_percentile(latencies, notification_latency_start, notification_ops, 50.0) << "\n";
+        std::cerr << "  P90: " << calculate_percentile(latencies, notification_latency_start, notification_ops, 90.0) << "\n";
+        std::cerr << "  P99: " << calculate_percentile(latencies, notification_latency_start, notification_ops, 99.0) << "\n";
+        std::cerr << "  P99.9: " << calculate_percentile(latencies, notification_latency_start, notification_ops, 99.9) << "\n";
+    }
+
+    std::cerr << "========================================\n" << std::flush;
 }
