@@ -712,10 +712,22 @@ void MuLeader::run() {
     // 2. route them to recv/replication handlers,
     // 3. drain the ready-lock queue to append more global-log mutations.
     ibv_wc wc[64];
+    uint64_t poll_count = 0;
     while (true) {
         const int n = ibv_poll_cq(rt.cq, 64, wc);
         if (n < 0) {
             throw std::runtime_error("MuLeader: CQ poll failed");
+        }
+
+        poll_count++;
+        if (poll_count % 100000000 == 0) {
+            size_t free_mutations = 0;
+            for (const auto& m : rt.mutations) {
+                if (!m.active) free_mutations++;
+            }
+            std::cout << "[MuLeader " << server->node_id() << "] poll_count=" << poll_count
+                      << " free_mutations=" << free_mutations
+                      << " global_commit=" << rt.global_commit_slot << "\n" << std::flush;
         }
 
         for (int i = 0; i < n; ++i) {
