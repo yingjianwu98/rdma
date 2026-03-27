@@ -1,6 +1,6 @@
 #include "rdma/pipelines/watch_pipeline.h"
 
-// Synra replicated watch pipeline: FAA for slot assignment + replicated watcher ID writes.
+// Synra watch pipeline: Single FAA on owner node + replicated watcher ID writes.
 
 #include "rdma/client.h"
 #include "rdma/common.h"
@@ -33,8 +33,8 @@ constexpr uint64_t kGenerationMask = (1ULL << kSlotShift) - 1;
 
 enum class WatchPhase : uint8_t {
     idle = 0,
-    faa_slot = 1,          // Registration: FAA to get watcher slot from super-quorum
-    write_id = 2,          // Registration: Write client ID to watcher array
+    faa_slot = 1,          // Registration: FAA to get watcher slot from owner node
+    write_id = 2,          // Registration: Write client ID to watcher array (super-quorum)
     read_count = 3,        // Notification: Read watcher count from owner
     read_watcher_ids = 4,  // Notification: Read all watcher IDs from owner
     notify_watchers = 5,   // Notification: Broadcast invalidations to all watchers
@@ -43,8 +43,8 @@ enum class WatchPhase : uint8_t {
 constexpr size_t MAX_NOTIFY_BATCH = 2048;  // Max watchers to notify per batch (distributed across 5 QPs = ~410/QP)
 
 struct RegisteredWatchBuffers {
-    uint64_t* faa_results = nullptr;         // FAA slot results from each replica
-    uint64_t* write_results = nullptr;       // Write completion results
+    uint64_t* faa_results = nullptr;         // FAA slot result (single per op)
+    uint64_t* write_results = nullptr;       // Write completion results (per replica)
     uint64_t* count_result = nullptr;        // Watcher count read result
     uint64_t* watcher_ids_buffer = nullptr;  // Buffer for reading watcher IDs
     uint64_t* notify_results = nullptr;      // Notification write results
@@ -62,7 +62,6 @@ struct WatchOpCtx {
     WatchPhase phase = WatchPhase::idle;
     uint32_t responses = 0;
     uint32_t response_target = 0;
-    uint32_t quorum_hits = 0;
 
     // Notification phase fields
     uint64_t total_watchers = 0;         // Total watchers for this object
@@ -122,7 +121,8 @@ RegisteredWatchBuffers map_buffers(void* raw_buffer, const size_t buffer_size,
     size_t offset = 0;
     RegisteredWatchBuffers buffers{};
 
-    const size_t faa_bytes = align_up(active_window * num_replicas * sizeof(uint64_t), 64);
+    // FAA results: single result per op (not per replica)
+    const size_t faa_bytes = align_up(active_window * sizeof(uint64_t), 64);
     const size_t write_bytes = align_up(active_window * num_replicas * sizeof(uint64_t), 64);
     const size_t count_bytes = align_up(active_window * sizeof(uint64_t), 64);
     const size_t ids_bytes = align_up(active_window * MAX_NOTIFY_BATCH * sizeof(uint64_t), 64);
@@ -145,52 +145,38 @@ RegisteredWatchBuffers map_buffers(void* raw_buffer, const size_t buffer_size,
     return buffers;
 }
 
-// Post FAA to super-quorum to get watcher slot assignment.
+// Post FAA to owner node to get watcher slot assignment (single FAA, not replicated).
 void post_faa_slot(Client& client, WatchOpCtx& op, const RegisteredWatchBuffers& buffers) {
     const auto& conns = client.connections();
     auto* mr = client.mr();
-    auto* results = row_ptr(buffers.faa_results, op.slot, conns.size());
+    auto* result = &buffers.faa_results[op.slot];
 
     op.round++;
     op.phase = WatchPhase::faa_slot;
     op.responses = 0;
-    op.response_target = static_cast<uint32_t>(conns.size());
-    op.quorum_hits = 0;
+    op.response_target = 1;
 
-    // if (op.slot == 0) {  // Log first operation only
-    //     std::cerr << "[DEBUG] FAA: object_id=" << op.object_id
-    //               << " watch_counter_offset=" << watch_counter_offset(op.object_id)
-    //               << " posting to " << conns.size() << " nodes" << std::endl;
-    // }
+    // FAA only on owner node (like Synra paper)
+    const auto& owner = conns[op.owner_node];
+    *result = 0;
 
-    // Post FAA to all nodes in parallel
-    for (size_t i = 0; i < conns.size(); ++i) {
-        results[i] = 0;
+    ibv_sge sge{};
+    sge.addr = reinterpret_cast<uintptr_t>(result);
+    sge.length = sizeof(uint64_t);
+    sge.lkey = mr->lkey;
 
-        ibv_sge sge{};
-        sge.addr = reinterpret_cast<uintptr_t>(&results[i]);
-        sge.length = sizeof(uint64_t);
-        sge.lkey = mr->lkey;
+    ibv_send_wr wr{}, *bad_wr = nullptr;
+    wr.wr_id = encode_wr_id(op, WatchPhase::faa_slot, static_cast<uint8_t>(op.owner_node));
+    wr.opcode = IBV_WR_ATOMIC_FETCH_AND_ADD;
+    wr.send_flags = IBV_SEND_SIGNALED;
+    wr.sg_list = &sge;
+    wr.num_sge = 1;
+    wr.wr.atomic.remote_addr = owner.addr + watch_counter_offset(op.object_id);
+    wr.wr.atomic.rkey = owner.rkey;
+    wr.wr.atomic.compare_add = 1;
 
-        ibv_send_wr wr{}, *bad_wr = nullptr;
-        wr.wr_id = encode_wr_id(op, WatchPhase::faa_slot, static_cast<uint8_t>(i));
-        wr.opcode = IBV_WR_ATOMIC_FETCH_AND_ADD;
-        wr.send_flags = IBV_SEND_SIGNALED;
-        wr.sg_list = &sge;
-        wr.num_sge = 1;
-        wr.wr.atomic.remote_addr = conns[i].addr + watch_counter_offset(op.object_id);
-        wr.wr.atomic.rkey = conns[i].rkey;
-        wr.wr.atomic.compare_add = 1;  // Increment by 1
-
-        // if (op.slot == 0 && i == 0) {
-        //     std::cerr << "[DEBUG] FAA to node " << i << ": remote_addr=0x" << std::hex
-        //               << wr.wr.atomic.remote_addr << std::dec
-        //               << " rkey=" << wr.wr.atomic.rkey << std::endl;
-        // }
-
-        if (ibv_post_send(conns[i].id->qp, &wr, &bad_wr)) {
-            throw std::runtime_error("watch pipeline: FAA slot post failed");
-        }
+    if (ibv_post_send(owner.id->qp, &wr, &bad_wr)) {
+        throw std::runtime_error("watch pipeline: FAA slot post failed");
     }
 }
 
@@ -527,37 +513,18 @@ void run_watch_pipeline(
             op.responses++;
 
             if (phase == WatchPhase::faa_slot) {
-                // Check if we have super-quorum with same FAA result
-                auto* results = row_ptr(buffers.faa_results, op.slot, conns.size());
-                const uint64_t this_slot = results[conn_idx];
-
-                // Count how many responses match this slot value
-                uint32_t matches = 0;
-                for (uint32_t j = 0; j < op.responses; ++j) {
-                    if (results[j] == this_slot) {
-                        matches++;
-                    }
-                }
+                // Got slot from single FAA (no super-quorum checking needed)
+                op.watcher_slot = buffers.faa_results[op.slot];
 
                 // Log FAA results for first few operations on client 0
                 if (client.id() == 0 && completed < 5) {
                     std::cerr << "[Client 0] FAA op " << completed << " object " << op.object_id
-                              << ": slot=" << this_slot << " matches=" << matches << "/" << op.responses
-                              << " (need " << SUPER_QUORUM << ")\n";
+                              << " owner=" << op.owner_node
+                              << " slot=" << op.watcher_slot << "\n";
                 }
 
-                if (matches >= SUPER_QUORUM) {
-                    // Got super-quorum agreement on slot!
-                    op.watcher_slot = this_slot;
-                    op.quorum_hits = matches;
-                    post_write_id(client, op, buffers);
-                } else if (op.responses >= op.response_target) {
-                    // All responses received but no super-quorum - retry
-                    if (client.id() == 0 && completed < 5) {
-                        std::cerr << "[Client 0] FAA retry needed - no super-quorum\n";
-                    }
-                    post_faa_slot(client, op, buffers);
-                }
+                // Now replicate watcher_id to all nodes
+                post_write_id(client, op, buffers);
                 continue;
             }
 

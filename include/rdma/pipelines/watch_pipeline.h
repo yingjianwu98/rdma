@@ -1,11 +1,11 @@
 #pragma once
 
-// Client-side Synra replicated watch pipeline:
-// - Register watcher using replicated RDMA FAA (get slot from super-quorum)
-// - Write watcher ID to replicated watcher array with CAS
+// Client-side Synra watch pipeline:
+// - Register watcher using single RDMA FAA on owner node (like Synra paper)
+// - Write watcher ID to replicated watcher array with super-quorum
 //
 // Memory layout per watchable object:
-//   [0:8)   watcher_count (FAA target, replicated across nodes)
+//   [0:8)   watcher_count (FAA target on owner node)
 //   [8:16)  data_version (for future notification use)
 //   [16:N)  watcher_ids[] array (replicated watcher ID slots)
 
