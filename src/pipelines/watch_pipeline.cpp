@@ -705,6 +705,7 @@ void run_watch_pipeline(
     }
 
     // Print verification statistics (use cerr for immediate visibility)
+    std::cerr << "[Client " << client.id() << "] DEBUG: About to print verification (completed=" << completed << ")\n" << std::flush;
     std::cerr << "\n========================================\n";
     std::cerr << "[Client " << client.id() << "] Watch Verification\n";
     std::cerr << "========================================\n";
