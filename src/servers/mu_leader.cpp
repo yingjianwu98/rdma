@@ -90,6 +90,7 @@ struct MuLeaderRuntime {
 
 constexpr uint64_t MU_RECV_WR_TAG = 0xB1ULL;
 constexpr uint64_t MU_REPL_WR_TAG = 0xB2ULL;
+constexpr uint64_t MU_WATCH_REPL_WR_TAG = 0xB3ULL;
 constexpr uint64_t MU_RESP_WR_TAG = 0x4C53000000000000ULL;
 constexpr uint64_t MU_WR_TAG_SHIFT = 56;
 constexpr uint64_t MU_REPL_GEN_SHIFT = 24;
@@ -616,11 +617,62 @@ void handle_recv_cqe(MuLeaderRuntime& rt, const ibv_wc& comp) {
             return;
         }
 
-        // Write the watcher ID (client_id) to the allocated slot
+        // Write the watcher ID (client_id) to the allocated slot locally
         auto* watcher_slot = reinterpret_cast<uint64_t*>(
             rt.local_buf + watch_id_slot_offset(object_id, slot));
         *watcher_slot = req.client_id;
 
+        // Replicate to followers with quorum (like regular mu mutations)
+        const size_t num_followers = rt.follower_indices.size();
+        const size_t quorum_needed = (QUORUM > 0) ? std::min<size_t>(QUORUM - 1, num_followers) : 0;
+
+        // Post RDMA writes to all followers
+        uint32_t pending_writes = 0;
+        for (size_t follower_pos = 0; follower_pos < num_followers; ++follower_pos) {
+            const size_t follower_idx = rt.follower_indices[follower_pos];
+            auto& follower = rt.peers[follower_idx];
+
+            ibv_sge sge{};
+            sge.addr = reinterpret_cast<uintptr_t>(watcher_slot);
+            sge.length = sizeof(uint64_t);
+            sge.lkey = rt.local_mr->lkey;
+
+            ibv_send_wr wr{}, *bad_wr = nullptr;
+            wr.wr_id = MU_WATCH_REPL_WR_TAG | (follower_pos & 0xFF);  // Tag for watch replication
+            wr.opcode = IBV_WR_RDMA_WRITE;
+            wr.sg_list = &sge;
+            wr.num_sge = 1;
+            wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE;
+            wr.wr.rdma.remote_addr = follower.remote_addr + watch_id_slot_offset(object_id, slot);
+            wr.wr.rdma.rkey = follower.rkey;
+
+            if (ibv_post_send(follower.cm_id->qp, &wr, &bad_wr)) {
+                throw std::runtime_error("MuLeader: failed to replicate watch registration");
+            }
+            pending_writes++;
+        }
+
+        // Poll for quorum ACKs (inline replication)
+        uint32_t ack_count = 1;  // Leader counts as first ACK
+        while (ack_count < QUORUM && pending_writes > 0) {
+            ibv_wc wc[16];
+            const int polled = ibv_poll_cq(rt.cq, 16, wc);
+            if (polled < 0) {
+                throw std::runtime_error("MuLeader: watch replication CQ poll failed");
+            }
+
+            for (int i = 0; i < polled; ++i) {
+                if ((wc[i].wr_id >> 56) == MU_WATCH_REPL_WR_TAG) {
+                    if (wc[i].status != IBV_WC_SUCCESS) {
+                        throw std::runtime_error("MuLeader: watch replication write failed");
+                    }
+                    pending_writes--;
+                    ack_count++;
+                }
+            }
+        }
+
+        // Send ACK to client after quorum reached
         MuResponse resp{};
         resp.op = static_cast<uint8_t>(MuRpcOp::WatchRegister);
         resp.status = static_cast<uint8_t>(MuRpcStatus::Ok);
