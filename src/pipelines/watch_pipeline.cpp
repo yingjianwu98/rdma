@@ -372,6 +372,18 @@ void post_notify_watchers(Client& client, WatchOpCtx& op, const RegisteredWatchB
     op.response_target = static_cast<uint32_t>(actually_posted);
     // Track how many notifications we've sent so far
     op.notify_sent += static_cast<uint32_t>(actually_posted);
+
+    // If we couldn't post anything (queue completely full), force completion
+    // by setting notify_sent = total_watchers to avoid infinite retry loop
+    if (actually_posted == 0) {
+        static int skip_log = 0;
+        if (skip_log < 3) {
+            std::cerr << "[Client " << client.id() << " error] Send queue completely full, skipping remaining "
+                      << (op.total_watchers - op.notify_sent) << " notifications for object " << op.object_id << "\n";
+            skip_log++;
+        }
+        op.notify_sent = op.total_watchers;  // Force completion
+    }
 }
 
 } // namespace
