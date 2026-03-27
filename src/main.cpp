@@ -64,19 +64,37 @@ int main() {
         if (get_uint_env("IS_CLIENT") != 0) {
             std::cerr << "[DEBUG] IS_CLIENT=1, entering client mode..." << std::endl;
             std::cerr.flush();
+            std::cerr << "[DEBUG] Getting MACHINE_ID..." << std::endl;
+            std::cerr.flush();
             const uint32_t machine_id = get_uint_env("MACHINE_ID");
+            std::cerr << "[DEBUG] MACHINE_ID=" << machine_id << std::endl;
+            std::cerr.flush();
 
+            std::cerr << "[DEBUG] Allocating latency array..." << std::endl;
+            std::cerr.flush();
             auto all_latencies = std::make_unique<std::array<uint64_t, NUM_TOTAL_OPS>>();
+            std::cerr << "[DEBUG] Latency array allocated, creating latch..." << std::endl;
+            std::cerr.flush();
             std::latch start_latch(NUM_CLIENTS_PER_MACHINE + 1);
             std::vector<std::thread> workers;
 
+            std::cerr << "[DEBUG] Allocating lock_counts array..." << std::endl;
+            std::cerr.flush();
             auto lock_counts = std::make_unique<
                 std::array<std::array<uint64_t, MAX_LOCKS>, TOTAL_CLIENTS>>();
+            std::cerr << "[DEBUG] lock_counts allocated, initializing..." << std::endl;
+            std::cerr.flush();
             for (auto& client_counts : *lock_counts) client_counts.fill(0);
+            std::cerr << "[DEBUG] lock_counts initialized" << std::endl;
+            std::cerr.flush();
 
             std::atomic<Client*> verify_client{nullptr};
 
+            std::cerr << "[DEBUG] Creating " << NUM_CLIENTS_PER_MACHINE << " worker threads..." << std::endl;
+            std::cerr.flush();
             for (uint32_t i = 0; i < NUM_CLIENTS_PER_MACHINE; ++i) {
+                std::cerr << "[DEBUG] Creating worker thread " << i << "..." << std::endl;
+                std::cerr.flush();
                 const uint32_t global_id = machine_id * NUM_CLIENTS_PER_MACHINE + i;
 
                 workers.emplace_back(
