@@ -691,6 +691,9 @@ void run_watch_pipeline(
         }
     }
 
+    // VERIFICATION START - ENSURE THIS PRINTS
+    std::cerr << "\n[VERIFICATION-START] Client " << client.id() << " reached end of benchmark\n" << std::flush;
+
     // Print verification statistics (use cerr for immediate visibility)
     std::cerr << "\n========================================\n";
     std::cerr << "[Client " << client.id() << "] Watch Verification\n";
