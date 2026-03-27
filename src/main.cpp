@@ -26,7 +26,7 @@
 // ─── Configuration ───
 // Add new strategies here and wire them into the config load, buffer sizing,
 // dispatch, and summary branches below.
-constexpr const char* STRATEGY = "tas";      // "mu", "simple_mu", "ticket_faa", "cas", "simple_cas", "synra_faa", or "tas"
+constexpr const char* STRATEGY = "mu";      // "mu", "simple_mu", "ticket_faa", "cas", "simple_cas", "synra_faa", or "tas"
 
 int main() {
     try {
