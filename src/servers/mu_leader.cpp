@@ -652,6 +652,10 @@ void handle_recv_cqe(MuLeaderRuntime& rt, const ibv_wc& comp) {
         const size_t metadata_offset = WATCH_TABLE_SIZE;
         const size_t num_followers = rt.follower_indices.size();
 
+        if (MU_DEBUG && num_followers == 0) {
+            std::cerr << "[MuLeader debug] No followers available for notifications\n";
+        }
+
         // Drain more frequently to avoid QP overflow (QP_DEPTH=2048, so drain every 256 to be safe)
         constexpr size_t DRAIN_EVERY = 256;
 
@@ -696,7 +700,10 @@ void handle_recv_cqe(MuLeaderRuntime& rt, const ibv_wc& comp) {
 
             if (ibv_post_send(follower.cm_id->qp, &wr, &bad_wr)) {
                 std::cerr << "[MuLeader error] Failed to post notification write " << i << "/" << num_watchers
-                          << " for object " << object_id << std::endl;
+                          << " for object " << object_id << " (follower_idx=" << follower_idx
+                          << " remote_addr=" << std::hex << follower.remote_addr
+                          << " rkey=" << follower.rkey << std::dec
+                          << " errno=" << errno << ")" << std::endl;
                 // Continue instead of throwing to allow partial notifications
                 break;
             }
