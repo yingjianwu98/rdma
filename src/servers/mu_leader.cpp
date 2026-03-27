@@ -651,7 +651,9 @@ void handle_recv_cqe(MuLeaderRuntime& rt, const ibv_wc& comp) {
         // Distribute writes across followers in round-robin fashion
         const size_t metadata_offset = WATCH_TABLE_SIZE;
         const size_t num_followers = rt.follower_indices.size();
-        constexpr size_t NOTIFY_BATCH_SIZE = 1024;  // Post in batches to avoid QP overflow
+
+        // Drain more frequently to avoid QP overflow (QP_DEPTH=2048, so drain every 256 to be safe)
+        constexpr size_t DRAIN_EVERY = 256;
 
         for (uint64_t i = 0; i < num_watchers && i < MAX_WATCHERS_PER_OBJECT; ++i) {
             if (num_followers == 0) {
@@ -693,15 +695,21 @@ void handle_recv_cqe(MuLeaderRuntime& rt, const ibv_wc& comp) {
             wr.wr.rdma.rkey = follower.rkey;
 
             if (ibv_post_send(follower.cm_id->qp, &wr, &bad_wr)) {
-                throw std::runtime_error("MuLeader: failed to post notification write");
+                std::cerr << "[MuLeader error] Failed to post notification write " << i << "/" << num_watchers
+                          << " for object " << object_id << std::endl;
+                // Continue instead of throwing to allow partial notifications
+                break;
             }
 
-            // Poll CQ periodically to drain completions and avoid QP overflow
-            if ((i + 1) % NOTIFY_BATCH_SIZE == 0) {
-                ibv_wc wc[32];
-                const int polled = ibv_poll_cq(rt.cq, 32, wc);
-                // Just drain, don't need to process notification write completions
-                (void)polled;
+            // Drain CQ more frequently to avoid QP overflow
+            // With QP_DEPTH=2048 and 4 followers, each QP can receive ~512 ops before drain
+            if ((i + 1) % DRAIN_EVERY == 0) {
+                ibv_wc wc[64];
+                // Drain aggressively
+                for (int drain_iter = 0; drain_iter < 4; ++drain_iter) {
+                    const int polled = ibv_poll_cq(rt.cq, 64, wc);
+                    if (polled <= 0) break;
+                }
             }
         }
 
