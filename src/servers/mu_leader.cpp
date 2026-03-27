@@ -955,6 +955,13 @@ void handle_repl_cqe(MuLeaderRuntime& rt, const ibv_wc& comp) {
     ack_count++;
 
     if (!ctx.quorum_done && ctx.ack_count >= QUORUM) {
+        static uint64_t quorum_reached_count = 0;
+        if (quorum_reached_count < 10) {
+            std::cerr << "[MuLeader] handle_repl_cqe: QUORUM REACHED for mutation_id=" << mutation_id
+                      << " ack_count=" << ctx.ack_count << " QUORUM=" << QUORUM << std::endl;
+            std::cerr.flush();
+        }
+        quorum_reached_count++;
         ctx.quorum_done = true;
         advance_commit_tail(rt);
     }
