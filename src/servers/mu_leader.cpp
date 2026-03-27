@@ -620,22 +620,10 @@ void handle_recv_cqe(MuLeaderRuntime& rt, const ibv_wc& comp) {
     const MuRequest req = rt.recv_buffers[static_cast<size_t>(client_id) * MU_SERVER_RECV_RING + recv_slot];
     post_recv(rt, client_id, recv_slot);
 
-    static uint64_t debug_req_count = 0;
-    static uint64_t debug_watch_reg_count = 0;
-    static uint64_t debug_watch_notify_count = 0;
-    if (debug_req_count < 20) {
-        std::cerr << "[MuLeader " << rt.node_id << "] DEBUG: Received op=" << static_cast<int>(req.op)
-                  << " from client=" << client_id << " lock_id=" << req.lock_id << "\n";
-        debug_req_count++;
-    }
-    if (req.op == static_cast<uint8_t>(MuRpcOp::WatchRegister) && debug_watch_reg_count < 5) {
-        std::cerr << "[MuLeader " << rt.node_id << "] DEBUG: WatchRegister request received\n";
-        debug_watch_reg_count++;
-    }
-    if (req.op == static_cast<uint8_t>(MuRpcOp::WatchNotify) && debug_watch_notify_count < 5) {
-        std::cerr << "[MuLeader " << rt.node_id << "] DEBUG: WatchNotify request received\n";
-        debug_watch_notify_count++;
-    }
+    // Disable debug logging for performance
+    // static uint64_t debug_req_count = 0;
+    // static uint64_t debug_watch_reg_count = 0;
+    // static uint64_t debug_watch_notify_count = 0;
 
     if (req.client_id != client_id) {
         MuResponse resp{};
@@ -988,10 +976,11 @@ void MuLeader::run() {
             throw std::runtime_error("MuLeader: CQ poll failed");
         }
 
-        if (n > 0 && debug_poll_count < 10) {
-            std::cerr << "[MuLeader " << rt.node_id << "] DEBUG: Polled " << n << " completions\n";
-            debug_poll_count++;
-        }
+        // Disable debug logging for performance
+        // if (n > 0 && debug_poll_count < 10) {
+        //     std::cerr << "[MuLeader " << rt.node_id << "] DEBUG: Polled " << n << " completions\n";
+        //     debug_poll_count++;
+        // }
 
         for (int i = 0; i < n; ++i) {
             const ibv_wc& comp = wc[i];
@@ -1002,10 +991,11 @@ void MuLeader::run() {
             // Recv completions are client RPCs entering the leader.
             if ((comp.opcode & IBV_WC_RECV) != 0) {
                 if (is_recv_wr_id(comp.wr_id)) {
-                    if (debug_recv_count < 10) {
-                        std::cerr << "[MuLeader " << rt.node_id << "] DEBUG: Handling recv completion\n";
-                        debug_recv_count++;
-                    }
+                    // Disable debug logging for performance
+                    // if (debug_recv_count < 10) {
+                    //     std::cerr << "[MuLeader " << rt.node_id << "] DEBUG: Handling recv completion\n";
+                    //     debug_recv_count++;
+                    // }
                     handle_recv_cqe(rt, comp);
                 }
                 continue;
