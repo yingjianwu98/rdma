@@ -487,6 +487,8 @@ void run_watch_pipeline(
         submit_op(active);
     }
 
+    std::cerr << "[Client " << client.id() << "] Starting run_watch_pipeline, target=" << NUM_OPS_PER_CLIENT << "\n" << std::flush;
+
     // Main completion loop
     while (completed < NUM_OPS_PER_CLIENT) {
         const int polled = ibv_poll_cq(client.cq(), static_cast<int>(completions.size()),
@@ -703,6 +705,8 @@ void run_watch_pipeline(
             }
         }
     }
+
+    std::cerr << "[Client " << client.id() << "] Exited main loop, completed=" << completed << "\n" << std::flush;
 
     // Print verification statistics (use cerr for immediate visibility)
     std::cerr << "[Client " << client.id() << "] DEBUG: About to print verification (completed=" << completed << ")\n" << std::flush;
