@@ -354,21 +354,52 @@ void apply_mutation(MuLeaderRuntime& rt, const uint32_t mutation_id) {
 void advance_commit_tail(MuLeaderRuntime& rt) {
     // MU applies mutations strictly in global committed order. A later mutation
     // is not applied until all earlier global slots are also committed.
+    static uint64_t stuck_count = 0;
+    static uint32_t last_tail = 0;
+
     while (true) {
         const auto it = rt.slot_to_mutation.find(rt.global_commit_tail);
         if (it == rt.slot_to_mutation.end()) {
+            if (rt.global_commit_tail == last_tail) {
+                stuck_count++;
+                if (stuck_count == 1 || stuck_count % 100000000 == 0) {
+                    std::cerr << "[MuLeader] advance_commit_tail: slot " << rt.global_commit_tail
+                              << " not in map (stuck_count=" << stuck_count << ")" << std::endl;
+                    std::cerr.flush();
+                }
+            } else {
+                last_tail = rt.global_commit_tail;
+                stuck_count = 0;
+            }
             break;
         }
 
         const uint32_t mutation_id = it->second;
         auto& ctx = rt.mutations[mutation_id];
         if (!ctx.in_use || !ctx.quorum_done || ctx.applied) {
+            if (rt.global_commit_tail == last_tail) {
+                stuck_count++;
+                if (stuck_count == 1 || stuck_count % 100000000 == 0) {
+                    std::cerr << "[MuLeader] advance_commit_tail: slot " << rt.global_commit_tail
+                              << " mutation_id=" << mutation_id
+                              << " in_use=" << ctx.in_use
+                              << " quorum_done=" << ctx.quorum_done
+                              << " applied=" << ctx.applied
+                              << " (stuck_count=" << stuck_count << ")" << std::endl;
+                    std::cerr.flush();
+                }
+            } else {
+                last_tail = rt.global_commit_tail;
+                stuck_count = 0;
+            }
             break;
         }
 
         rt.slot_to_mutation.erase(it);
         apply_mutation(rt, mutation_id);
         rt.global_commit_tail++;
+        last_tail = rt.global_commit_tail;
+        stuck_count = 0;
     }
 }
 
