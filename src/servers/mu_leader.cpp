@@ -464,7 +464,8 @@ void post_mutation_writes(MuLeaderRuntime& rt, const uint32_t mutation_id) {
 // Replicate watch registration to followers (same pattern as post_mutation_writes)
 void post_watch_writes(MuLeaderRuntime& rt, const uint32_t mutation_id, const uint32_t object_id, const uint64_t slot) {
     static uint64_t call_count = 0;
-    if (call_count < 5) {
+    const bool debug_this = call_count < 10 || call_count % 10000 == 0;
+    if (debug_this) {
         std::cerr << "[MuLeader] post_watch_writes #" << call_count
                   << " mutation_id=" << mutation_id
                   << " object=" << object_id
@@ -481,6 +482,16 @@ void post_watch_writes(MuLeaderRuntime& rt, const uint32_t mutation_id, const ui
     const size_t signal_start = followers == 0 ? 0 : (rt.repl_signal_cursor % followers);
     if (followers != 0 && signaled_to_track != 0) {
         rt.repl_signal_cursor = (rt.repl_signal_cursor + signaled_to_track) % followers;
+    }
+
+    if (debug_this) {
+        std::cerr << "[MuLeader] post_watch_writes: followers=" << followers
+                  << " quorum_needed=" << quorum_needed
+                  << " signaled_to_track=" << signaled_to_track
+                  << " signal_start=" << signal_start
+                  << " quorum_only=" << rt.quorum_only_signal
+                  << " ack_count=" << ctx.ack_count << std::endl;
+        std::cerr.flush();
     }
 
     for (size_t follower_pos = 0; follower_pos < rt.follower_indices.size(); ++follower_pos) {
@@ -517,7 +528,18 @@ void post_watch_writes(MuLeaderRuntime& rt, const uint32_t mutation_id, const ui
 
         if (should_signal) {
             ctx.pending_followers++;
+            if (debug_this) {
+                std::cerr << "[MuLeader] post_watch_writes: signaled follower_pos=" << follower_pos
+                          << " follower_idx=" << follower_idx
+                          << " pending_followers=" << ctx.pending_followers << std::endl;
+                std::cerr.flush();
+            }
         }
+    }
+
+    if (debug_this) {
+        std::cerr << "[MuLeader] post_watch_writes: DONE pending_followers=" << ctx.pending_followers << std::endl;
+        std::cerr.flush();
     }
 
     if (ctx.pending_followers == 0) {
