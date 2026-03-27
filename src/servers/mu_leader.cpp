@@ -779,12 +779,15 @@ void handle_recv_cqe(MuLeaderRuntime& rt, const ibv_wc& comp) {
             std::cerr << "[MuLeader debug] No followers available for notifications\n";
         }
 
-        // Limit notifications per object to avoid queue overflow (match watch_pipeline behavior)
-        constexpr uint64_t MAX_NOTIFY_PER_OBJECT = 1024;
-        const uint64_t notify_limit = std::min(num_watchers, MAX_NOTIFY_PER_OBJECT);
+        // Match syndra_watch constraints for fair comparison:
+        // syndra has 8 clients × WATCH_ACTIVE_WINDOW=8 × ~50 watchers = ~3200 concurrent writes
+        // We match this by using the same MAX_NOTIFY_BATCH with batching and completions
+        constexpr uint64_t MAX_NOTIFY_BATCH = 1024;  // Same as syndra_watch
+        const uint64_t notify_limit = std::min(num_watchers, MAX_NOTIFY_BATCH);
 
-        // Drain more frequently to avoid QP overflow (QP_DEPTH=2048, so drain every 256 to be safe)
-        constexpr size_t DRAIN_EVERY = 256;
+        // Drain frequently to match syndra_watch behavior
+        // syndra posts batches with all signaled, we signal frequently and drain
+        constexpr size_t DRAIN_EVERY = 64;
 
         for (uint64_t i = 0; i < notify_limit && i < MAX_WATCHERS_PER_OBJECT; ++i) {
             if (num_followers == 0) {
@@ -836,14 +839,24 @@ void handle_recv_cqe(MuLeaderRuntime& rt, const ibv_wc& comp) {
                 break;
             }
 
-            // Drain CQ more frequently to avoid QP overflow
-            // With QP_DEPTH=2048 and 4 followers, each QP can receive ~512 ops before drain
+            // Drain CQ periodically to avoid QP overflow (match syndra pattern)
             if ((i + 1) % DRAIN_EVERY == 0) {
                 ibv_wc wc[64];
-                // Drain aggressively
-                for (int drain_iter = 0; drain_iter < 4; ++drain_iter) {
+                // Drain all pending completions
+                for (int drain_iter = 0; drain_iter < 16; ++drain_iter) {
                     const int polled = ibv_poll_cq(rt.cq, 64, wc);
                     if (polled <= 0) break;
+                    // Process completions if needed (mostly registration/replication ACKs)
+                    for (int j = 0; j < polled; ++j) {
+                        if (wc[j].status != IBV_WC_SUCCESS) {
+                            // Ignore errors during drain to continue notification
+                            continue;
+                        }
+                        // Handle replication completions that may have arrived
+                        if (is_repl_wr_id(wc[j].wr_id)) {
+                            handle_repl_cqe(rt, wc[j]);
+                        }
+                    }
                 }
             }
         }
