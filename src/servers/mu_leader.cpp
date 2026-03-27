@@ -842,21 +842,10 @@ void handle_recv_cqe(MuLeaderRuntime& rt, const ibv_wc& comp) {
             // Drain CQ periodically to avoid QP overflow (match syndra pattern)
             if ((i + 1) % DRAIN_EVERY == 0) {
                 ibv_wc wc[64];
-                // Drain all pending completions
+                // Drain all pending completions (just to clear CQ, process them in main loop)
                 for (int drain_iter = 0; drain_iter < 16; ++drain_iter) {
                     const int polled = ibv_poll_cq(rt.cq, 64, wc);
                     if (polled <= 0) break;
-                    // Process completions if needed (mostly registration/replication ACKs)
-                    for (int j = 0; j < polled; ++j) {
-                        if (wc[j].status != IBV_WC_SUCCESS) {
-                            // Ignore errors during drain to continue notification
-                            continue;
-                        }
-                        // Handle replication completions that may have arrived
-                        if (is_repl_wr_id(wc[j].wr_id)) {
-                            handle_repl_cqe(rt, wc[j]);
-                        }
-                    }
                 }
             }
         }
