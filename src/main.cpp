@@ -102,8 +102,14 @@ int main() {
                      &start_latch, &all_latencies, &lock_counts, &verify_client,
                      &cas_config, &simple_cas_config, &ticket_faa_config, &mu_config, &watch_config, &simple_watch_config, &mu_watch_config]() {
                         try {
+                            std::cerr << "[DEBUG] Worker " << i << " started" << std::endl;
+                            std::cerr.flush();
                             pin_thread_to_cpu(pick_cpu_for_client(i));
+                            std::cerr << "[DEBUG] Worker " << i << " pinned to CPU" << std::endl;
+                            std::cerr.flush();
 
+                            std::cerr << "[DEBUG] Worker " << i << " allocating Client..." << std::endl;
+                            std::cerr.flush();
                             auto client = std::make_unique<Client>(
                                 global_id,
                                 is_cas ? cas_pipeline_client_buffer_size(cas_config)
@@ -114,13 +120,19 @@ int main() {
                                                                                                : (is_simple_watch ? simple_watch_pipeline_client_buffer_size(simple_watch_config)
                                                                                                                   : (is_mu_watch ? mu_watch_pipeline_client_buffer_size(mu_watch_config)
                                                                                                                                  : CLIENT_ALIGNED_SIZE)))))));
+                            std::cerr << "[DEBUG] Worker " << i << " Client allocated" << std::endl;
+                            std::cerr.flush();
 
+                            std::cerr << "[DEBUG] Worker " << i << " connecting..." << std::endl;
+                            std::cerr.flush();
                             if (is_mu || is_mu_watch) {
                                 std::vector leader_only = {CLUSTER_NODES[0]};
                                 client->connect(leader_only, RDMA_PORT);
                             } else {
                                 client->connect(CLUSTER_NODES, RDMA_PORT);
                             }
+                            std::cerr << "[DEBUG] Worker " << i << " connected, waiting for establishment..." << std::endl;
+                            std::cerr.flush();
 
                             {
                                 const size_t num_go = (is_mu || is_mu_watch) ? 1 : CLUSTER_NODES.size();
