@@ -889,15 +889,39 @@ void handle_repl_cqe(MuLeaderRuntime& rt, const ibv_wc& comp) {
 
     auto& ctx = rt.mutations[mutation_id];
     if (!ctx.in_use || ctx.generation != repl_generation(comp.wr_id)) {
+        static uint64_t stale_count = 0;
+        if (stale_count < 10) {
+            std::cerr << "[MuLeader] handle_repl_cqe: stale completion mutation_id=" << mutation_id
+                      << " in_use=" << ctx.in_use << " gen_match=" << (ctx.generation == repl_generation(comp.wr_id)) << std::endl;
+            std::cerr.flush();
+        }
+        stale_count++;
         return;
     }
 
     if (ctx.pending_followers == 0) {
+        static uint64_t zero_pending_count = 0;
+        if (zero_pending_count < 10) {
+            std::cerr << "[MuLeader] handle_repl_cqe: pending_followers already 0 for mutation_id=" << mutation_id << std::endl;
+            std::cerr.flush();
+        }
+        zero_pending_count++;
         return;
     }
 
     ctx.pending_followers--;
     ctx.ack_count++;
+
+    static uint64_t ack_count = 0;
+    if (ack_count < 10 || ack_count % 10000 == 0) {
+        std::cerr << "[MuLeader] handle_repl_cqe #" << ack_count
+                  << " mutation_id=" << mutation_id
+                  << " ack_count=" << ctx.ack_count
+                  << " pending=" << ctx.pending_followers
+                  << " quorum_done=" << ctx.quorum_done << std::endl;
+        std::cerr.flush();
+    }
+    ack_count++;
 
     if (!ctx.quorum_done && ctx.ack_count >= QUORUM) {
         ctx.quorum_done = true;
