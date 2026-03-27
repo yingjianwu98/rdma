@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <iomanip>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -416,6 +417,13 @@ void run_watch_pipeline(
     size_t zero_watcher_objects = 0;
     uint64_t invalid_watcher_ids = 0;
 
+    // Phase timing for separate throughput reporting
+    auto registration_start_time = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point registration_end_time;
+    std::chrono::steady_clock::time_point notification_start_time;
+    bool registration_timing_done = false;
+    bool notification_timing_started = false;
+
     auto submit_op = [&](const size_t slot) {
         auto& op = ops[slot];
         op.active = true;
@@ -433,6 +441,10 @@ void run_watch_pipeline(
             post_faa_slot(client, op, buffers);
         } else {
             // Notification phase: read watcher count
+            if (!notification_timing_started) {
+                notification_start_time = std::chrono::steady_clock::now();
+                notification_timing_started = true;
+            }
             op.notify_sent = 0;
             op.notify_completed = 0;
             post_read_count(client, op, buffers);
@@ -526,6 +538,10 @@ void run_watch_pipeline(
                     // Check if registration phase is complete - switch immediately when count reached
                     if (in_registration_phase && completed >= registration_ops) {
                         in_registration_phase = false;
+                        if (!registration_timing_done) {
+                            registration_end_time = std::chrono::steady_clock::now();
+                            registration_timing_done = true;
+                        }
                     }
 
                     if (submitted < NUM_OPS_PER_CLIENT) {
@@ -676,5 +692,27 @@ void run_watch_pipeline(
     } else {
         std::cerr << "  ✗ Check 3: Found " << invalid_watcher_ids << " invalid watcher IDs\n";
     }
+
+    // Phase-separated throughput reporting
+    if (registration_timing_done) {
+        const double reg_duration_s = std::chrono::duration<double>(
+            registration_end_time - registration_start_time).count();
+        const double reg_throughput = registration_ops / reg_duration_s;
+        std::cerr << "\nPHASE THROUGHPUT:\n";
+        std::cerr << "  Registration: " << static_cast<uint64_t>(reg_throughput) << " ops/s"
+                  << " (" << registration_ops << " ops in " << std::fixed << std::setprecision(3)
+                  << reg_duration_s << "s)\n";
+
+        if (notification_timing_started) {
+            const auto notification_end_time = std::chrono::steady_clock::now();
+            const double notif_duration_s = std::chrono::duration<double>(
+                notification_end_time - notification_start_time).count();
+            const double notif_throughput = notification_ops / notif_duration_s;
+            std::cerr << "  Notification: " << static_cast<uint64_t>(notif_throughput) << " ops/s"
+                      << " (" << notification_ops << " ops in " << std::fixed << std::setprecision(3)
+                      << notif_duration_s << "s)\n";
+        }
+    }
+
     std::cerr << "========================================\n" << std::flush;
 }
