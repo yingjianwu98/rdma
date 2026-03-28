@@ -338,6 +338,11 @@ void run_mu_watch_pipeline(
                     continue;
                 }
 
+                // Check response status (match mu_pipeline error handling)
+                if (resp.status != static_cast<uint8_t>(MuRpcStatus::Ok)) {
+                    throw std::runtime_error("MU watch pipeline: leader returned error status " + std::to_string(resp.status));
+                }
+
                 if (op.phase == MuWatchPhase::wait_register_ack) {
                     // Registration ACK received - measure and complete
                     latencies[op.latency_index] = std::chrono::duration_cast<std::chrono::nanoseconds>(
