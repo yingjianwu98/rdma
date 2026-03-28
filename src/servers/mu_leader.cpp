@@ -705,6 +705,9 @@ void service_lock(MuLeaderRuntime& rt, const uint32_t lock_id) {
 }
 
 // Post a batch of notification writes (match syndra's batching approach).
+// Forward declaration
+void post_notify_batch(MuLeaderRuntime& rt);
+
 // Start processing a notification request
 void start_notification(MuLeaderRuntime& rt, const MuRequest& req) {
     const uint32_t object_id = req.lock_id;
