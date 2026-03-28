@@ -64,7 +64,7 @@ struct WatchState {
     uint32_t register_inflight = 0;           // Number of in-flight registrations
 };
 
-constexpr uint32_t MU_MAX_REGISTER_INFLIGHT_PER_OBJECT = 16;  // Match MU_MAX_APPEND_INFLIGHT_PER_LOCK
+constexpr uint32_t MU_MAX_REGISTER_INFLIGHT_PER_OBJECT = MU_MAX_APPEND_INFLIGHT_PER_LOCK;  // Match lock concurrency
 
 struct NotificationCtx {
     bool active = false;
@@ -637,8 +637,8 @@ void post_watch_writes(MuLeaderRuntime& rt, const uint32_t mutation_id, const ui
         wr.opcode = IBV_WR_RDMA_WRITE;
         wr.sg_list = &sge;
         wr.num_sge = 1;
-        // ALWAYS signal watch writes to prevent QP overflow
-        wr.send_flags = IBV_SEND_INLINE | IBV_SEND_SIGNALED;
+        // Use selective signaling like post_mutation_writes (match lock behavior)
+        wr.send_flags = IBV_SEND_INLINE | (should_signal ? IBV_SEND_SIGNALED : 0);
         wr.wr.rdma.remote_addr = follower.remote_addr + watch_id_slot_offset(object_id, slot);
         wr.wr.rdma.rkey = follower.rkey;
 
@@ -646,8 +646,10 @@ void post_watch_writes(MuLeaderRuntime& rt, const uint32_t mutation_id, const ui
             throw std::runtime_error("MuLeader: failed to replicate watch registration");
         }
 
-        // Always track completion since we always signal
-        ctx.pending_followers++;
+        // Only track completion if signaled (match lock behavior)
+        if (should_signal) {
+            ctx.pending_followers++;
+        }
         // if (debug_this) {
         //     std::cerr << "[MuLeader] post_watch_writes: signaled follower_pos=" << follower_pos
         //               << " follower_idx=" << follower_idx
