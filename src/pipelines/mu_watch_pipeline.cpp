@@ -263,6 +263,10 @@ void run_mu_watch_pipeline(
             // Registration phase: send WatchRegister
             op.phase = MuWatchPhase::wait_register_ack;
             req.op = static_cast<uint8_t>(MuRpcOp::WatchRegister);
+            if (submitted < 10 || submitted % 1000 == 0) {
+                std::cerr << "[DEBUG] Client " << client.id() << " submitting WatchRegister req_id=" << op.req_id
+                          << " object=" << op.object_id << " slot=" << slot << std::endl;
+            }
         } else {
             // Notification phase: send WatchNotify
             if (!notification_timing_started) {
@@ -271,6 +275,10 @@ void run_mu_watch_pipeline(
             }
             op.phase = MuWatchPhase::wait_notify_ack;
             req.op = static_cast<uint8_t>(MuRpcOp::WatchNotify);
+            if (submitted < registration_ops + 10 || submitted % 100 == 0) {
+                std::cerr << "[DEBUG] Client " << client.id() << " submitting WatchNotify req_id=" << op.req_id
+                          << " object=" << op.object_id << " slot=" << slot << std::endl;
+            }
         }
 
         post_request(client, op, req, signal_count, signal_every);
@@ -288,11 +296,28 @@ void run_mu_watch_pipeline(
 
     // Main completion loop
     uint64_t poll_count = 0;
+    auto last_progress_time = std::chrono::steady_clock::now();
+    size_t last_completed = 0;
     while (completed < NUM_OPS_PER_CLIENT) {
         poll_count++;
-        if (poll_count % 100000000 == 0) {
-            std::cerr << "[DEBUG] Client " << client.id() << " still polling... completed=" << completed << "/" << NUM_OPS_PER_CLIENT << " poll_count=" << poll_count << std::endl;
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_progress_time).count();
+
+        if (poll_count % 10000000 == 0 || elapsed_ms > 1000) {
+            std::cerr << "[DEBUG] Client " << client.id() << " polling... completed=" << completed << "/" << NUM_OPS_PER_CLIENT
+                      << " active=" << active << " submitted=" << submitted
+                      << " poll_count=" << poll_count << " elapsed_ms=" << elapsed_ms << std::endl;
             std::cerr.flush();
+
+            if (completed > last_completed) {
+                last_progress_time = now;
+                last_completed = completed;
+            } else if (elapsed_ms > 5000) {
+                std::cerr << "[WARNING] Client " << client.id() << " no progress for " << elapsed_ms << "ms! Possibly stuck." << std::endl;
+                std::cerr << "  Active ops: " << active << " Submitted: " << submitted << " Completed: " << completed << std::endl;
+                std::cerr.flush();
+                last_progress_time = now;  // Reset to avoid spam
+            }
         }
         const int polled = ibv_poll_cq(client.cq(), static_cast<int>(completions.size()),
                                       completions.data());
