@@ -99,6 +99,7 @@ struct MuLeaderRuntime {
     std::vector<uint32_t> client_send_signal_counts;
     std::vector<size_t> follower_indices;
     std::optional<NotificationCtx> active_notification;
+    std::deque<MuRequest> pending_notifications;  // Queue for WatchNotify requests
 };
 
 constexpr uint64_t MU_RECV_WR_TAG = 0xB1ULL;
@@ -704,6 +705,46 @@ void service_lock(MuLeaderRuntime& rt, const uint32_t lock_id) {
 }
 
 // Post a batch of notification writes (match syndra's batching approach).
+// Start processing a notification request
+void start_notification(MuLeaderRuntime& rt, const MuRequest& req) {
+    const uint32_t object_id = req.lock_id;
+
+    // Increment version counter
+    auto* version_ptr = reinterpret_cast<uint64_t*>(
+        rt.local_buf + watch_version_offset(object_id));
+    const uint64_t new_version = __sync_add_and_fetch(version_ptr, 1);
+
+    // Read watcher count
+    auto* counter_ptr = reinterpret_cast<uint64_t*>(
+        rt.local_buf + watch_counter_offset(object_id));
+    const uint64_t num_watchers = *counter_ptr;
+
+    // Initialize notification context
+    rt.active_notification = NotificationCtx{};
+    rt.active_notification->active = true;
+    rt.active_notification->object_id = object_id;
+    rt.active_notification->client_id = req.client_id;
+    rt.active_notification->req_id = req.req_id;
+    rt.active_notification->total_watchers = num_watchers;
+    rt.active_notification->notify_sent = 0;
+    rt.active_notification->notify_completed = 0;
+    rt.active_notification->new_version = new_version;
+
+    std::cerr << "[MuLeader debug] Starting notification for object " << object_id
+              << " with " << num_watchers << " watchers" << std::endl;
+}
+
+// Process next pending notification from queue
+void process_next_notification(MuLeaderRuntime& rt) {
+    if (rt.pending_notifications.empty()) return;
+    if (rt.active_notification.has_value()) return;  // Already processing one
+
+    MuRequest req = rt.pending_notifications.front();
+    rt.pending_notifications.pop_front();
+    start_notification(rt, req);
+    post_notify_batch(rt);
+}
+
 void post_notify_batch(MuLeaderRuntime& rt) {
     if (!rt.active_notification.has_value()) return;
 
@@ -723,6 +764,9 @@ void post_notify_batch(MuLeaderRuntime& rt) {
         resp.granted_slot = static_cast<uint32_t>(notif.total_watchers);
         send_response(rt, resp);
         rt.active_notification.reset();
+
+        // Process next notification from queue
+        process_next_notification(rt);
         return;
     }
 
@@ -794,6 +838,9 @@ void handle_notify_cqe(MuLeaderRuntime& rt) {
         resp.granted_slot = static_cast<uint32_t>(notif.total_watchers);
         send_response(rt, resp);
         rt.active_notification.reset();
+
+        // Process next notification from queue
+        process_next_notification(rt);
     }
 }
 
@@ -937,48 +984,15 @@ void handle_recv_cqe(MuLeaderRuntime& rt, const ibv_wc& comp) {
     }
 
     if (req.op == static_cast<uint8_t>(MuRpcOp::WatchNotify)) {
-        // Start batched notification (match syndra's batching approach)
-        const uint32_t object_id = req.lock_id;
-
-        // Only one notification at a time (match syndra's active_window constraint)
+        // Queue notification request (like Lock requests)
         if (rt.active_notification.has_value()) {
-            // Notification already in progress - reject (could queue in production)
-            MuResponse resp{};
-            resp.op = static_cast<uint8_t>(MuRpcOp::WatchNotify);
-            resp.status = static_cast<uint8_t>(MuRpcStatus::InternalError);
-            resp.client_id = req.client_id;
-            resp.lock_id = object_id;
-            resp.req_id = req.req_id;
-            resp.granted_slot = 0;
-            send_response(rt, resp);
+            // Notification already in progress - queue for later processing
+            rt.pending_notifications.push_back(req);
             return;
         }
 
-        // Increment version counter
-        auto* version_ptr = reinterpret_cast<uint64_t*>(
-            rt.local_buf + watch_version_offset(object_id));
-        const uint64_t new_version = __sync_add_and_fetch(version_ptr, 1);
-
-        // Read watcher count
-        auto* counter_ptr = reinterpret_cast<uint64_t*>(
-            rt.local_buf + watch_counter_offset(object_id));
-        const uint64_t num_watchers = *counter_ptr;
-
-        // Initialize notification context
-        rt.active_notification = NotificationCtx{};
-        rt.active_notification->active = true;
-        rt.active_notification->object_id = object_id;
-        rt.active_notification->client_id = req.client_id;
-        rt.active_notification->req_id = req.req_id;
-        rt.active_notification->total_watchers = num_watchers;
-        rt.active_notification->notify_sent = 0;
-        rt.active_notification->notify_completed = 0;
-        rt.active_notification->new_version = new_version;
-
-        std::cerr << "[MuLeader debug] Starting notification for object " << object_id
-                  << " with " << num_watchers << " watchers" << std::endl;
-
-        // Post first batch
+        // Start notification immediately if no active notification
+        start_notification(rt, req);
         post_notify_batch(rt);
         return;
     }
