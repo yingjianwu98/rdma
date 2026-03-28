@@ -1,6 +1,14 @@
 #!/bin/bash
 
-# Run all 5 experiments with phase-separated metrics
+# Run all 6 experiments with phase-separated metrics
+
+# Kill any leftover rdma processes before starting
+echo "Cleaning up any leftover rdma processes..."
+for host in apt130 apt131 apt129 apt132 apt136; do
+    ssh stevie98@${host}.apt.emulab.net "sudo pkill -9 rdma || true" > /dev/null 2>&1 &
+done
+wait
+echo "Cleanup complete."
 
 EXPERIMENTS=(
     "10000:Experiment 1"

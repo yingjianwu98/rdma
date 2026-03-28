@@ -218,7 +218,7 @@ void run_mu_watch_pipeline(
     size_t recv_posted = recv_ring;
 
     // Two-phase benchmark: fixed notification count for consistent measurement
-    constexpr size_t TOTAL_NOTIFICATIONS = 2000;  // Fixed across all experiments
+    constexpr size_t TOTAL_NOTIFICATIONS = 1000;  // Fixed across all experiments
     const size_t notification_ops = TOTAL_NOTIFICATIONS / TOTAL_CLIENTS;  // Per-client share
     const size_t registration_ops = NUM_OPS_PER_CLIENT - notification_ops;
     bool in_registration_phase = true;
