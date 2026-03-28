@@ -85,7 +85,7 @@ for exp in "${EXPERIMENTS[@]}"; do
     echo "✓ Servers started"
 
     # Run client on apt121 (dedicated client node)
-    ssh stevie98@apt121.apt.emulab.net "cd /local/rdma/build && sudo IS_CLIENT=1 MACHINE_ID=0 timeout 240 ./rdma 2>&1" > "/tmp/exp_${NUM_OPS}.log"
+    ssh stevie98@apt121.apt.emulab.net "cd /local/rdma/build && sudo IS_CLIENT=1 MACHINE_ID=0 timeout 300 ./rdma 2>&1" > "/tmp/exp_${NUM_OPS}.log"
 
     echo ""
     echo "========================================="

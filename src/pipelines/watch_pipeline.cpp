@@ -554,7 +554,7 @@ void run_watch_pipeline(
                         }
                     }
 
-                    if (submitted < NUM_OPS_PER_CLIENT) {
+                    if (submitted < total_ops) {
                         submit_op(slot);
                     }
                 }
@@ -585,7 +585,7 @@ void run_watch_pipeline(
                     op.phase = WatchPhase::idle;
                     completed++;
                     active--;
-                    if (submitted < NUM_OPS_PER_CLIENT) {
+                    if (submitted < total_ops) {
                         submit_op(slot);
                     }
                 }
@@ -633,7 +633,7 @@ void run_watch_pipeline(
                     completed++;
                     active--;
 
-                    if (submitted < NUM_OPS_PER_CLIENT) {
+                    if (submitted < total_ops) {
                         submit_op(slot);
                     }
                 }
