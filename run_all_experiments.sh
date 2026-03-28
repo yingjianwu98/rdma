@@ -55,8 +55,8 @@ for exp in "${EXPERIMENTS[@]}"; do
 
     sleep 3
 
-    # Run client on apt131 (follower node) to avoid contention with leader on apt130
-    ssh stevie98@apt131.apt.emulab.net "cd /local/rdma/build && sudo IS_CLIENT=1 MACHINE_ID=0 timeout 300 ./rdma 2>&1" > "/tmp/exp_${NUM_OPS}.log"
+    # Run client on apt130 (leader node) - syndra_watch requires all server nodes to be free for peer connections
+    ssh stevie98@apt130.apt.emulab.net "cd /local/rdma/build && sudo IS_CLIENT=1 MACHINE_ID=0 timeout 240 ./rdma 2>&1" > "/tmp/exp_${NUM_OPS}.log"
 
     echo ""
     echo "========================================="
