@@ -222,6 +222,10 @@ void run_mu_watch_pipeline(
     const size_t notification_ops = NUM_OPS_PER_CLIENT - registration_ops;
     bool in_registration_phase = true;
 
+    // Verification tracking
+    uint64_t total_registrations_completed = 0;
+    uint64_t total_notifications_completed = 0;
+
     // Phase timing for separate throughput reporting
     auto registration_start_time = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point registration_end_time;
@@ -345,6 +349,7 @@ void run_mu_watch_pipeline(
                     op.phase = MuWatchPhase::idle;
                     completed++;
                     active--;
+                    total_registrations_completed++;
 
                     // Check if registration phase is complete
                     if (completed >= registration_ops) {
@@ -369,6 +374,7 @@ void run_mu_watch_pipeline(
                     op.phase = MuWatchPhase::idle;
                     completed++;
                     active--;
+                    total_notifications_completed++;
 
                     if (submitted < NUM_OPS_PER_CLIENT) {
                         submit_op(op_slot);
@@ -384,6 +390,54 @@ void run_mu_watch_pipeline(
             }
         }
     }
+
+    // Report verification results
+    std::cerr << "\n[VERIFICATION-START] Client " << client.id() << " reached end of benchmark\n";
+    std::cerr << "========================================\n";
+    std::cerr << "[Client " << client.id() << "] MU Watch Verification\n";
+    std::cerr << "========================================\n";
+
+    // Registration verification
+    std::cerr << "REGISTRATION PHASE:\n";
+    std::cerr << "  Completed registrations: " << total_registrations_completed
+              << " / " << registration_ops;
+    if (total_registrations_completed == registration_ops) {
+        std::cerr << " ✓ MATCH\n";
+    } else {
+        std::cerr << " ✗ MISMATCH\n";
+    }
+
+    // Notification verification
+    std::cerr << "NOTIFICATION PHASE:\n";
+    std::cerr << "  Completed notifications: " << total_notifications_completed
+              << " / " << notification_ops;
+    if (total_notifications_completed == notification_ops) {
+        std::cerr << " ✓ MATCH\n";
+    } else {
+        std::cerr << " ✗ MISMATCH\n";
+    }
+
+    // Overall correctness check
+    std::cerr << "CORRECTNESS CHECKS:\n";
+    const bool all_ops_completed = (total_registrations_completed + total_notifications_completed) == NUM_OPS_PER_CLIENT;
+    std::cerr << "  Total ops completed: " << (total_registrations_completed + total_notifications_completed)
+              << " / " << NUM_OPS_PER_CLIENT;
+    if (all_ops_completed) {
+        std::cerr << " ✓ MATCH\n";
+    } else {
+        std::cerr << " ✗ MISMATCH\n";
+    }
+
+    const bool registration_match = (total_registrations_completed == registration_ops);
+    const bool notification_match = (total_notifications_completed == notification_ops);
+
+    if (registration_match && notification_match && all_ops_completed) {
+        std::cerr << "  ✓ Check 1: All operation counts are correct\n";
+    } else {
+        std::cerr << "  ✗ Check 1: Operation count mismatch detected\n";
+    }
+
+    std::cerr << "[VERIFICATION-END]\n";
 
     // Report phase-separated metrics
     std::cerr << "\n========================================\n";
