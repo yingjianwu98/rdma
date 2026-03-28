@@ -28,7 +28,7 @@ for exp in "${EXPERIMENTS[@]}"; do
 
     # Rebuild all nodes
     for host in apt130 apt131 apt129 apt132 apt136; do
-        ssh stevie98@${host}.apt.emulab.net "cd /local/rdma && git pull && cd build && make -j" > /dev/null 2>&1
+        ssh stevie98@${host}.apt.emulab.net "cd /local/rdma && git checkout yingjianw/wip && git pull origin yingjianw/wip && cd build && make -j" > /dev/null 2>&1
     done
 
     # Restart servers
