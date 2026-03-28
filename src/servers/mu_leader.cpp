@@ -454,6 +454,31 @@ void post_mutation_writes(MuLeaderRuntime& rt, const uint32_t mutation_id) {
         }
     }
 
+    // Periodically drain CQ to prevent QP overflow from accumulated writes
+    static uint32_t repl_write_count = 0;
+    if (++repl_write_count % 64 == 0) {
+        ibv_wc drain_wc[64];
+        const int n = ibv_poll_cq(rt.cq, 64, drain_wc);
+        for (int i = 0; i < n; ++i) {
+            if (drain_wc[i].status != IBV_WC_SUCCESS) {
+                throw std::runtime_error(std::string("MuLeader: drain completion error ") + ibv_wc_status_str(drain_wc[i].status));
+            }
+            // Process replication completions
+            if (is_repl_wr_id(drain_wc[i].wr_id)) {
+                const auto [mid, gen] = decode_repl_wr_id(drain_wc[i].wr_id);
+                auto& mut_ctx = rt.mutations[mid];
+                if (mut_ctx.in_use && mut_ctx.generation == gen && mut_ctx.pending_followers > 0) {
+                    mut_ctx.pending_followers--;
+                    if (mut_ctx.pending_followers == 0) {
+                        mut_ctx.quorum_done = true;
+                        advance_commit_tail(rt);
+                        maybe_release_mutation(rt, mid);
+                    }
+                }
+            }
+        }
+    }
+
     if (ctx.pending_followers == 0) {
         ctx.quorum_done = true;
         advance_commit_tail(rt);
@@ -1070,12 +1095,12 @@ void MuLeader::run() {
     // 1. poll completions,
     // 2. route them to recv/replication handlers,
     // 3. drain the ready-lock queue to append more global-log mutations.
-    ibv_wc wc[64];
+    ibv_wc wc[512];
     uint64_t debug_poll_count = 0;
     uint64_t debug_recv_count = 0;
     uint64_t total_poll_count = 0;
     while (true) {
-        const int n = ibv_poll_cq(rt.cq, 64, wc);
+        const int n = ibv_poll_cq(rt.cq, 512, wc);
         total_poll_count++;
         if (total_poll_count % 100000000 == 0) {
             std::cerr << "[MuLeader " << rt.node_id << "] poll_count=" << total_poll_count
