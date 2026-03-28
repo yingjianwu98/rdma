@@ -4,7 +4,7 @@
 
 # Kill any leftover rdma processes before starting
 echo "Cleaning up any leftover rdma processes..."
-for host in apt130 apt131 apt129 apt132 apt136; do
+for host in apt128 apt132 apt095 apt104 apt112; do
     ssh stevie98@${host}.apt.emulab.net "sudo pkill -9 rdma || true" > /dev/null 2>&1 &
 done
 wait
@@ -36,27 +36,54 @@ for exp in "${EXPERIMENTS[@]}"; do
     git push
 
     # Rebuild all nodes in parallel
-    for host in apt130 apt131 apt129 apt132 apt136; do
+    for host in apt128 apt132 apt095 apt104 apt112; do
         ssh stevie98@${host}.apt.emulab.net "cd /local/rdma && git checkout yingjianw/wip && git pull origin yingjianw/wip && cd build && make -j" > /dev/null 2>&1 &
     done
     wait  # Wait for all rebuilds to complete
 
-    # Restart servers
-    for i in 0 1 2 3 4; do
-        case $i in
-            0) host=apt130 ;;
-            1) host=apt131 ;;
-            2) host=apt129 ;;
-            3) host=apt132 ;;
-            4) host=apt136 ;;
-        esac
-        ssh stevie98@${host}.apt.emulab.net "sudo pkill -9 rdma || true; cd /local/rdma/build && sudo bash -c 'NODE_ID=$i IS_CLIENT=0 nohup ./rdma > server_$i.log 2>&1 < /dev/null &'" > /dev/null 2>&1
+    # Kill servers
+    echo "Stopping servers..."
+    for host in apt128 apt132 apt095 apt104 apt112; do
+        ssh stevie98@${host}.apt.emulab.net "sudo pkill -9 rdma || true" &
+    done
+    wait
+
+    # Verify all servers are stopped
+    echo "Verifying servers are stopped..."
+    for attempt in {1..10}; do
+        all_stopped=true
+        for host in apt128 apt132 apt095 apt104 apt112; do
+            if ssh stevie98@${host}.apt.emulab.net "pgrep -x rdma > /dev/null 2>&1"; then
+                all_stopped=false
+                break
+            fi
+        done
+        if [ "$all_stopped" = true ]; then
+            echo "✓ All servers stopped"
+            break
+        fi
+        echo "  Waiting for servers to stop (attempt $attempt/10)..."
+        sleep 1
     done
 
-    sleep 3
+    # Start servers
+    echo "Starting servers..."
+    for i in 0 1 2 3 4; do
+        case $i in
+            0) host=apt128 ;;
+            1) host=apt132 ;;
+            2) host=apt095 ;;
+            3) host=apt104 ;;
+            4) host=apt112 ;;
+        esac
+        ssh stevie98@${host}.apt.emulab.net "cd /local/rdma/build && sudo bash -c 'NODE_ID=$i IS_CLIENT=0 nohup ./rdma > server_$i.log 2>&1 < /dev/null &'" > /dev/null 2>&1
+    done
 
-    # Run client on apt130 (leader node) - syndra_watch requires all server nodes to be free for peer connections
-    ssh stevie98@apt130.apt.emulab.net "cd /local/rdma/build && sudo IS_CLIENT=1 MACHINE_ID=0 timeout 240 ./rdma 2>&1" > "/tmp/exp_${NUM_OPS}.log"
+    sleep 5
+    echo "✓ Servers started"
+
+    # Run client on apt128 (leader node) - syndra_watch requires all server nodes to be free for peer connections
+    ssh stevie98@apt128.apt.emulab.net "cd /local/rdma/build && sudo IS_CLIENT=1 MACHINE_ID=0 timeout 240 ./rdma 2>&1" > "/tmp/exp_${NUM_OPS}.log"
 
     echo ""
     echo "========================================="
