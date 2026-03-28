@@ -861,7 +861,8 @@ void handle_recv_cqe(MuLeaderRuntime& rt, const ibv_wc& comp) {
 
         // Use selective signaling like mu_pipeline to prevent CQ overflow
         // Signal every Nth notification to match MU_SERVER_SEND_SIGNAL_EVERY pattern
-        constexpr size_t NOTIFY_SIGNAL_EVERY = 128;
+        // Increased from 128 to 256 for larger workloads with more watchers
+        constexpr size_t NOTIFY_SIGNAL_EVERY = 256;
 
         for (uint64_t i = 0; i < notify_limit && i < MAX_WATCHERS_PER_OBJECT; ++i) {
             if (num_followers == 0) {
