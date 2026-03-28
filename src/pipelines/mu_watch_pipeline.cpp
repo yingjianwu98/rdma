@@ -13,6 +13,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -446,29 +447,30 @@ void run_mu_watch_pipeline(
 
     std::cerr << "[VERIFICATION-END]\n";
 
-    // Report phase-separated metrics
-    std::cerr << "\n========================================\n";
-    std::cerr << "[Client " << client.id() << "] MU Watch Results\n";
-    std::cerr << "========================================\n";
+    // Build complete output atomically to prevent interleaving with other clients
+    std::ostringstream output;
+    output << "\n========================================\n";
+    output << "[Client " << client.id() << "] MU Watch Results\n";
+    output << "========================================\n";
 
     // Phase-separated throughput reporting
     if (registration_timing_done) {
         const double reg_duration_s = std::chrono::duration<double>(
             registration_end_time - registration_start_time).count();
         const double reg_throughput = registration_ops / reg_duration_s;
-        std::cerr << "\nPHASE THROUGHPUT:\n";
-        std::cerr << "  Registration: " << static_cast<uint64_t>(reg_throughput) << " ops/s"
-                  << " (" << registration_ops << " ops in " << std::fixed << std::setprecision(3)
-                  << reg_duration_s << "s)\n";
+        output << "\nPHASE THROUGHPUT:\n";
+        output << "  Registration: " << static_cast<uint64_t>(reg_throughput) << " ops/s"
+               << " (" << registration_ops << " ops in " << std::fixed << std::setprecision(3)
+               << reg_duration_s << "s)\n";
 
         if (notification_timing_started) {
             const auto notification_end_time = std::chrono::steady_clock::now();
             const double notif_duration_s = std::chrono::duration<double>(
                 notification_end_time - notification_start_time).count();
             const double notif_throughput = notification_ops / notif_duration_s;
-            std::cerr << "  Notification: " << static_cast<uint64_t>(notif_throughput) << " ops/s"
-                      << " (" << notification_ops << " ops in " << std::fixed << std::setprecision(3)
-                      << notif_duration_s << "s)\n";
+            output << "  Notification: " << static_cast<uint64_t>(notif_throughput) << " ops/s"
+                   << " (" << notification_ops << " ops in " << std::fixed << std::setprecision(3)
+                   << notif_duration_s << "s)\n";
         }
     }
 
@@ -482,22 +484,25 @@ void run_mu_watch_pipeline(
     };
 
     if (registration_ops > 0) {
-        std::cerr << "\nREGISTRATION LATENCY (μs):\n";
-        std::cerr << "  P50: " << std::fixed << std::setprecision(2)
-                  << calculate_percentile(latencies, registration_latency_start, registration_ops, 50.0) << "\n";
-        std::cerr << "  P90: " << calculate_percentile(latencies, registration_latency_start, registration_ops, 90.0) << "\n";
-        std::cerr << "  P99: " << calculate_percentile(latencies, registration_latency_start, registration_ops, 99.0) << "\n";
-        std::cerr << "  P99.9: " << calculate_percentile(latencies, registration_latency_start, registration_ops, 99.9) << "\n";
+        output << "\nREGISTRATION LATENCY (μs):\n";
+        output << "  P50: " << std::fixed << std::setprecision(2)
+               << calculate_percentile(latencies, registration_latency_start, registration_ops, 50.0) << "\n";
+        output << "  P90: " << calculate_percentile(latencies, registration_latency_start, registration_ops, 90.0) << "\n";
+        output << "  P99: " << calculate_percentile(latencies, registration_latency_start, registration_ops, 99.0) << "\n";
+        output << "  P99.9: " << calculate_percentile(latencies, registration_latency_start, registration_ops, 99.9) << "\n";
     }
 
     if (notification_ops > 0) {
-        std::cerr << "\nNOTIFICATION LATENCY (μs):\n";
-        std::cerr << "  P50: " << std::fixed << std::setprecision(2)
-                  << calculate_percentile(latencies, notification_latency_start, notification_ops, 50.0) << "\n";
-        std::cerr << "  P90: " << calculate_percentile(latencies, notification_latency_start, notification_ops, 90.0) << "\n";
-        std::cerr << "  P99: " << calculate_percentile(latencies, notification_latency_start, notification_ops, 99.0) << "\n";
-        std::cerr << "  P99.9: " << calculate_percentile(latencies, notification_latency_start, notification_ops, 99.9) << "\n";
+        output << "\nNOTIFICATION LATENCY (μs):\n";
+        output << "  P50: " << std::fixed << std::setprecision(2)
+               << calculate_percentile(latencies, notification_latency_start, notification_ops, 50.0) << "\n";
+        output << "  P90: " << calculate_percentile(latencies, notification_latency_start, notification_ops, 90.0) << "\n";
+        output << "  P99: " << calculate_percentile(latencies, notification_latency_start, notification_ops, 99.0) << "\n";
+        output << "  P99.9: " << calculate_percentile(latencies, notification_latency_start, notification_ops, 99.9) << "\n";
     }
 
-    std::cerr << "========================================\n" << std::flush;
+    output << "========================================\n";
+
+    // Print everything at once to avoid interleaving
+    std::cerr << output.str() << std::flush;
 }

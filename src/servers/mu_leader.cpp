@@ -58,6 +58,14 @@ struct LockState {
     int unlock_mutation = -1;
 };
 
+struct WatchState {
+    // Per-object watch registration state (similar to LockState but for watches)
+    std::deque<MuRequest> pending_registers;  // Queue of registration requests
+    uint32_t register_inflight = 0;           // Number of in-flight registrations
+};
+
+constexpr uint32_t MU_MAX_REGISTER_INFLIGHT_PER_OBJECT = 16;  // Match MU_MAX_APPEND_INFLIGHT_PER_LOCK
+
 struct NotificationCtx {
     bool active = false;
     uint32_t object_id = 0;
@@ -100,6 +108,9 @@ struct MuLeaderRuntime {
     std::vector<size_t> follower_indices;
     std::optional<NotificationCtx> active_notification;
     std::deque<MuRequest> pending_notifications;  // Queue for WatchNotify requests
+    std::vector<WatchState> watch_objects;         // Per-object watch state
+    std::deque<uint32_t> ready_watches;            // Ready watch objects queue
+    std::vector<uint8_t> ready_watch_flags;        // Track if object is already in ready queue
 };
 
 constexpr uint64_t MU_RECV_WR_TAG = 0xB1ULL;
@@ -175,6 +186,15 @@ void enqueue_ready(MuLeaderRuntime& rt, const uint32_t lock_id) {
     if (rt.ready_flags[lock_id] != 0) return;
     rt.ready_flags[lock_id] = 1;
     rt.ready_locks.push_back(lock_id);
+}
+
+// Put a watch object onto the ready queue exactly once so the service loop can
+// process pending watch registrations without duplicate queue entries.
+void enqueue_ready_watch(MuLeaderRuntime& rt, const uint32_t object_id) {
+    if (object_id >= MAX_LOCKS) return;  // Watch objects use same ID space as locks
+    if (rt.ready_watch_flags[object_id] != 0) return;
+    rt.ready_watch_flags[object_id] = 1;
+    rt.ready_watches.push_back(object_id);
 }
 
 // Send one inline leader response back to the requesting client.
@@ -296,15 +316,27 @@ void apply_mutation(MuLeaderRuntime& rt, const uint32_t mutation_id) {
     auto& ctx = rt.mutations[mutation_id];
 
     if (ctx.kind == MutationKind::register_watch) {
-        // Watch registration: simply ACK the client after quorum is reached
+        // Watch registration: ACK the client after quorum is reached
+        const uint32_t object_id = ctx.lock_id;
         MuResponse resp{};
         resp.op = static_cast<uint8_t>(MuRpcOp::WatchRegister);
         resp.status = static_cast<uint8_t>(MuRpcStatus::Ok);
         resp.client_id = ctx.client_id;
-        resp.lock_id = ctx.lock_id;  // object_id stored in lock_id field
+        resp.lock_id = object_id;
         resp.req_id = ctx.req_id;
         resp.granted_slot = ctx.granted_slot;  // watch slot stored here
         send_response(rt, resp);
+
+        // Decrement in-flight count and re-enqueue to process more pending registrations
+        if (object_id < MAX_LOCKS) {
+            auto& watch = rt.watch_objects[object_id];
+            if (watch.register_inflight > 0) {
+                watch.register_inflight--;
+            }
+            if (!watch.pending_registers.empty()) {
+                enqueue_ready_watch(rt, object_id);
+            }
+        }
 
         ctx.applied = true;
         maybe_release_mutation(rt, mutation_id);
@@ -487,6 +519,65 @@ void post_mutation_writes(MuLeaderRuntime& rt, const uint32_t mutation_id) {
         advance_commit_tail(rt);
         maybe_release_mutation(rt, mutation_id);
     }
+}
+
+// Forward declaration
+void post_watch_writes(MuLeaderRuntime& rt, const uint32_t mutation_id, const uint32_t object_id, const uint64_t slot);
+
+// Process one watch registration from the queue and replicate it (like start_append_mutation for locks)
+void start_register_watch(MuLeaderRuntime& rt, const uint32_t object_id) {
+    auto& watch = rt.watch_objects[object_id];
+    if (watch.pending_registers.empty() || watch.register_inflight >= MU_MAX_REGISTER_INFLIGHT_PER_OBJECT) {
+        return;
+    }
+
+    const auto mutation_id_opt = try_alloc_mutation(rt);
+    if (!mutation_id_opt.has_value()) {
+        enqueue_ready_watch(rt, object_id);
+        return;
+    }
+
+    MuRequest req = watch.pending_registers.front();
+    watch.pending_registers.pop_front();
+
+    // Atomically allocate a watch slot
+    auto* counter_ptr = reinterpret_cast<uint64_t*>(
+        rt.local_buf + watch_counter_offset(object_id));
+    const uint64_t slot = __sync_fetch_and_add(counter_ptr, 1);
+
+    if (slot >= MAX_WATCHERS_PER_OBJECT) {
+        MuResponse resp{};
+        resp.op = static_cast<uint8_t>(MuRpcOp::WatchRegister);
+        resp.status = static_cast<uint8_t>(MuRpcStatus::QueueFull);
+        resp.client_id = req.client_id;
+        resp.lock_id = object_id;
+        resp.req_id = req.req_id;
+        resp.granted_slot = 0;
+        send_response(rt, resp);
+        enqueue_ready_watch(rt, object_id);
+        return;
+    }
+
+    // Assign global slot for MU commit ordering
+    const uint32_t global_slot = rt.global_next_append_slot++;
+
+    const uint32_t mutation_id = *mutation_id_opt;
+    auto& ctx = rt.mutations[mutation_id];
+    ctx.kind = MutationKind::register_watch;
+    ctx.lock_id = object_id;
+    ctx.granted_slot = static_cast<uint32_t>(slot);
+    ctx.client_id = req.client_id;
+    ctx.req_id = req.req_id;
+    ctx.global_slot = global_slot;
+    rt.slot_to_mutation[global_slot] = mutation_id;
+
+    // Write watcher ID locally
+    auto* watcher_slot = reinterpret_cast<uint64_t*>(
+        rt.local_buf + watch_id_slot_offset(object_id, slot));
+    *watcher_slot = req.client_id;
+
+    watch.register_inflight++;
+    post_watch_writes(rt, mutation_id, object_id, slot);
 }
 
 // Replicate watch registration to followers (same pattern as post_mutation_writes)
@@ -701,6 +792,14 @@ void service_lock(MuLeaderRuntime& rt, const uint32_t lock_id) {
     }
     while (!lock.pending_locks.empty() && lock.append_inflight < MU_MAX_APPEND_INFLIGHT_PER_LOCK) {
         start_append_mutation(rt, lock_id);
+    }
+}
+
+// Service one watch object: process pending registrations keeping pipeline full.
+void service_watch(MuLeaderRuntime& rt, const uint32_t object_id) {
+    auto& watch = rt.watch_objects[object_id];
+    while (!watch.pending_registers.empty() && watch.register_inflight < MU_MAX_REGISTER_INFLIGHT_PER_OBJECT) {
+        start_register_watch(rt, object_id);
     }
 }
 
@@ -920,69 +1019,32 @@ void handle_recv_cqe(MuLeaderRuntime& rt, const ibv_wc& comp) {
     }
 
     if (req.op == static_cast<uint8_t>(MuRpcOp::WatchRegister)) {
-        // Register a watcher using async replication (reuse mutation pool like mu_lock)
+        // Queue watch registration request (like Lock requests - enables batching!)
         const uint32_t object_id = req.lock_id;
-
-        static uint64_t watch_reg_count = 0;
-        if (watch_reg_count < 5 || watch_reg_count % 10000 == 0) {
-            std::cerr << "[MuLeader] WatchRegister req #" << watch_reg_count
-                      << " from client=" << req.client_id
-                      << " object=" << object_id << std::endl;
-            std::cerr.flush();
+        if (object_id >= MAX_LOCKS) {
+            MuResponse resp{};
+            resp.op = static_cast<uint8_t>(MuRpcOp::WatchRegister);
+            resp.status = static_cast<uint8_t>(MuRpcStatus::InternalError);
+            resp.client_id = req.client_id;
+            resp.lock_id = object_id;
+            resp.req_id = req.req_id;
+            send_response(rt, resp);
+            return;
         }
-        watch_reg_count++;
 
-        // Atomically allocate a watch slot
-        auto* counter_ptr = reinterpret_cast<uint64_t*>(
-            rt.local_buf + watch_counter_offset(object_id));
-        const uint64_t slot = __sync_fetch_and_add(counter_ptr, 1);
-
-        if (slot >= MAX_WATCHERS_PER_OBJECT) {
+        auto& watch = rt.watch_objects[object_id];
+        if (watch.pending_registers.size() >= MU_MAX_PENDING_PER_LOCK) {
             MuResponse resp{};
             resp.op = static_cast<uint8_t>(MuRpcOp::WatchRegister);
             resp.status = static_cast<uint8_t>(MuRpcStatus::QueueFull);
             resp.client_id = req.client_id;
             resp.lock_id = object_id;
             resp.req_id = req.req_id;
-            resp.granted_slot = 0;
             send_response(rt, resp);
             return;
         }
-
-        // Allocate mutation context for async tracking
-        const auto mutation_id_opt = try_alloc_mutation(rt);
-        if (!mutation_id_opt.has_value()) {
-            MuResponse resp{};
-            resp.op = static_cast<uint8_t>(MuRpcOp::WatchRegister);
-            resp.status = static_cast<uint8_t>(MuRpcStatus::QueueFull);
-            resp.client_id = req.client_id;
-            resp.lock_id = object_id;
-            resp.req_id = req.req_id;
-            resp.granted_slot = 0;
-            send_response(rt, resp);
-            return;
-        }
-
-        // Assign global slot for MU commit ordering
-        const uint32_t global_slot = rt.global_next_append_slot++;
-
-        const uint32_t mutation_id = *mutation_id_opt;
-        auto& ctx = rt.mutations[mutation_id];
-        ctx.kind = MutationKind::register_watch;
-        ctx.lock_id = object_id;
-        ctx.granted_slot = static_cast<uint32_t>(slot);
-        ctx.client_id = req.client_id;
-        ctx.req_id = req.req_id;
-        ctx.global_slot = global_slot;
-        rt.slot_to_mutation[global_slot] = mutation_id;
-
-        // Write watcher ID locally
-        auto* watcher_slot = reinterpret_cast<uint64_t*>(
-            rt.local_buf + watch_id_slot_offset(object_id, slot));
-        *watcher_slot = req.client_id;
-
-        // Async replicate (post_watch_writes will handle response after quorum)
-        post_watch_writes(rt, mutation_id, object_id, slot);
+        watch.pending_registers.push_back(req);
+        enqueue_ready_watch(rt, object_id);
         return;
     }
 
@@ -1115,6 +1177,8 @@ void MuLeader::run() {
         .mutations = std::vector<MutationCtx>(mutation_pool_size),
         .ready_flags = std::vector<uint8_t>(MAX_LOCKS, 0),
         .client_send_signal_counts = std::vector<uint32_t>(num_clients, 0),
+        .watch_objects = std::vector<WatchState>(MAX_LOCKS),
+        .ready_watch_flags = std::vector<uint8_t>(MAX_LOCKS, 0),
     };
 
     // Seed the free mutation-context pool and discover which peer connections
@@ -1218,6 +1282,14 @@ void MuLeader::run() {
             rt.ready_locks.pop_front();
             rt.ready_flags[lock_id] = 0;
             service_lock(rt, lock_id);
+        }
+
+        // Drain ready watch objects to keep watch registration pipeline full
+        while (!rt.ready_watches.empty()) {
+            const uint32_t object_id = rt.ready_watches.front();
+            rt.ready_watches.pop_front();
+            rt.ready_watch_flags[object_id] = 0;
+            service_watch(rt, object_id);
         }
     }
 }
