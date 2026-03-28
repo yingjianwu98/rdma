@@ -417,6 +417,16 @@ void post_mutation_writes(MuLeaderRuntime& rt, const uint32_t mutation_id) {
         rt.repl_signal_cursor = (rt.repl_signal_cursor + signaled_to_track) % followers;
     }
 
+    static uint64_t post_count = 0;
+    const bool debug_post = (post_count < 5) || (post_count % 10000 == 0);
+    if (debug_post) {
+        std::cerr << "[MuLeader] post_mutation_writes #" << post_count
+                  << " mutation_id=" << mutation_id
+                  << " global_slot=" << ctx.global_slot
+                  << " followers=" << followers << std::endl;
+        std::cerr.flush();
+    }
+
     for (size_t follower_pos = 0; follower_pos < rt.follower_indices.size(); ++follower_pos) {
         const size_t follower_idx = rt.follower_indices[follower_pos];
         auto& follower = rt.peers[follower_idx];
@@ -446,13 +456,35 @@ void post_mutation_writes(MuLeaderRuntime& rt, const uint32_t mutation_id) {
         wr.wr.rdma.remote_addr = follower.remote_addr + mu_global_log_slot_offset(ctx.global_slot);
         wr.wr.rdma.rkey = follower.rkey;
 
+        // Check QP state before posting
+        ibv_qp_attr qp_attr{};
+        ibv_qp_init_attr qp_init_attr{};
+        if (debug_post && ibv_query_qp(follower.cm_id->qp, &qp_attr, IBV_QP_STATE, &qp_init_attr) == 0) {
+            std::cerr << "[MuLeader] QP to follower " << follower_idx
+                      << " state=" << qp_attr.qp_state
+                      << " (RTS=3, SQE=4, ERR=5)" << std::endl;
+            std::cerr.flush();
+        }
+
         if (ibv_post_send(follower.cm_id->qp, &wr, &bad_wr)) {
+            std::cerr << "[MuLeader ERROR] Failed to post write to follower " << follower_idx
+                      << " errno=" << errno << " (" << strerror(errno) << ")" << std::endl;
+            std::cerr.flush();
             throw std::runtime_error("MuLeader: failed to replicate mutation");
+        }
+
+        if (debug_post) {
+            std::cerr << "[MuLeader] Posted write to follower " << follower_idx
+                      << " wr_id=0x" << std::hex << wr.wr_id << std::dec
+                      << " pending_followers=" << (ctx.pending_followers + 1) << std::endl;
+            std::cerr.flush();
         }
 
         // Always track completion since we always signal
         ctx.pending_followers++;
     }
+
+    post_count++;
 
     // Remove periodic drain - main event loop handles all CQ polling
 
@@ -962,12 +994,15 @@ void handle_repl_cqe(MuLeaderRuntime& rt, const ibv_wc& comp) {
     ctx.ack_count++;
 
     static uint64_t ack_count = 0;
-    if (ack_count < 10 || ack_count % 10000 == 0) {
+    const bool debug_ack = (ack_count < 20) || (ack_count % 10000 == 0);
+    if (debug_ack) {
         std::cerr << "[MuLeader] handle_repl_cqe #" << ack_count
                   << " mutation_id=" << mutation_id
                   << " ack_count=" << ctx.ack_count
                   << " pending=" << ctx.pending_followers
-                  << " quorum_done=" << ctx.quorum_done << std::endl;
+                  << " quorum_done=" << ctx.quorum_done
+                  << " wr_id=0x" << std::hex << comp.wr_id << std::dec
+                  << " qp_num=" << comp.qp_num << std::endl;
         std::cerr.flush();
     }
     ack_count++;
