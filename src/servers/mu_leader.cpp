@@ -465,7 +465,8 @@ void post_mutation_writes(MuLeaderRuntime& rt, const uint32_t mutation_id) {
             }
             // Process replication completions
             if (is_repl_wr_id(drain_wc[i].wr_id)) {
-                const auto [mid, gen] = decode_repl_wr_id(drain_wc[i].wr_id);
+                const uint32_t mid = repl_mutation_id(drain_wc[i].wr_id);
+                const uint32_t gen = repl_generation(drain_wc[i].wr_id);
                 auto& mut_ctx = rt.mutations[mid];
                 if (mut_ctx.in_use && mut_ctx.generation == gen && mut_ctx.pending_followers > 0) {
                     mut_ctx.pending_followers--;
