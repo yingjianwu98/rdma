@@ -441,7 +441,8 @@ void post_mutation_writes(MuLeaderRuntime& rt, const uint32_t mutation_id) {
         wr.opcode = IBV_WR_RDMA_WRITE;
         wr.sg_list = &sge;
         wr.num_sge = 1;
-        wr.send_flags = IBV_SEND_INLINE | (should_signal ? IBV_SEND_SIGNALED : 0);
+        // ALWAYS signal replication writes to prevent QP overflow
+        wr.send_flags = IBV_SEND_INLINE | IBV_SEND_SIGNALED;
         wr.wr.rdma.remote_addr = follower.remote_addr + mu_global_log_slot_offset(ctx.global_slot);
         wr.wr.rdma.rkey = follower.rkey;
 
@@ -449,9 +450,8 @@ void post_mutation_writes(MuLeaderRuntime& rt, const uint32_t mutation_id) {
             throw std::runtime_error("MuLeader: failed to replicate mutation");
         }
 
-        if (should_signal) {
-            ctx.pending_followers++;
-        }
+        // Always track completion since we always signal
+        ctx.pending_followers++;
     }
 
     // Periodically drain CQ to prevent QP overflow from accumulated writes
@@ -544,7 +544,8 @@ void post_watch_writes(MuLeaderRuntime& rt, const uint32_t mutation_id, const ui
         wr.opcode = IBV_WR_RDMA_WRITE;
         wr.sg_list = &sge;
         wr.num_sge = 1;
-        wr.send_flags = IBV_SEND_INLINE | (should_signal ? IBV_SEND_SIGNALED : 0);
+        // ALWAYS signal watch writes to prevent QP overflow
+        wr.send_flags = IBV_SEND_INLINE | IBV_SEND_SIGNALED;
         wr.wr.rdma.remote_addr = follower.remote_addr + watch_id_slot_offset(object_id, slot);
         wr.wr.rdma.rkey = follower.rkey;
 
@@ -552,14 +553,13 @@ void post_watch_writes(MuLeaderRuntime& rt, const uint32_t mutation_id, const ui
             throw std::runtime_error("MuLeader: failed to replicate watch registration");
         }
 
-        if (should_signal) {
-            ctx.pending_followers++;
-            if (debug_this) {
-                std::cerr << "[MuLeader] post_watch_writes: signaled follower_pos=" << follower_pos
-                          << " follower_idx=" << follower_idx
-                          << " pending_followers=" << ctx.pending_followers << std::endl;
-                std::cerr.flush();
-            }
+        // Always track completion since we always signal
+        ctx.pending_followers++;
+        if (debug_this) {
+            std::cerr << "[MuLeader] post_watch_writes: signaled follower_pos=" << follower_pos
+                      << " follower_idx=" << follower_idx
+                      << " pending_followers=" << ctx.pending_followers << std::endl;
+            std::cerr.flush();
         }
     }
 
