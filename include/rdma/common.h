@@ -103,7 +103,7 @@ constexpr uint32_t TICKET_FAA_TURN_SPIN_FAR = 0;
 constexpr size_t MU_ACTIVE_WINDOW = 16;
 constexpr size_t MU_CQ_BATCH = 32;
 constexpr uint32_t MU_CLIENT_SEND_SIGNAL_EVERY = 64;
-constexpr uint32_t MU_SERVER_SEND_SIGNAL_EVERY = 128;
+constexpr uint32_t MU_SERVER_SEND_SIGNAL_EVERY = 64;  // Reduced to handle small workloads (1K = 125 ops/client)
 constexpr double MU_ZIPF_SKEW = 0.0;  // Match watch_pipeline: uniform distribution
 constexpr bool MU_DEBUG = false;
 constexpr bool MU_REPL_SIGNAL_QUORUM_ONLY = true;  // Signal only quorum writes to prevent CQ overflow
