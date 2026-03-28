@@ -218,10 +218,12 @@ void run_mu_watch_pipeline(
     uint32_t next_req_id = 0;
     size_t recv_posted = recv_ring;
 
-    // Two-phase benchmark: fixed notification count for consistent measurement
-    constexpr size_t TOTAL_NOTIFICATIONS = 1000;  // Fixed across all experiments
-    const size_t notification_ops = TOTAL_NOTIFICATIONS / TOTAL_CLIENTS;  // Per-client share
-    const size_t registration_ops = NUM_OPS_PER_CLIENT - notification_ops;
+    // Two-phase benchmark: all ops are registrations, then fixed number of notifications
+    // Registration: Use all NUM_OPS operations to register watchers
+    // Notification: Fixed 2000 total notifications to test notification performance
+    constexpr size_t TOTAL_NOTIFICATIONS = 2000;  // Fixed across all experiments
+    const size_t notification_ops = TOTAL_NOTIFICATIONS / TOTAL_CLIENTS;  // Per-client share = 250
+    const size_t registration_ops = NUM_OPS_PER_CLIENT;  // All ops are registrations
     bool in_registration_phase = true;
 
     // Verification tracking
@@ -287,7 +289,9 @@ void run_mu_watch_pipeline(
     };
 
     // Fill pipeline
-    while (active < config.active_window && submitted < NUM_OPS_PER_CLIENT) {
+    const size_t total_ops = registration_ops + notification_ops;
+
+    while (active < config.active_window && submitted < total_ops) {
         submit_op(active);
     }
 
@@ -298,13 +302,13 @@ void run_mu_watch_pipeline(
     uint64_t poll_count = 0;
     auto last_progress_time = std::chrono::steady_clock::now();
     size_t last_completed = 0;
-    while (completed < NUM_OPS_PER_CLIENT) {
+    while (completed < total_ops) {
         poll_count++;
         auto now = std::chrono::steady_clock::now();
         auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_progress_time).count();
 
         if (poll_count % 10000000 == 0 || elapsed_ms > 1000) {
-            std::cerr << "[DEBUG] Client " << client.id() << " polling... completed=" << completed << "/" << NUM_OPS_PER_CLIENT
+            std::cerr << "[DEBUG] Client " << client.id() << " polling... completed=" << completed << "/" << total_ops
                       << " active=" << active << " submitted=" << submitted
                       << " poll_count=" << poll_count << " elapsed_ms=" << elapsed_ms << std::endl;
             std::cerr.flush();
@@ -389,7 +393,7 @@ void run_mu_watch_pipeline(
                         registration_timing_done = true;
                     }
 
-                    if (submitted < NUM_OPS_PER_CLIENT) {
+                    if (submitted < total_ops) {
                         // Switch to notification phase when we've submitted all registrations
                         if (submitted >= registration_ops) {
                             in_registration_phase = false;
@@ -409,7 +413,7 @@ void run_mu_watch_pipeline(
                     active--;
                     total_notifications_completed++;
 
-                    if (submitted < NUM_OPS_PER_CLIENT) {
+                    if (submitted < total_ops) {
                         submit_op(op_slot);
                     }
                 }
@@ -452,9 +456,9 @@ void run_mu_watch_pipeline(
 
     // Overall correctness check
     std::cerr << "CORRECTNESS CHECKS:\n";
-    const bool all_ops_completed = (total_registrations_completed + total_notifications_completed) == NUM_OPS_PER_CLIENT;
+    const bool all_ops_completed = (total_registrations_completed + total_notifications_completed) == total_ops;
     std::cerr << "  Total ops completed: " << (total_registrations_completed + total_notifications_completed)
-              << " / " << NUM_OPS_PER_CLIENT;
+              << " / " << total_ops;
     if (all_ops_completed) {
         std::cerr << " ✓ MATCH\n";
     } else {

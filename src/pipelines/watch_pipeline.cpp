@@ -404,11 +404,12 @@ void run_watch_pipeline(
     size_t active = 0;
     uint32_t next_req_id = 0;
 
-    // Two-phase benchmark: mostly registration, small number of notifications
-    // Two-phase benchmark: fixed notification count for consistent measurement
-    constexpr size_t TOTAL_NOTIFICATIONS = 1000;  // Fixed across all experiments
-    const size_t notification_ops = TOTAL_NOTIFICATIONS / TOTAL_CLIENTS;  // Per-client share
-    const size_t registration_ops = NUM_OPS_PER_CLIENT - notification_ops;
+    // Two-phase benchmark: all ops are registrations, then fixed number of notifications
+    // Registration: Use all NUM_OPS operations to register watchers
+    // Notification: Fixed 2000 total notifications to test notification performance
+    constexpr size_t TOTAL_NOTIFICATIONS = 2000;  // Fixed across all experiments
+    const size_t notification_ops = TOTAL_NOTIFICATIONS / TOTAL_CLIENTS;  // Per-client share = 250
+    const size_t registration_ops = NUM_OPS_PER_CLIENT;  // All ops are registrations
     bool in_registration_phase = true;
 
     // Verification statistics
@@ -461,12 +462,14 @@ void run_watch_pipeline(
     };
 
     // Fill pipeline
-    while (active < config.active_window && submitted < NUM_OPS_PER_CLIENT) {
+    const size_t total_ops = registration_ops + notification_ops;
+
+    while (active < config.active_window && submitted < total_ops) {
         submit_op(active);
     }
 
     // Main completion loop
-    while (completed < NUM_OPS_PER_CLIENT) {
+    while (completed < total_ops) {
         const int polled = ibv_poll_cq(client.cq(), static_cast<int>(completions.size()),
                                       completions.data());
         if (polled < 0) {
