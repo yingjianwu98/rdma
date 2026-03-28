@@ -59,6 +59,8 @@ constexpr size_t NUM_CLIENTS_PER_MACHINE = 8;
 constexpr size_t TOTAL_CLIENTS = NUM_CLIENTS_PER_MACHINE * TOTAL_CLIENT_MACHINES;
 constexpr size_t NUM_OPS_PER_CLIENT = NUM_OPS / TOTAL_CLIENTS;
 constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * TOTAL_CLIENTS;
+constexpr size_t WATCH_EXTRA_NOTIFICATIONS = 2000;  // Extra notification ops for watch benchmarks
+constexpr size_t MAX_TOTAL_OPS = NUM_TOTAL_OPS + WATCH_EXTRA_NOTIFICATIONS;
 constexpr size_t MAX_LOCKS = 1000;
 
 // ─── CAS config ───

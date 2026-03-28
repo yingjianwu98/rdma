@@ -72,7 +72,7 @@ int main() {
 
             std::cerr << "[DEBUG] Allocating latency array..." << std::endl;
             std::cerr.flush();
-            auto all_latencies = std::make_unique<std::array<uint64_t, NUM_TOTAL_OPS>>();
+            auto all_latencies = std::make_unique<std::array<uint64_t, MAX_TOTAL_OPS>>();
             std::cerr << "[DEBUG] Latency array allocated, creating latch..." << std::endl;
             std::cerr.flush();
             std::latch start_latch(NUM_CLIENTS_PER_MACHINE + 1);
