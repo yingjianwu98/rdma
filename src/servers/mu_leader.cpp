@@ -58,6 +58,17 @@ struct LockState {
     int unlock_mutation = -1;
 };
 
+struct NotificationCtx {
+    bool active = false;
+    uint32_t object_id = 0;
+    uint16_t client_id = 0;
+    uint32_t req_id = 0;
+    uint64_t total_watchers = 0;
+    uint64_t notify_sent = 0;
+    uint64_t notify_completed = 0;
+    uint64_t new_version = 0;
+};
+
 struct MuLeaderRuntime {
     // Runtime groups the event-loop state that used to be captured by local
     // lambdas so helper functions can operate on one explicit context object.
@@ -87,11 +98,13 @@ struct MuLeaderRuntime {
     std::vector<uint8_t> ready_flags;
     std::vector<uint32_t> client_send_signal_counts;
     std::vector<size_t> follower_indices;
+    std::optional<NotificationCtx> active_notification;
 };
 
 constexpr uint64_t MU_RECV_WR_TAG = 0xB1ULL;
 constexpr uint64_t MU_REPL_WR_TAG = 0xB2ULL;
 constexpr uint64_t MU_WATCH_REPL_WR_TAG = 0xB3ULL;
+constexpr uint64_t MU_NOTIFY_WR_TAG = 0xB4ULL;
 constexpr uint64_t MU_RESP_WR_TAG = 0x4C53000000000000ULL;
 constexpr uint64_t MU_WR_TAG_SHIFT = 56;
 constexpr uint64_t MU_REPL_GEN_SHIFT = 24;
@@ -690,6 +703,100 @@ void service_lock(MuLeaderRuntime& rt, const uint32_t lock_id) {
     }
 }
 
+// Post a batch of notification writes (match syndra's batching approach).
+void post_notify_batch(MuLeaderRuntime& rt) {
+    if (!rt.active_notification.has_value()) return;
+
+    auto& notif = *rt.active_notification;
+    constexpr uint64_t MAX_NOTIFY_BATCH = 1024;  // Match syndra_watch
+    const size_t metadata_offset = WATCH_TABLE_SIZE;
+    const size_t num_followers = rt.follower_indices.size();
+
+    if (num_followers == 0) {
+        // No followers - complete notification immediately
+        MuResponse resp{};
+        resp.op = static_cast<uint8_t>(MuRpcOp::WatchNotify);
+        resp.status = static_cast<uint8_t>(MuRpcStatus::Ok);
+        resp.client_id = notif.client_id;
+        resp.lock_id = notif.object_id;
+        resp.req_id = notif.req_id;
+        resp.granted_slot = static_cast<uint32_t>(notif.total_watchers);
+        send_response(rt, resp);
+        rt.active_notification.reset();
+        return;
+    }
+
+    const uint64_t watchers_remaining = notif.total_watchers - notif.notify_sent;
+    const uint64_t notify_count = std::min(watchers_remaining, MAX_NOTIFY_BATCH);
+    notif.notify_completed = 0;  // Reset for this batch
+
+    for (uint64_t i = 0; i < notify_count; ++i) {
+        const uint64_t watcher_idx = notif.notify_sent + i;
+        const size_t follower_idx = rt.follower_indices[watcher_idx % num_followers];
+        auto& follower = rt.peers[follower_idx];
+
+        auto* local_data = reinterpret_cast<uint64_t*>(
+            rt.local_buf + metadata_offset + (watcher_idx * sizeof(uint64_t)));
+        *local_data = notif.new_version;
+
+        ibv_sge sge{};
+        sge.addr = reinterpret_cast<uintptr_t>(local_data);
+        sge.length = sizeof(uint64_t);
+        sge.lkey = rt.local_mr->lkey;
+
+        ibv_send_wr wr{}, *bad_wr = nullptr;
+        wr.wr_id = (MU_NOTIFY_WR_TAG << MU_WR_TAG_SHIFT);  // Tag for notification completions
+        wr.opcode = IBV_WR_RDMA_WRITE;
+        wr.sg_list = &sge;
+        wr.num_sge = 1;
+        wr.send_flags = IBV_SEND_INLINE | IBV_SEND_SIGNALED;  // Signal every write (match syndra)
+
+        wr.wr.rdma.remote_addr = follower.remote_addr + metadata_offset + (watcher_idx * sizeof(uint64_t));
+        wr.wr.rdma.rkey = follower.rkey;
+
+        if (ibv_post_send(follower.cm_id->qp, &wr, &bad_wr)) {
+            // QP overflow - break and wait for completions (match syndra behavior)
+            if (MU_DEBUG) {
+                std::cerr << "[MuLeader debug] QP overflow at notification " << i << "/" << notify_count
+                          << " for object " << notif.object_id << " (errno=" << errno << ")" << std::endl;
+            }
+            break;
+        }
+        notif.notify_sent++;
+    }
+}
+
+// Handle notification write completion (match syndra's batch completion logic).
+void handle_notify_cqe(MuLeaderRuntime& rt) {
+    if (!rt.active_notification.has_value()) return;
+
+    auto& notif = *rt.active_notification;
+    notif.notify_completed++;
+
+    // Check if current batch is done (all completions received)
+    const uint64_t watchers_remaining = notif.total_watchers - (notif.notify_sent - notif.notify_completed);
+    const uint64_t expected_in_flight = std::min(notif.total_watchers - (notif.notify_sent - notif.notify_completed),
+                                                   static_cast<uint64_t>(1024));
+
+    if (notif.notify_sent < notif.total_watchers) {
+        // More watchers to notify - post next batch when current batch completes
+        if (notif.notify_completed >= notif.notify_sent) {
+            post_notify_batch(rt);
+        }
+    } else if (notif.notify_completed >= notif.notify_sent) {
+        // All notifications complete - send response to client
+        MuResponse resp{};
+        resp.op = static_cast<uint8_t>(MuRpcOp::WatchNotify);
+        resp.status = static_cast<uint8_t>(MuRpcStatus::Ok);
+        resp.client_id = notif.client_id;
+        resp.lock_id = notif.object_id;
+        resp.req_id = notif.req_id;
+        resp.granted_slot = static_cast<uint32_t>(notif.total_watchers);
+        send_response(rt, resp);
+        rt.active_notification.reset();
+    }
+}
+
 // Consume one client RPC, validate basic shape, and enqueue lock-specific work.
 void handle_recv_cqe(MuLeaderRuntime& rt, const ibv_wc& comp) {
     const uint16_t client_id = recv_client_id(comp.wr_id);
@@ -830,97 +937,46 @@ void handle_recv_cqe(MuLeaderRuntime& rt, const ibv_wc& comp) {
     }
 
     if (req.op == static_cast<uint8_t>(MuRpcOp::WatchNotify)) {
-        // Notify all watchers: increment version and distribute notifications via RDMA
-        // Like Synra, we post RDMA_WRITE operations to simulate notification delivery
+        // Start batched notification (match syndra's batching approach)
         const uint32_t object_id = req.lock_id;
 
-        // Increment the version counter
+        // Only one notification at a time (match syndra's active_window constraint)
+        if (rt.active_notification.has_value()) {
+            // Notification already in progress - reject (could queue in production)
+            MuResponse resp{};
+            resp.op = static_cast<uint8_t>(MuRpcOp::WatchNotify);
+            resp.status = static_cast<uint8_t>(MuRpcStatus::InternalError);
+            resp.client_id = req.client_id;
+            resp.lock_id = object_id;
+            resp.req_id = req.req_id;
+            resp.granted_slot = 0;
+            send_response(rt, resp);
+            return;
+        }
+
+        // Increment version counter
         auto* version_ptr = reinterpret_cast<uint64_t*>(
             rt.local_buf + watch_version_offset(object_id));
         const uint64_t new_version = __sync_add_and_fetch(version_ptr, 1);
 
-        // Read the number of registered watchers
+        // Read watcher count
         auto* counter_ptr = reinterpret_cast<uint64_t*>(
             rt.local_buf + watch_counter_offset(object_id));
         const uint64_t num_watchers = *counter_ptr;
 
-        // Post RDMA_WRITE operations to followers to simulate notification delivery
-        // Distribute writes across followers in round-robin fashion
-        const size_t metadata_offset = WATCH_TABLE_SIZE;
-        const size_t num_followers = rt.follower_indices.size();
+        // Initialize notification context
+        rt.active_notification = NotificationCtx{};
+        rt.active_notification->active = true;
+        rt.active_notification->object_id = object_id;
+        rt.active_notification->client_id = req.client_id;
+        rt.active_notification->req_id = req.req_id;
+        rt.active_notification->total_watchers = num_watchers;
+        rt.active_notification->notify_sent = 0;
+        rt.active_notification->notify_completed = 0;
+        rt.active_notification->new_version = new_version;
 
-        if (MU_DEBUG && num_followers == 0) {
-            std::cerr << "[MuLeader debug] No followers available for notifications\n";
-        }
-
-        // Match syndra_watch constraints for fair comparison:
-        // syndra has 8 clients × WATCH_ACTIVE_WINDOW=8 × ~50 watchers = ~3200 concurrent writes
-        // We match this by using the same MAX_NOTIFY_BATCH with batching and completions
-        constexpr uint64_t MAX_NOTIFY_BATCH = 1024;  // Same as syndra_watch
-        const uint64_t notify_limit = std::min(num_watchers, MAX_NOTIFY_BATCH);
-
-        // Use selective signaling like mu_pipeline to prevent CQ overflow
-        // Signal every Nth notification to match MU_SERVER_SEND_SIGNAL_EVERY pattern
-        // Increased from 128 to 256 for larger workloads with more watchers
-        constexpr size_t NOTIFY_SIGNAL_EVERY = 256;
-
-        for (uint64_t i = 0; i < notify_limit && i < MAX_WATCHERS_PER_OBJECT; ++i) {
-            if (num_followers == 0) {
-                // No followers - just write locally (for single-node testing)
-                auto* invalidation_marker = reinterpret_cast<uint64_t*>(
-                    rt.local_buf + metadata_offset + (i * sizeof(uint64_t)));
-                *invalidation_marker = new_version;
-                continue;
-            }
-
-            // Choose follower in round-robin fashion
-            const size_t follower_idx = rt.follower_indices[i % num_followers];
-            auto& follower = rt.peers[follower_idx];
-
-            // Prepare notification data (write version as invalidation marker)
-            auto* local_data = reinterpret_cast<uint64_t*>(
-                rt.local_buf + metadata_offset + (i * sizeof(uint64_t)));
-            *local_data = new_version;
-
-            ibv_sge sge{};
-            sge.addr = reinterpret_cast<uintptr_t>(local_data);
-            sge.length = sizeof(uint64_t);
-            sge.lkey = rt.local_mr->lkey;
-
-            // Selective signaling: only signal every Nth notification
-            const bool should_signal = ((i + 1) % NOTIFY_SIGNAL_EVERY == 0) || (i == notify_limit - 1);
-
-            ibv_send_wr wr{}, *bad_wr = nullptr;
-            wr.wr_id = MU_RESP_WR_TAG | 0xFFFF;  // Special tag for notifications
-            wr.opcode = IBV_WR_RDMA_WRITE;
-            wr.sg_list = &sge;
-            wr.num_sge = 1;
-            wr.send_flags = IBV_SEND_INLINE | (should_signal ? IBV_SEND_SIGNALED : 0);
-
-            // Write to follower's metadata region
-            wr.wr.rdma.remote_addr = follower.remote_addr + metadata_offset + (i * sizeof(uint64_t));
-            wr.wr.rdma.rkey = follower.rkey;
-
-            if (ibv_post_send(follower.cm_id->qp, &wr, &bad_wr)) {
-                std::cerr << "[MuLeader error] Failed to post notification write " << i << "/" << num_watchers
-                          << " for object " << object_id << " (follower_idx=" << follower_idx
-                          << " remote_addr=" << std::hex << follower.remote_addr
-                          << " rkey=" << follower.rkey << std::dec
-                          << " errno=" << errno << ")" << std::endl;
-                // Continue instead of throwing to allow partial notifications
-                break;
-            }
-        }
-
-        // Send acknowledgment to the notifier
-        MuResponse resp{};
-        resp.op = static_cast<uint8_t>(MuRpcOp::WatchNotify);
-        resp.status = static_cast<uint8_t>(MuRpcStatus::Ok);
-        resp.client_id = req.client_id;
-        resp.lock_id = object_id;
-        resp.req_id = req.req_id;
-        resp.granted_slot = static_cast<uint32_t>(num_watchers);
-        send_response(rt, resp);
+        // Post first batch
+        post_notify_batch(rt);
         return;
     }
 
@@ -1125,6 +1181,13 @@ void MuLeader::run() {
             // Replication completions advance quorum and may commit/apply global-log mutations.
             if (is_repl_wr_id(comp.wr_id)) {
                 handle_repl_cqe(rt, comp);
+                continue;
+            }
+
+            // Notification write completions (batched like syndra)
+            if ((comp.wr_id >> MU_WR_TAG_SHIFT) == MU_NOTIFY_WR_TAG) {
+                handle_notify_cqe(rt);
+                continue;
             }
         }
 
