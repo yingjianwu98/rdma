@@ -11,12 +11,14 @@ wait
 echo "Cleanup complete."
 
 EXPERIMENTS=(
-    "10000:Experiment 1"
-    "30000:Experiment 2"
-    "50000:Experiment 3"
-    "100000:Experiment 4"
-    "200000:Experiment 5"
-    "500000:Experiment 6"
+    "1000:Experiment 1"
+    "5000:Experiment 2"
+    "10000:Experiment 3"
+    "30000:Experiment 4"
+    "50000:Experiment 5"
+    "100000:Experiment 6"
+    "200000:Experiment 7"
+    "500000:Experiment 8"
 )
 
 for exp in "${EXPERIMENTS[@]}"; do
