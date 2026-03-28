@@ -351,16 +351,17 @@ void run_mu_watch_pipeline(
                     active--;
                     total_registrations_completed++;
 
-                    // Check if registration phase is complete
-                    if (completed >= registration_ops) {
-                        in_registration_phase = false;
-                        if (!registration_timing_done) {
-                            registration_end_time = std::chrono::steady_clock::now();
-                            registration_timing_done = true;
-                        }
+                    // Mark registration phase timing as done when last registration completes
+                    if (completed >= registration_ops && !registration_timing_done) {
+                        registration_end_time = std::chrono::steady_clock::now();
+                        registration_timing_done = true;
                     }
 
                     if (submitted < NUM_OPS_PER_CLIENT) {
+                        // Switch to notification phase when we've submitted all registrations
+                        if (submitted >= registration_ops) {
+                            in_registration_phase = false;
+                        }
                         submit_op(op_slot);
                     }
                 } else if (op.phase == MuWatchPhase::wait_notify_ack) {
