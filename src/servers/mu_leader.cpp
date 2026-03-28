@@ -1143,10 +1143,13 @@ void handle_repl_cqe(MuLeaderRuntime& rt, const ibv_wc& comp) {
 void MuLeader::run() {
     // Size the global mutation pool from the number of locks this leader owns
     // and the maximum append concurrency we allow per lock.
+    // Also account for watch registrations which share the same mutation pool.
     const uint32_t num_clients = expected_clients();
     const size_t handled_locks = static_cast<size_t>(lock_end_ - lock_start_);
+    const size_t lock_pool = handled_locks * (MU_MAX_APPEND_INFLIGHT_PER_LOCK + 1);
+    const size_t watch_pool = MAX_LOCKS * (MU_MAX_REGISTER_INFLIGHT_PER_OBJECT + 1);
     const size_t mutation_pool_size = std::max<size_t>(
-        handled_locks * (MU_MAX_APPEND_INFLIGHT_PER_LOCK + 1),
+        lock_pool + watch_pool,
         MU_MAX_APPEND_INFLIGHT_PER_LOCK + 1);
 
     if (mutation_pool_size > MU_REPL_ID_MASK) {
