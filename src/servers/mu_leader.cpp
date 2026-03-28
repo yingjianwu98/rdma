@@ -859,9 +859,9 @@ void handle_recv_cqe(MuLeaderRuntime& rt, const ibv_wc& comp) {
         constexpr uint64_t MAX_NOTIFY_BATCH = 1024;  // Same as syndra_watch
         const uint64_t notify_limit = std::min(num_watchers, MAX_NOTIFY_BATCH);
 
-        // Drain frequently to match syndra_watch behavior
-        // syndra posts batches with all signaled, we signal frequently and drain
-        constexpr size_t DRAIN_EVERY = 64;
+        // Use selective signaling like mu_pipeline to prevent CQ overflow
+        // Signal every Nth notification to match MU_SERVER_SEND_SIGNAL_EVERY pattern
+        constexpr size_t NOTIFY_SIGNAL_EVERY = 128;
 
         for (uint64_t i = 0; i < notify_limit && i < MAX_WATCHERS_PER_OBJECT; ++i) {
             if (num_followers == 0) {
@@ -886,12 +886,15 @@ void handle_recv_cqe(MuLeaderRuntime& rt, const ibv_wc& comp) {
             sge.length = sizeof(uint64_t);
             sge.lkey = rt.local_mr->lkey;
 
+            // Selective signaling: only signal every Nth notification
+            const bool should_signal = ((i + 1) % NOTIFY_SIGNAL_EVERY == 0) || (i == notify_limit - 1);
+
             ibv_send_wr wr{}, *bad_wr = nullptr;
             wr.wr_id = MU_RESP_WR_TAG | 0xFFFF;  // Special tag for notifications
             wr.opcode = IBV_WR_RDMA_WRITE;
             wr.sg_list = &sge;
             wr.num_sge = 1;
-            wr.send_flags = IBV_SEND_INLINE | IBV_SEND_SIGNALED;  // Always signal to prevent QP overflow
+            wr.send_flags = IBV_SEND_INLINE | (should_signal ? IBV_SEND_SIGNALED : 0);
 
             // Write to follower's metadata region
             wr.wr.rdma.remote_addr = follower.remote_addr + metadata_offset + (i * sizeof(uint64_t));
@@ -905,16 +908,6 @@ void handle_recv_cqe(MuLeaderRuntime& rt, const ibv_wc& comp) {
                           << " errno=" << errno << ")" << std::endl;
                 // Continue instead of throwing to allow partial notifications
                 break;
-            }
-
-            // Drain CQ periodically to avoid QP overflow (match syndra pattern)
-            if ((i + 1) % DRAIN_EVERY == 0) {
-                ibv_wc wc[64];
-                // Drain all pending completions (just to clear CQ, process them in main loop)
-                for (int drain_iter = 0; drain_iter < 16; ++drain_iter) {
-                    const int polled = ibv_poll_cq(rt.cq, 64, wc);
-                    if (polled <= 0) break;
-                }
             }
         }
 
