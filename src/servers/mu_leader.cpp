@@ -773,18 +773,18 @@ void handle_notify_cqe(MuLeaderRuntime& rt) {
     auto& notif = *rt.active_notification;
     notif.notify_completed++;
 
-    // Check if current batch is done (all completions received)
-    const uint64_t watchers_remaining = notif.total_watchers - (notif.notify_sent - notif.notify_completed);
-    const uint64_t expected_in_flight = std::min(notif.total_watchers - (notif.notify_sent - notif.notify_completed),
-                                                   static_cast<uint64_t>(1024));
-
     if (notif.notify_sent < notif.total_watchers) {
         // More watchers to notify - post next batch when current batch completes
         if (notif.notify_completed >= notif.notify_sent) {
+            std::cerr << "[MuLeader debug] Posting next batch: completed=" << notif.notify_completed
+                      << " sent=" << notif.notify_sent << " total=" << notif.total_watchers << std::endl;
             post_notify_batch(rt);
         }
     } else if (notif.notify_completed >= notif.notify_sent) {
         // All notifications complete - send response to client
+        std::cerr << "[MuLeader debug] All notifications done for object " << notif.object_id
+                  << ": sent=" << notif.notify_sent << " completed=" << notif.notify_completed
+                  << " total_watchers=" << notif.total_watchers << std::endl;
         MuResponse resp{};
         resp.op = static_cast<uint8_t>(MuRpcOp::WatchNotify);
         resp.status = static_cast<uint8_t>(MuRpcStatus::Ok);
@@ -974,6 +974,9 @@ void handle_recv_cqe(MuLeaderRuntime& rt, const ibv_wc& comp) {
         rt.active_notification->notify_sent = 0;
         rt.active_notification->notify_completed = 0;
         rt.active_notification->new_version = new_version;
+
+        std::cerr << "[MuLeader debug] Starting notification for object " << object_id
+                  << " with " << num_watchers << " watchers" << std::endl;
 
         // Post first batch
         post_notify_batch(rt);
