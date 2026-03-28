@@ -408,11 +408,11 @@ void advance_commit_tail(MuLeaderRuntime& rt) {
         if (it == rt.slot_to_mutation.end()) {
             if (rt.global_commit_tail == last_tail) {
                 stuck_count++;
-                if (stuck_count == 1 || stuck_count % 100000000 == 0) {
-                    std::cerr << "[MuLeader] advance_commit_tail: slot " << rt.global_commit_tail
-                              << " not in map (stuck_count=" << stuck_count << ")" << std::endl;
-                    std::cerr.flush();
-                }
+                // if (stuck_count == 1 || stuck_count % 100000000 == 0) {
+                //     std::cerr << "[MuLeader] advance_commit_tail: slot " << rt.global_commit_tail
+                //               << " not in map (stuck_count=" << stuck_count << ")" << std::endl;
+                //     std::cerr.flush();
+                // }
             } else {
                 last_tail = rt.global_commit_tail;
                 stuck_count = 0;
@@ -425,15 +425,15 @@ void advance_commit_tail(MuLeaderRuntime& rt) {
         if (!ctx.in_use || !ctx.quorum_done || ctx.applied) {
             if (rt.global_commit_tail == last_tail) {
                 stuck_count++;
-                if (stuck_count == 1 || stuck_count % 100000000 == 0) {
-                    std::cerr << "[MuLeader] advance_commit_tail: slot " << rt.global_commit_tail
-                              << " mutation_id=" << mutation_id
-                              << " in_use=" << ctx.in_use
-                              << " quorum_done=" << ctx.quorum_done
-                              << " applied=" << ctx.applied
-                              << " (stuck_count=" << stuck_count << ")" << std::endl;
-                    std::cerr.flush();
-                }
+                // if (stuck_count == 1 || stuck_count % 100000000 == 0) {
+                //     std::cerr << "[MuLeader] advance_commit_tail: slot " << rt.global_commit_tail
+                //               << " mutation_id=" << mutation_id
+                //               << " in_use=" << ctx.in_use
+                //               << " quorum_done=" << ctx.quorum_done
+                //               << " applied=" << ctx.applied
+                //               << " (stuck_count=" << stuck_count << ")" << std::endl;
+                //     std::cerr.flush();
+                // }
             } else {
                 last_tail = rt.global_commit_tail;
                 stuck_count = 0;
@@ -463,15 +463,15 @@ void post_mutation_writes(MuLeaderRuntime& rt, const uint32_t mutation_id) {
         rt.repl_signal_cursor = (rt.repl_signal_cursor + signaled_to_track) % followers;
     }
 
-    static uint64_t post_count = 0;
-    const bool debug_post = (post_count < 5) || (post_count % 10000 == 0);
-    if (debug_post) {
-        std::cerr << "[MuLeader] post_mutation_writes #" << post_count
-                  << " mutation_id=" << mutation_id
-                  << " global_slot=" << ctx.global_slot
-                  << " followers=" << followers << std::endl;
-        std::cerr.flush();
-    }
+    // static uint64_t post_count = 0;
+    // const bool debug_post = (post_count < 5) || (post_count % 10000 == 0);
+    // if (debug_post) {
+    //     std::cerr << "[MuLeader] post_mutation_writes #" << post_count
+    //               << " mutation_id=" << mutation_id
+    //               << " global_slot=" << ctx.global_slot
+    //               << " followers=" << followers << std::endl;
+    //     std::cerr.flush();
+    // }
 
     for (size_t follower_pos = 0; follower_pos < rt.follower_indices.size(); ++follower_pos) {
         const size_t follower_idx = rt.follower_indices[follower_pos];
@@ -510,7 +510,7 @@ void post_mutation_writes(MuLeaderRuntime& rt, const uint32_t mutation_id) {
         }
     }
 
-    post_count++;
+    // post_count++;
 
     // Remove periodic drain - main event loop handles all CQ polling
 
@@ -582,16 +582,16 @@ void start_register_watch(MuLeaderRuntime& rt, const uint32_t object_id) {
 
 // Replicate watch registration to followers (same pattern as post_mutation_writes)
 void post_watch_writes(MuLeaderRuntime& rt, const uint32_t mutation_id, const uint32_t object_id, const uint64_t slot) {
-    static uint64_t call_count = 0;
-    const bool debug_this = call_count < 10 || call_count % 10000 == 0;
-    if (debug_this) {
-        std::cerr << "[MuLeader] post_watch_writes #" << call_count
-                  << " mutation_id=" << mutation_id
-                  << " object=" << object_id
-                  << " slot=" << slot << std::endl;
-        std::cerr.flush();
-    }
-    call_count++;
+    // static uint64_t call_count = 0;
+    // const bool debug_this = call_count < 10 || call_count % 10000 == 0;
+    // if (debug_this) {
+    //     std::cerr << "[MuLeader] post_watch_writes #" << call_count
+    //               << " mutation_id=" << mutation_id
+    //               << " object=" << object_id
+    //               << " slot=" << slot << std::endl;
+    //     std::cerr.flush();
+    // }
+    // call_count++;
 
     auto& ctx = rt.mutations[mutation_id];
     auto* watcher_slot_ptr = rt.local_buf + watch_id_slot_offset(object_id, slot);
@@ -603,15 +603,15 @@ void post_watch_writes(MuLeaderRuntime& rt, const uint32_t mutation_id, const ui
         rt.repl_signal_cursor = (rt.repl_signal_cursor + signaled_to_track) % followers;
     }
 
-    if (debug_this) {
-        std::cerr << "[MuLeader] post_watch_writes: followers=" << followers
-                  << " quorum_needed=" << quorum_needed
-                  << " signaled_to_track=" << signaled_to_track
-                  << " signal_start=" << signal_start
-                  << " quorum_only=" << rt.quorum_only_signal
-                  << " ack_count=" << ctx.ack_count << std::endl;
-        std::cerr.flush();
-    }
+    // if (debug_this) {
+    //     std::cerr << "[MuLeader] post_watch_writes: followers=" << followers
+    //               << " quorum_needed=" << quorum_needed
+    //               << " signaled_to_track=" << signaled_to_track
+    //               << " signal_start=" << signal_start
+    //               << " quorum_only=" << rt.quorum_only_signal
+    //               << " ack_count=" << ctx.ack_count << std::endl;
+    //     std::cerr.flush();
+    // }
 
     for (size_t follower_pos = 0; follower_pos < rt.follower_indices.size(); ++follower_pos) {
         const size_t follower_idx = rt.follower_indices[follower_pos];
@@ -648,18 +648,18 @@ void post_watch_writes(MuLeaderRuntime& rt, const uint32_t mutation_id, const ui
 
         // Always track completion since we always signal
         ctx.pending_followers++;
-        if (debug_this) {
-            std::cerr << "[MuLeader] post_watch_writes: signaled follower_pos=" << follower_pos
-                      << " follower_idx=" << follower_idx
-                      << " pending_followers=" << ctx.pending_followers << std::endl;
-            std::cerr.flush();
-        }
+        // if (debug_this) {
+        //     std::cerr << "[MuLeader] post_watch_writes: signaled follower_pos=" << follower_pos
+        //               << " follower_idx=" << follower_idx
+        //               << " pending_followers=" << ctx.pending_followers << std::endl;
+        //     std::cerr.flush();
+        // }
     }
 
-    if (debug_this) {
-        std::cerr << "[MuLeader] post_watch_writes: DONE pending_followers=" << ctx.pending_followers << std::endl;
-        std::cerr.flush();
-    }
+    // if (debug_this) {
+    //     std::cerr << "[MuLeader] post_watch_writes: DONE pending_followers=" << ctx.pending_followers << std::endl;
+    //     std::cerr.flush();
+    // }
 
     if (ctx.pending_followers == 0) {
         ctx.quorum_done = true;
@@ -832,8 +832,8 @@ void start_notification(MuLeaderRuntime& rt, const MuRequest& req) {
     rt.active_notification->notify_completed = 0;
     rt.active_notification->new_version = new_version;
 
-    std::cerr << "[MuLeader debug] Starting notification for object " << object_id
-              << " with " << num_watchers << " watchers" << std::endl;
+    // std::cerr << "[MuLeader debug] Starting notification for object " << object_id
+    //           << " with " << num_watchers << " watchers" << std::endl;
 }
 
 // Process next pending notification from queue
@@ -902,10 +902,10 @@ void post_notify_batch(MuLeaderRuntime& rt) {
 
         if (ibv_post_send(follower.cm_id->qp, &wr, &bad_wr)) {
             // QP overflow - break and wait for completions (match syndra behavior)
-            if (MU_DEBUG) {
-                std::cerr << "[MuLeader debug] QP overflow at notification " << i << "/" << notify_count
-                          << " for object " << notif.object_id << " (errno=" << errno << ")" << std::endl;
-            }
+            // if (MU_DEBUG) {
+            //     std::cerr << "[MuLeader debug] QP overflow at notification " << i << "/" << notify_count
+            //               << " for object " << notif.object_id << " (errno=" << errno << ")" << std::endl;
+            // }
             break;
         }
         notif.notify_sent++;
@@ -922,15 +922,15 @@ void handle_notify_cqe(MuLeaderRuntime& rt) {
     if (notif.notify_sent < notif.total_watchers) {
         // More watchers to notify - post next batch when current batch completes
         if (notif.notify_completed >= notif.notify_sent) {
-            std::cerr << "[MuLeader debug] Posting next batch: completed=" << notif.notify_completed
-                      << " sent=" << notif.notify_sent << " total=" << notif.total_watchers << std::endl;
+            // std::cerr << "[MuLeader debug] Posting next batch: completed=" << notif.notify_completed
+            //           << " sent=" << notif.notify_sent << " total=" << notif.total_watchers << std::endl;
             post_notify_batch(rt);
         }
     } else if (notif.notify_completed >= notif.notify_sent) {
         // All notifications complete - send response to client
-        std::cerr << "[MuLeader debug] All notifications done for object " << notif.object_id
-                  << ": sent=" << notif.notify_sent << " completed=" << notif.notify_completed
-                  << " total_watchers=" << notif.total_watchers << std::endl;
+        // std::cerr << "[MuLeader debug] All notifications done for object " << notif.object_id
+        //           << ": sent=" << notif.notify_sent << " completed=" << notif.notify_completed
+        //           << " total_watchers=" << notif.total_watchers << std::endl;
         MuResponse resp{};
         resp.op = static_cast<uint8_t>(MuRpcOp::WatchNotify);
         resp.status = static_cast<uint8_t>(MuRpcStatus::Ok);
@@ -1082,51 +1082,51 @@ void handle_repl_cqe(MuLeaderRuntime& rt, const ibv_wc& comp) {
 
     auto& ctx = rt.mutations[mutation_id];
     if (!ctx.in_use || ctx.generation != repl_generation(comp.wr_id)) {
-        static uint64_t stale_count = 0;
-        if (stale_count < 10) {
-            std::cerr << "[MuLeader] handle_repl_cqe: stale completion mutation_id=" << mutation_id
-                      << " in_use=" << ctx.in_use << " gen_match=" << (ctx.generation == repl_generation(comp.wr_id)) << std::endl;
-            std::cerr.flush();
-        }
-        stale_count++;
+        // static uint64_t stale_count = 0;
+        // if (stale_count < 10) {
+        //     std::cerr << "[MuLeader] handle_repl_cqe: stale completion mutation_id=" << mutation_id
+        //               << " in_use=" << ctx.in_use << " gen_match=" << (ctx.generation == repl_generation(comp.wr_id)) << std::endl;
+        //     std::cerr.flush();
+        // }
+        // stale_count++;
         return;
     }
 
     if (ctx.pending_followers == 0) {
-        static uint64_t zero_pending_count = 0;
-        if (zero_pending_count < 10) {
-            std::cerr << "[MuLeader] handle_repl_cqe: pending_followers already 0 for mutation_id=" << mutation_id << std::endl;
-            std::cerr.flush();
-        }
-        zero_pending_count++;
+        // static uint64_t zero_pending_count = 0;
+        // if (zero_pending_count < 10) {
+        //     std::cerr << "[MuLeader] handle_repl_cqe: pending_followers already 0 for mutation_id=" << mutation_id << std::endl;
+        //     std::cerr.flush();
+        // }
+        // zero_pending_count++;
         return;
     }
 
     ctx.pending_followers--;
     ctx.ack_count++;
 
-    static uint64_t ack_count = 0;
-    const bool debug_ack = (ack_count < 20) || (ack_count % 10000 == 0);
-    if (debug_ack) {
-        std::cerr << "[MuLeader] handle_repl_cqe #" << ack_count
-                  << " mutation_id=" << mutation_id
-                  << " ack_count=" << ctx.ack_count
-                  << " pending=" << ctx.pending_followers
-                  << " quorum_done=" << ctx.quorum_done
-                  << " wr_id=0x" << std::hex << comp.wr_id << std::dec
-                  << " qp_num=" << comp.qp_num << std::endl;
-        std::cerr.flush();
-    }
-    ack_count++;
+    // static uint64_t ack_count = 0;
+    // const bool debug_ack = (ack_count < 20) || (ack_count % 10000 == 0);
+    // if (debug_ack) {
+    //     std::cerr << "[MuLeader] handle_repl_cqe #" << ack_count
+    //               << " mutation_id=" << mutation_id
+    //               << " ack_count=" << ctx.ack_count
+    //               << " pending=" << ctx.pending_followers
+    //               << " quorum_done=" << ctx.quorum_done
+    //               << " wr_id=0x" << std::hex << comp.wr_id << std::dec
+    //               << " qp_num=" << comp.qp_num << std::endl;
+    //     std::cerr.flush();
+    // }
+    // ack_count++;
 
     if (!ctx.quorum_done && ctx.ack_count >= QUORUM) {
-        static uint64_t quorum_reached_count = 0;
-        if (quorum_reached_count < 10) {
-            std::cerr << "[MuLeader] handle_repl_cqe: QUORUM REACHED for mutation_id=" << mutation_id
-                      << " ack_count=" << ctx.ack_count << " QUORUM=" << QUORUM << std::endl;
-            std::cerr.flush();
-        }
-        quorum_reached_count++;
+        // static uint64_t quorum_reached_count = 0;
+        // if (quorum_reached_count < 10) {
+        //     std::cerr << "[MuLeader] handle_repl_cqe: QUORUM REACHED for mutation_id=" << mutation_id
+        //               << " ack_count=" << ctx.ack_count << " QUORUM=" << QUORUM << std::endl;
+        //     std::cerr.flush();
+        // }
+        // quorum_reached_count++;
         ctx.quorum_done = true;
         advance_commit_tail(rt);
     }
@@ -1222,12 +1222,12 @@ void MuLeader::run() {
     while (true) {
         const int n = ibv_poll_cq(rt.cq, 512, wc);
         total_poll_count++;
-        if (total_poll_count % 100000000 == 0) {
-            std::cerr << "[MuLeader " << rt.node_id << "] poll_count=" << total_poll_count
-                      << " free_mutations=" << rt.free_mutations.size()
-                      << " global_commit=" << rt.global_commit_tail << std::endl;
-            std::cerr.flush();
-        }
+        // if (total_poll_count % 100000000 == 0) {
+        //     std::cerr << "[MuLeader " << rt.node_id << "] poll_count=" << total_poll_count
+        //               << " free_mutations=" << rt.free_mutations.size()
+        //               << " global_commit=" << rt.global_commit_tail << std::endl;
+        //     std::cerr.flush();
+        // }
         if (n < 0) {
             throw std::runtime_error("MuLeader: CQ poll failed");
         }
