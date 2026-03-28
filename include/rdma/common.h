@@ -106,7 +106,7 @@ constexpr uint32_t MU_CLIENT_SEND_SIGNAL_EVERY = 64;
 constexpr uint32_t MU_SERVER_SEND_SIGNAL_EVERY = 128;
 constexpr double MU_ZIPF_SKEW = 0.0;  // Match watch_pipeline: uniform distribution
 constexpr bool MU_DEBUG = false;
-constexpr bool MU_REPL_SIGNAL_QUORUM_ONLY = false;  // FIXME: true causes QP overflow - unsignaled sends accumulate
+constexpr bool MU_REPL_SIGNAL_QUORUM_ONLY = true;  // Signal only quorum writes to prevent CQ overflow
 constexpr size_t MU_GLOBAL_LOG_CAPACITY = NUM_OPS * 2;
 
 // ─── Watch config ───

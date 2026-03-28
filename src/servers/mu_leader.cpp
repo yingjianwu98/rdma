@@ -451,37 +451,17 @@ void post_mutation_writes(MuLeaderRuntime& rt, const uint32_t mutation_id) {
         wr.opcode = IBV_WR_RDMA_WRITE;
         wr.sg_list = &sge;
         wr.num_sge = 1;
-        // ALWAYS signal replication writes to prevent QP overflow
-        wr.send_flags = IBV_SEND_INLINE | IBV_SEND_SIGNALED;
+        wr.send_flags = IBV_SEND_INLINE | (should_signal ? IBV_SEND_SIGNALED : 0);
         wr.wr.rdma.remote_addr = follower.remote_addr + mu_global_log_slot_offset(ctx.global_slot);
         wr.wr.rdma.rkey = follower.rkey;
 
-        // Check QP state before posting
-        ibv_qp_attr qp_attr{};
-        ibv_qp_init_attr qp_init_attr{};
-        if (debug_post && ibv_query_qp(follower.cm_id->qp, &qp_attr, IBV_QP_STATE, &qp_init_attr) == 0) {
-            std::cerr << "[MuLeader] QP to follower " << follower_idx
-                      << " state=" << qp_attr.qp_state
-                      << " (RTS=3, SQE=4, ERR=5)" << std::endl;
-            std::cerr.flush();
-        }
-
         if (ibv_post_send(follower.cm_id->qp, &wr, &bad_wr)) {
-            std::cerr << "[MuLeader ERROR] Failed to post write to follower " << follower_idx
-                      << " errno=" << errno << " (" << strerror(errno) << ")" << std::endl;
-            std::cerr.flush();
             throw std::runtime_error("MuLeader: failed to replicate mutation");
         }
 
-        if (debug_post) {
-            std::cerr << "[MuLeader] Posted write to follower " << follower_idx
-                      << " wr_id=0x" << std::hex << wr.wr_id << std::dec
-                      << " pending_followers=" << (ctx.pending_followers + 1) << std::endl;
-            std::cerr.flush();
+        if (should_signal) {
+            ctx.pending_followers++;
         }
-
-        // Always track completion since we always signal
-        ctx.pending_followers++;
     }
 
     post_count++;
