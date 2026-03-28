@@ -4,7 +4,7 @@
 
 # Kill any leftover rdma processes before starting
 echo "Cleaning up any leftover rdma processes..."
-for host in apt128 apt132 apt095 apt104 apt112; do
+for host in apt128 apt132 apt095 apt104 apt112 apt121; do
     ssh stevie98@${host}.apt.emulab.net "sudo pkill -9 rdma || true" > /dev/null 2>&1 &
 done
 wait
@@ -35,34 +35,34 @@ for exp in "${EXPERIMENTS[@]}"; do
     git commit -m "$NAME: $NUM_OPS ops"
     git push
 
-    # Rebuild all nodes in parallel
-    for host in apt128 apt132 apt095 apt104 apt112; do
+    # Rebuild all nodes in parallel (servers + client)
+    for host in apt128 apt132 apt095 apt104 apt112 apt121; do
         ssh stevie98@${host}.apt.emulab.net "cd /local/rdma && git checkout yingjianw/wip && git pull origin yingjianw/wip && cd build && make -j" > /dev/null 2>&1 &
     done
     wait  # Wait for all rebuilds to complete
 
-    # Kill servers
-    echo "Stopping servers..."
-    for host in apt128 apt132 apt095 apt104 apt112; do
+    # Kill all RDMA processes (servers + client)
+    echo "Stopping all RDMA processes..."
+    for host in apt128 apt132 apt095 apt104 apt112 apt121; do
         ssh stevie98@${host}.apt.emulab.net "sudo pkill -9 rdma || true" &
     done
     wait
 
-    # Verify all servers are stopped
-    echo "Verifying servers are stopped..."
+    # Verify all RDMA processes are stopped
+    echo "Verifying all processes stopped..."
     for attempt in {1..10}; do
         all_stopped=true
-        for host in apt128 apt132 apt095 apt104 apt112; do
+        for host in apt128 apt132 apt095 apt104 apt112 apt121; do
             if ssh stevie98@${host}.apt.emulab.net "pgrep -x rdma > /dev/null 2>&1"; then
                 all_stopped=false
                 break
             fi
         done
         if [ "$all_stopped" = true ]; then
-            echo "✓ All servers stopped"
+            echo "✓ All processes stopped"
             break
         fi
-        echo "  Waiting for servers to stop (attempt $attempt/10)..."
+        echo "  Waiting for processes to stop (attempt $attempt/10)..."
         sleep 1
     done
 
@@ -82,8 +82,8 @@ for exp in "${EXPERIMENTS[@]}"; do
     sleep 5
     echo "✓ Servers started"
 
-    # Run client on apt128 (leader node) - syndra_watch requires all server nodes to be free for peer connections
-    ssh stevie98@apt128.apt.emulab.net "cd /local/rdma/build && sudo IS_CLIENT=1 MACHINE_ID=0 timeout 240 ./rdma 2>&1" > "/tmp/exp_${NUM_OPS}.log"
+    # Run client on apt121 (dedicated client node)
+    ssh stevie98@apt121.apt.emulab.net "cd /local/rdma/build && sudo IS_CLIENT=1 MACHINE_ID=0 timeout 240 ./rdma 2>&1" > "/tmp/exp_${NUM_OPS}.log"
 
     echo ""
     echo "========================================="
