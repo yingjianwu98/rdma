@@ -68,7 +68,7 @@ constexpr size_t CAS_ACTIVE_WINDOW = 8;
 constexpr size_t CAS_CQ_BATCH = 32;
 constexpr double CAS_ZIPF_SKEW = 0.5;
 constexpr bool CAS_SHARD_OWNER = true;
-constexpr size_t CAS_LOG_CAPACITY = 64;  // Reduced to fit small experiments (was TOTAL_CLIENTS * CAS_ACTIVE_WINDOW * 4 = 256)
+constexpr size_t CAS_LOG_CAPACITY = 32;  // Reduced to fit small experiments (was TOTAL_CLIENTS * CAS_ACTIVE_WINDOW * 4 = 256)
 constexpr bool CAS_RELEASE_CONTROL_USE_CAS = false;
 constexpr bool CAS_RELEASE_LOG_USE_CAS = true;
 
@@ -86,7 +86,7 @@ constexpr bool SIMPLE_CAS_RELEASE_USE_CAS = false;
 
 constexpr size_t TICKET_FAA_ACTIVE_WINDOW = 8;
 constexpr bool TICKET_FAA_SHARD_OWNER = true;
-constexpr size_t TICKET_FAA_LOG_CAPACITY = 64;  // Reduced to fit small experiments (was TOTAL_CLIENTS * TICKET_FAA_ACTIVE_WINDOW * 4 = 256)
+constexpr size_t TICKET_FAA_LOG_CAPACITY = 32;  // Reduced to fit small experiments (was TOTAL_CLIENTS * TICKET_FAA_ACTIVE_WINDOW * 4 = 256)
 constexpr size_t TICKET_FAA_CQ_BATCH = 32;
 constexpr double TICKET_FAA_ZIPF_SKEW = 0.5;
 constexpr uint32_t TICKET_FAA_REPLICATE_RETRY_SPIN = 64;
