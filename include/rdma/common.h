@@ -32,7 +32,7 @@ inline const std::vector<std::string> CLUSTER_NODES = {
 
 // change these two variables together
 inline const std::vector<std::string> CLIENT_NODES = {
-    "192.168.1.22",  // Run client on apt132 (not on leader node)
+    "192.168.1.15",  // Run client on apt121 (dedicated client node)
 };
 
 constexpr size_t TOTAL_CLIENT_MACHINES = 1;
