@@ -3,11 +3,12 @@
 # Run all 5 experiments with phase-separated metrics
 
 EXPERIMENTS=(
-    "64000:Experiment 1"
-    "320000:Experiment 2"
-    "640000:Experiment 3"
-    "960000:Experiment 4"
-    "1280000:Experiment 5"
+    "10000:Experiment 1"
+    "30000:Experiment 2"
+    "50000:Experiment 3"
+    "100000:Experiment 4"
+    "200000:Experiment 5"
+    "500000:Experiment 6"
 )
 
 for exp in "${EXPERIMENTS[@]}"; do

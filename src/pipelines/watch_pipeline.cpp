@@ -404,8 +404,10 @@ void run_watch_pipeline(
     uint32_t next_req_id = 0;
 
     // Two-phase benchmark: mostly registration, small number of notifications
-    const size_t registration_ops = NUM_OPS_PER_CLIENT * 99 / 100;  // 99% registration
-    const size_t notification_ops = NUM_OPS_PER_CLIENT - registration_ops;  // 1% notification
+    // Two-phase benchmark: fixed notification count for consistent measurement
+    constexpr size_t TOTAL_NOTIFICATIONS = 2000;  // Fixed across all experiments
+    const size_t notification_ops = TOTAL_NOTIFICATIONS / TOTAL_CLIENTS;  // Per-client share
+    const size_t registration_ops = NUM_OPS_PER_CLIENT - notification_ops;
     bool in_registration_phase = true;
 
     // Verification statistics
