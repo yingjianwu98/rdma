@@ -454,31 +454,7 @@ void post_mutation_writes(MuLeaderRuntime& rt, const uint32_t mutation_id) {
         ctx.pending_followers++;
     }
 
-    // Periodically drain CQ to prevent QP overflow from accumulated writes
-    static uint32_t repl_write_count = 0;
-    if (++repl_write_count % 64 == 0) {
-        ibv_wc drain_wc[64];
-        const int n = ibv_poll_cq(rt.cq, 64, drain_wc);
-        for (int i = 0; i < n; ++i) {
-            if (drain_wc[i].status != IBV_WC_SUCCESS) {
-                throw std::runtime_error(std::string("MuLeader: drain completion error ") + ibv_wc_status_str(drain_wc[i].status));
-            }
-            // Process replication completions
-            if (is_repl_wr_id(drain_wc[i].wr_id)) {
-                const uint32_t mid = repl_mutation_id(drain_wc[i].wr_id);
-                const uint32_t gen = repl_generation(drain_wc[i].wr_id);
-                auto& mut_ctx = rt.mutations[mid];
-                if (mut_ctx.in_use && mut_ctx.generation == gen && mut_ctx.pending_followers > 0) {
-                    mut_ctx.pending_followers--;
-                    if (mut_ctx.pending_followers == 0) {
-                        mut_ctx.quorum_done = true;
-                        advance_commit_tail(rt);
-                        maybe_release_mutation(rt, mid);
-                    }
-                }
-            }
-        }
-    }
+    // Remove periodic drain - main event loop handles all CQ polling
 
     if (ctx.pending_followers == 0) {
         ctx.quorum_done = true;
