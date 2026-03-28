@@ -1210,11 +1210,13 @@ void MuLeader::run() {
         throw std::runtime_error("MuLeader: failed to register recv buffers");
     }
 
+    std::cerr << "[MuLeader " << rt.node_id << "] Posting " << MU_SERVER_RECV_RING << " recv buffers for " << rt.num_clients << " clients..." << std::endl;
     for (uint16_t client_id = 0; client_id < rt.num_clients; ++client_id) {
         for (uint16_t recv_slot = 0; recv_slot < MU_SERVER_RECV_RING; ++recv_slot) {
             post_recv(rt, client_id, recv_slot);
         }
     }
+    std::cerr << "[MuLeader " << rt.node_id << "] Posted " << (rt.num_clients * MU_SERVER_RECV_RING) << " total recv buffers, entering event loop..." << std::endl;
 
     // Main event loop:
     // 1. poll completions,
