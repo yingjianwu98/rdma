@@ -903,13 +903,7 @@ void handle_recv_cqe(MuLeaderRuntime& rt, const ibv_wc& comp) {
             wr.opcode = IBV_WR_RDMA_WRITE;
             wr.sg_list = &sge;
             wr.num_sge = 1;
-            wr.send_flags = IBV_SEND_INLINE;
-
-            // Signal every 16th write (more frequent for watch notifications to ensure CQ draining works)
-            // With QP_DEPTH=2048 and drain every 256, we need at least 256/16=16 CQEs to drain effectively
-            if (i % 16 == 0) {
-                wr.send_flags |= IBV_SEND_SIGNALED;
-            }
+            wr.send_flags = IBV_SEND_INLINE | IBV_SEND_SIGNALED;  // Always signal to prevent QP overflow
 
             // Write to follower's metadata region
             wr.wr.rdma.remote_addr = follower.remote_addr + metadata_offset + (i * sizeof(uint64_t));
