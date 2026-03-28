@@ -596,8 +596,8 @@ void run_watch_pipeline(
                 // Got watcher IDs, now broadcast notifications
 
                 // Validate watcher IDs
-                const uint64_t* watcher_ids = &buffers.watcher_ids_buffer[op.slot * MAX_WATCHERS_PER_OBJECT];
-                for (size_t i = 0; i < op.total_watchers && i < MAX_WATCHERS_PER_OBJECT; ++i) {
+                const uint64_t* watcher_ids = &buffers.watcher_ids_buffer[op.slot * MAX_NOTIFY_BATCH];
+                for (size_t i = 0; i < op.total_watchers && i < MAX_NOTIFY_BATCH; ++i) {
                     // Extract client ID from watcher ID (top 17 bits)
                     const uint16_t client_from_id = static_cast<uint16_t>(watcher_ids[i] >> 47);
                     if (client_from_id >= TOTAL_CLIENTS) {
