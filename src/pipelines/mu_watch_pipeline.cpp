@@ -354,6 +354,16 @@ void run_mu_watch_pipeline(
                     // Registration ACK received - measure and complete
                     latencies[op.latency_index] = std::chrono::duration_cast<std::chrono::nanoseconds>(
                         std::chrono::steady_clock::now() - op.started_at).count();
+
+                    // Debug: Log slow operations (>1 second)
+                    if (latencies[op.latency_index] > 1000000000) {
+                        std::cerr << "[Client " << client.id() << "] SLOW REGISTRATION: latency_index=" << op.latency_index
+                                  << " latency=" << (latencies[op.latency_index] / 1000000) << "ms"
+                                  << " object_id=" << op.object_id
+                                  << " req_id=" << op.req_id
+                                  << " completed=" << completed << "/" << total_ops << std::endl;
+                    }
+
                     object_counts[op.object_id]++;
 
                     req_to_slot.erase(it);
@@ -380,6 +390,16 @@ void run_mu_watch_pipeline(
                     // Notification ACK received - measure and complete
                     latencies[op.latency_index] = std::chrono::duration_cast<std::chrono::nanoseconds>(
                         std::chrono::steady_clock::now() - op.started_at).count();
+
+                    // Debug: Log slow operations (>1 second)
+                    if (latencies[op.latency_index] > 1000000000) {
+                        std::cerr << "[Client " << client.id() << "] SLOW NOTIFICATION: latency_index=" << op.latency_index
+                                  << " latency=" << (latencies[op.latency_index] / 1000000) << "ms"
+                                  << " object_id=" << op.object_id
+                                  << " req_id=" << op.req_id
+                                  << " completed=" << completed << "/" << total_ops << std::endl;
+                    }
+
                     object_counts[op.object_id]++;
 
                     req_to_slot.erase(it);
