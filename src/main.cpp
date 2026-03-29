@@ -244,7 +244,14 @@ int main() {
 
             // ─── Post-benchmark stats ───
 
-            const size_t local_total_ops = NUM_CLIENTS_PER_MACHINE * NUM_OPS_PER_CLIENT;
+            size_t local_total_ops = NUM_CLIENTS_PER_MACHINE * NUM_OPS_PER_CLIENT;
+
+            // Watch strategies have extra notification ops
+            if (is_watch || is_mu_watch) {
+                constexpr size_t WATCH_EXTRA_NOTIFICATIONS = 2000;
+                local_total_ops += WATCH_EXTRA_NOTIFICATIONS;
+            }
+
             const double wall_s = std::chrono::duration_cast<std::chrono::microseconds>(
                 wall_end - wall_start).count() / 1'000'000.0;
 
@@ -270,6 +277,50 @@ int main() {
             const double goodput = local_total_ops / wall_s;
 
             if (verify_client.load()) delete verify_client.load();
+
+            // ─── Phase-separated stats for watch strategies ───
+            if (is_watch || is_mu_watch) {
+                constexpr size_t WATCH_EXTRA_NOTIFICATIONS = 2000;
+                const size_t registration_ops_total = NUM_TOTAL_OPS;
+                const size_t notification_ops_total = WATCH_EXTRA_NOTIFICATIONS;
+
+                // Separate registration and notification latencies
+                std::vector<uint64_t> reg_lats, notif_lats;
+                reg_lats.reserve(registration_ops_total);
+                notif_lats.reserve(notification_ops_total);
+
+                for (size_t i = 0; i < local_total_ops; ++i) {
+                    if (i < registration_ops_total) {
+                        reg_lats.push_back((*all_latencies)[i]);
+                    } else {
+                        notif_lats.push_back((*all_latencies)[i]);
+                    }
+                }
+
+                std::sort(reg_lats.begin(), reg_lats.end());
+                std::sort(notif_lats.begin(), notif_lats.end());
+
+                auto calc_p = [](const std::vector<uint64_t>& lats, double p) -> double {
+                    if (lats.empty()) return 0.0;
+                    size_t idx = static_cast<size_t>(p * (lats.size() - 1));
+                    return lats[std::min(idx, lats.size() - 1)] / 1000.0;
+                };
+
+                std::cout << "\n" << std::string(50, '=') << "\n";
+                std::cout << " PHASE-SEPARATED RESULTS\n";
+                std::cout << std::string(50, '=') << "\n";
+                std::cout << "REGISTRATION PHASE (" << registration_ops_total << " ops):\n";
+                std::cout << "  P50:   " << std::fixed << std::setprecision(2) << std::setw(8) << calc_p(reg_lats, 0.50) << " μs\n";
+                std::cout << "  P90:   " << std::setw(8) << calc_p(reg_lats, 0.90) << " μs\n";
+                std::cout << "  P99:   " << std::setw(8) << calc_p(reg_lats, 0.99) << " μs\n";
+                std::cout << "  P99.9: " << std::setw(8) << calc_p(reg_lats, 0.999) << " μs\n";
+                std::cout << "\nNOTIFICATION PHASE (" << notification_ops_total << " ops):\n";
+                std::cout << "  P50:   " << std::setw(8) << calc_p(notif_lats, 0.50) << " μs\n";
+                std::cout << "  P90:   " << std::setw(8) << calc_p(notif_lats, 0.90) << " μs\n";
+                std::cout << "  P99:   " << std::setw(8) << calc_p(notif_lats, 0.99) << " μs\n";
+                std::cout << "  P99.9: " << std::setw(8) << calc_p(notif_lats, 0.999) << " μs\n";
+                std::cout << std::string(50, '=') << "\n";
+            }
 
             // ─── Human-readable output ───
 
