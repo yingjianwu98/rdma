@@ -225,9 +225,11 @@ void run_mu_watch_pipeline(
     uint64_t total_notifications_completed = 0;
 
     // Phase timing for separate throughput reporting
-    auto registration_start_time = std::chrono::steady_clock::now();
+    // Start timing after first ACTIVE_WINDOW ops complete (skip warmup)
+    std::chrono::steady_clock::time_point registration_start_time;
     std::chrono::steady_clock::time_point registration_end_time;
     std::chrono::steady_clock::time_point notification_start_time;
+    bool registration_timing_started = false;
     bool registration_timing_done = false;
     bool notification_timing_started = false;
 
@@ -367,6 +369,12 @@ void run_mu_watch_pipeline(
                     active--;
                     total_registrations_completed++;
 
+                    // Start registration timing after first ACTIVE_WINDOW ops complete (skip warmup)
+                    if (completed == MU_ACTIVE_WINDOW && !registration_timing_started) {
+                        registration_start_time = std::chrono::steady_clock::now();
+                        registration_timing_started = true;
+                    }
+
                     // Mark registration phase timing as done when last registration completes
                     if (completed >= registration_ops && !registration_timing_done) {
                         registration_end_time = std::chrono::steady_clock::now();
@@ -464,14 +472,17 @@ void run_mu_watch_pipeline(
             registration_end_time - registration_start_time).count() / 1'000'000.0;
         const double notif_wall_s = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - notification_start_time).count() / 1'000'000.0;
-        const double reg_throughput = registration_ops / reg_wall_s;
+
+        // Exclude first ACTIVE_WINDOW ops from throughput calculation (warmup)
+        const size_t reg_ops_measured = registration_ops - MU_ACTIVE_WINDOW;
+        const double reg_throughput = reg_ops_measured / reg_wall_s;
         const double notif_throughput = notification_ops / notif_wall_s;
 
         std::cout << "\n========================================\n";
         std::cout << " PHASE THROUGHPUT\n";
         std::cout << "========================================\n";
         std::cout << "REGISTRATION PHASE:\n";
-        std::cout << "  Ops: " << registration_ops << "\n";
+        std::cout << "  Ops: " << reg_ops_measured << " (excluding " << MU_ACTIVE_WINDOW << " warmup ops)\n";
         std::cout << "  Wall Clock: " << std::fixed << std::setprecision(6) << reg_wall_s << " s\n";
         std::cout << "  Throughput: " << static_cast<uint64_t>(reg_throughput) << " ops/s\n";
         std::cout << "\nNOTIFICATION PHASE:\n";
