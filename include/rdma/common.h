@@ -54,7 +54,7 @@ constexpr uint8_t RDMA_INITIATOR_DEPTH = 16;
 // ─── Benchmark / workload config ───
 // These knobs define the workload shape shared across all pipelines.
 
-constexpr size_t NUM_OPS = 100000;  // Experiment 6
+constexpr size_t NUM_OPS = 1000;  // Experiment 1
 constexpr size_t NUM_CLIENTS_PER_MACHINE = 8;
 constexpr size_t TOTAL_CLIENTS = NUM_CLIENTS_PER_MACHINE * TOTAL_CLIENT_MACHINES;
 constexpr size_t NUM_OPS_PER_CLIENT = NUM_OPS / TOTAL_CLIENTS;
@@ -108,7 +108,7 @@ constexpr uint32_t MU_CLIENT_SEND_SIGNAL_EVERY = 4;  // Must be < active_window 
 constexpr uint32_t MU_SERVER_SEND_SIGNAL_EVERY = 1;  // Signal every op to reduce tail latency
 constexpr double MU_ZIPF_SKEW = 0.0;  // Match watch_pipeline: uniform distribution
 constexpr bool MU_DEBUG = false;
-constexpr bool MU_REPL_SIGNAL_QUORUM_ONLY = true;  // Signal only quorum writes to prevent CQ overflow
+constexpr bool MU_REPL_SIGNAL_QUORUM_ONLY = false;  // Signal all replicas for lower tail latency
 constexpr size_t MU_GLOBAL_LOG_CAPACITY = NUM_OPS * 2;
 
 // ─── Watch config ───
