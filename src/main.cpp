@@ -255,6 +255,31 @@ int main() {
             const double wall_s = std::chrono::duration_cast<std::chrono::microseconds>(
                 wall_end - wall_start).count() / 1'000'000.0;
 
+            // ─── Phase-separated stats for watch strategies ───
+            // IMPORTANT: Separate phases BEFORE sorting, since latencies are stored in submission order
+            std::vector<uint64_t> reg_lats, notif_lats;
+            if (is_watch || is_mu_watch) {
+                constexpr size_t WATCH_EXTRA_NOTIFICATIONS = 2000;
+                const size_t registration_ops_total = NUM_TOTAL_OPS;
+                const size_t notification_ops_total = WATCH_EXTRA_NOTIFICATIONS;
+
+                reg_lats.reserve(registration_ops_total);
+                notif_lats.reserve(notification_ops_total);
+
+                // Split latencies by phase (latencies stored in submission order: registrations first, then notifications)
+                for (size_t i = 0; i < local_total_ops; ++i) {
+                    if (i < registration_ops_total) {
+                        reg_lats.push_back((*all_latencies)[i]);
+                    } else {
+                        notif_lats.push_back((*all_latencies)[i]);
+                    }
+                }
+
+                std::sort(reg_lats.begin(), reg_lats.end());
+                std::sort(notif_lats.begin(), notif_lats.end());
+            }
+
+            // Now sort for overall stats
             std::sort(all_latencies->begin(), all_latencies->begin() + local_total_ops);
 
             auto get_p = [&](double p) -> double {
@@ -278,27 +303,11 @@ int main() {
 
             if (verify_client.load()) delete verify_client.load();
 
-            // ─── Phase-separated stats for watch strategies ───
+            // Print phase-separated stats (already computed above)
             if (is_watch || is_mu_watch) {
                 constexpr size_t WATCH_EXTRA_NOTIFICATIONS = 2000;
                 const size_t registration_ops_total = NUM_TOTAL_OPS;
                 const size_t notification_ops_total = WATCH_EXTRA_NOTIFICATIONS;
-
-                // Separate registration and notification latencies
-                std::vector<uint64_t> reg_lats, notif_lats;
-                reg_lats.reserve(registration_ops_total);
-                notif_lats.reserve(notification_ops_total);
-
-                for (size_t i = 0; i < local_total_ops; ++i) {
-                    if (i < registration_ops_total) {
-                        reg_lats.push_back((*all_latencies)[i]);
-                    } else {
-                        notif_lats.push_back((*all_latencies)[i]);
-                    }
-                }
-
-                std::sort(reg_lats.begin(), reg_lats.end());
-                std::sort(notif_lats.begin(), notif_lats.end());
 
                 auto calc_p = [](const std::vector<uint64_t>& lats, double p) -> double {
                     if (lats.empty()) return 0.0;
