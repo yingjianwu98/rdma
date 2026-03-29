@@ -316,28 +316,9 @@ void apply_mutation(MuLeaderRuntime& rt, const uint32_t mutation_id) {
     auto& ctx = rt.mutations[mutation_id];
 
     if (ctx.kind == MutationKind::register_watch) {
-        // Watch registration: ACK the client after quorum is reached
-        const uint32_t object_id = ctx.lock_id;
-        MuResponse resp{};
-        resp.op = static_cast<uint8_t>(MuRpcOp::WatchRegister);
-        resp.status = static_cast<uint8_t>(MuRpcStatus::Ok);
-        resp.client_id = ctx.client_id;
-        resp.lock_id = object_id;
-        resp.req_id = ctx.req_id;
-        resp.granted_slot = ctx.granted_slot;  // watch slot stored here
-        send_response(rt, resp);
-
-        // Decrement in-flight count and re-enqueue to process more pending registrations
-        if (object_id < MAX_LOCKS) {
-            auto& watch = rt.watch_objects[object_id];
-            if (watch.register_inflight > 0) {
-                watch.register_inflight--;
-            }
-            if (!watch.pending_registers.empty()) {
-                enqueue_ready_watch(rt, object_id);
-            }
-        }
-
+        // Watch registrations are now handled immediately after quorum in handle_repl_cqe
+        // This code path is only reached if we're using global ordering (shouldn't happen)
+        // Just mark as applied and release
         ctx.applied = true;
         maybe_release_mutation(rt, mutation_id);
         return;
@@ -1150,7 +1131,34 @@ void handle_repl_cqe(MuLeaderRuntime& rt, const ibv_wc& comp) {
         // }
         // quorum_reached_count++;
         ctx.quorum_done = true;
-        advance_commit_tail(rt);
+
+        // For watch registrations, respond immediately without global ordering
+        if (ctx.kind == MutationKind::register_watch) {
+            MuResponse resp{};
+            resp.op = static_cast<uint8_t>(MuRpcOp::WatchRegister);
+            resp.status = static_cast<uint8_t>(MuRpcStatus::Ok);
+            resp.client_id = ctx.client_id;
+            resp.lock_id = ctx.lock_id;
+            resp.req_id = ctx.req_id;
+            resp.granted_slot = ctx.granted_slot;
+            send_response(rt, resp);
+
+            // Decrement in-flight count and re-enqueue to process more pending registrations
+            if (ctx.lock_id < MAX_LOCKS) {
+                auto& watch = rt.watch_objects[ctx.lock_id];
+                if (watch.register_inflight > 0) {
+                    watch.register_inflight--;
+                }
+                if (!watch.pending_registers.empty()) {
+                    enqueue_ready_watch(rt, ctx.lock_id);
+                }
+            }
+
+            ctx.applied = true;
+        } else {
+            // For lock mutations, use global ordering
+            advance_commit_tail(rt);
+        }
     }
 
     maybe_release_mutation(rt, mutation_id);
