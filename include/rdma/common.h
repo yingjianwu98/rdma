@@ -23,19 +23,24 @@
 // ─── Cluster config ───
 
 inline const std::vector<std::string> CLUSTER_NODES = {
-    "192.168.1.21",  // apt128
-    "192.168.1.22",  // apt132
-    "192.168.1.23",  // apt095
-    "192.168.1.24",  // apt104
-    "192.168.1.25",  // apt112
+    "192.168.1.1",  // apt083
+    "192.168.1.2",  // apt081
+    "192.168.1.3",  // apt138
+    "192.168.1.4",  // apt176
+    "192.168.1.5",  // apt072
 };
 
 // change these two variables together
 inline const std::vector<std::string> CLIENT_NODES = {
-    "192.168.1.15",  // Run client on apt121 (dedicated client node)
+    "192.168.1.6",   // apt161
+    "192.168.1.7",   // apt150
+    "192.168.1.8",   // apt139
+    "192.168.1.9",   // apt180
+    "192.168.1.10",  // apt177
+    "192.168.1.11",  // apt136
 };
 
-constexpr size_t TOTAL_CLIENT_MACHINES = 1;
+constexpr size_t TOTAL_CLIENT_MACHINES = 6;
 //
 
 inline const size_t QUORUM = (CLUSTER_NODES.size() / 2) + 1;
@@ -54,8 +59,8 @@ constexpr uint8_t RDMA_INITIATOR_DEPTH = 16;
 // ─── Benchmark / workload config ───
 // These knobs define the workload shape shared across all pipelines.
 
-constexpr size_t NUM_OPS = 100000;  // Experiment 6
-constexpr size_t NUM_CLIENTS_PER_MACHINE = 8;
+constexpr size_t NUM_OPS = 1000;  // Experiment 1
+constexpr size_t NUM_CLIENTS_PER_MACHINE = 3;
 constexpr size_t TOTAL_CLIENTS = NUM_CLIENTS_PER_MACHINE * TOTAL_CLIENT_MACHINES;
 constexpr size_t NUM_OPS_PER_CLIENT = NUM_OPS / TOTAL_CLIENTS;
 constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * TOTAL_CLIENTS;
