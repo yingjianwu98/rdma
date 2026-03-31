@@ -1,0 +1,23 @@
+Cleaning up any leftover rdma processes...
+Cleanup complete.
+=========================================
+Running Experiment 1: 1000 ops
+=========================================
+On branch mu-watch-no-global-ordering
+Your branch is up to date with 'origin/mu-watch-no-global-ordering'.
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	bottleneck_diagnosis_100k.txt
+	bottleneck_diagnosis_experiments.txt
+
+nothing added to commit but untracked files present (use "git add" to track)
+Everything up-to-date
+Rebuilding all nodes...
+❌ Build FAILED on apt083! Check /tmp/build_apt083.log
+❌ Build FAILED on apt081! Check /tmp/build_apt081.log
+❌ Build FAILED on apt138! Check /tmp/build_apt138.log
+❌ Build FAILED on apt176! Check /tmp/build_apt176.log
+❌ Build FAILED on apt072! Check /tmp/build_apt072.log
+❌ Build FAILED on apt161! Check /tmp/build_apt161.log
+Aborting due to build failures
