@@ -585,14 +585,14 @@ void run_watch_pipeline(
             empty_polls = 0;  // Reset on successful poll
         } else {
             empty_polls++;
-            if (empty_polls < 10) {
-                // Phase 1: Tight spin for low latency (first 10 empty polls)
+            if (empty_polls < 100) {
+                // Phase 1: Tight spin for low latency (first 100 empty polls)
                 continue;
-            } else if (empty_polls < 50) {
-                // Phase 2: CPU pause hint to reduce power (next 40 polls)
+            } else if (empty_polls < 1000) {
+                // Phase 2: CPU pause hint to reduce power (next 900 polls)
                 _mm_pause();
             } else {
-                // Phase 3: Yield to OS scheduler after 50 empty polls
+                // Phase 3: Yield to OS scheduler after 1000 empty polls
                 sched_yield();
             }
         }
@@ -918,9 +918,9 @@ void run_watch_pipeline(
     calc_stats(wait_notify_latencies, "4. WAIT_NOTIFY (NIC: waiting for completions)");
 
     // ===== BOTTLENECK DIAGNOSIS METRICS =====
-    std::cerr << "\n========================================\n";
-    std::cerr << "[Client " << client.id() << "] BOTTLENECK DIAGNOSIS\n";
-    std::cerr << "========================================\n";
+    std::cout << "\n========================================\n";
+    std::cout << "[Client " << client.id() << "] BOTTLENECK DIAGNOSIS\n";
+    std::cout << "========================================\n";
 
     // Collect metrics from all completed notification operations
     uint64_t total_posts = 0;
@@ -969,73 +969,73 @@ void run_watch_pipeline(
         }
     }
 
-    std::cerr << "\nPOST_NOTIFY Overhead:\n";
+    std::cout << "\nPOST_NOTIFY Overhead:\n";
     if (total_posts > 0) {
         double avg_post_us = total_post_us / total_posts;
-        std::cerr << "  Total ibv_post_send calls: " << total_posts << "\n";
-        std::cerr << "  Avg time per post: " << std::fixed << std::setprecision(3) << avg_post_us << " μs\n";
-        std::cerr << "  Min time per post: " << min_post_us << " μs\n";
-        std::cerr << "  Max time per post: " << max_post_us << " μs\n";
-        std::cerr << "  Peak queue depth: " << max_pending_seen << " / " << QP_DEPTH << " ("
+        std::cout << "  Total ibv_post_send calls: " << total_posts << "\n";
+        std::cout << "  Avg time per post: " << std::fixed << std::setprecision(3) << avg_post_us << " μs\n";
+        std::cout << "  Min time per post: " << min_post_us << " μs\n";
+        std::cout << "  Max time per post: " << max_post_us << " μs\n";
+        std::cout << "  Peak queue depth: " << max_pending_seen << " / " << QP_DEPTH << " ("
                   << std::fixed << std::setprecision(1) << (100.0 * max_pending_seen / QP_DEPTH) << "%)\n";
         if (total_post_wall_ms > 0) {
             double cpu_util = (total_post_cpu_ms / total_post_wall_ms) * 100.0;
-            std::cerr << "  CPU utilization: " << std::fixed << std::setprecision(1) << cpu_util << "% "
+            std::cout << "  CPU utilization: " << std::fixed << std::setprecision(1) << cpu_util << "% "
                       << "(wall=" << total_post_wall_ms << "ms, cpu=" << total_post_cpu_ms << "ms)\n";
             if (cpu_util > 80.0) {
-                std::cerr << "    → HIGH CPU: Posting is CPU-bound\n";
+                std::cout << "    → HIGH CPU: Posting is CPU-bound\n";
             } else {
-                std::cerr << "    → LOW CPU: Posting is NOT CPU-bound\n";
+                std::cout << "    → LOW CPU: Posting is NOT CPU-bound\n";
             }
         }
     } else {
-        std::cerr << "  No POST metrics collected\n";
+        std::cout << "  No POST metrics collected\n";
     }
 
-    std::cerr << "\nWAIT_NOTIFY Overhead:\n";
+    std::cout << "\nWAIT_NOTIFY Overhead:\n";
     if (total_poll_attempts > 0) {
         double completions_per_poll = static_cast<double>(total_poll_completions) / total_poll_attempts;
-        std::cerr << "  Total ibv_poll_cq calls: " << total_poll_attempts << "\n";
-        std::cerr << "  Total completions polled: " << total_poll_completions << "\n";
-        std::cerr << "  Completions per poll: " << std::fixed << std::setprecision(2) << completions_per_poll << "\n";
-        std::cerr << "  Poll efficiency: " << std::fixed << std::setprecision(1) << (completions_per_poll * 100.0) << "%\n";
+        std::cout << "  Total ibv_poll_cq calls: " << total_poll_attempts << "\n";
+        std::cout << "  Total completions polled: " << total_poll_completions << "\n";
+        std::cout << "  Completions per poll: " << std::fixed << std::setprecision(2) << completions_per_poll << "\n";
+        std::cout << "  Poll efficiency: " << std::fixed << std::setprecision(1) << (completions_per_poll * 100.0) << "%\n";
         if (total_wait_wall_ms > 0 && num_notify_ops > 0) {
             double cpu_util = (total_wait_cpu_ms / total_wait_wall_ms) * 100.0;
             double avg_wait_wall = total_wait_wall_ms / num_notify_ops;
             double avg_wait_cpu = total_wait_cpu_ms / num_notify_ops;
-            std::cerr << "  Avg wait per op: wall=" << std::fixed << std::setprecision(2) << avg_wait_wall
+            std::cout << "  Avg wait per op: wall=" << std::fixed << std::setprecision(2) << avg_wait_wall
                       << "ms, cpu=" << avg_wait_cpu << "ms\n";
-            std::cerr << "  CPU utilization: " << std::fixed << std::setprecision(1) << cpu_util << "%\n";
+            std::cout << "  CPU utilization: " << std::fixed << std::setprecision(1) << cpu_util << "%\n";
             if (cpu_util > 80.0) {
-                std::cerr << "    → HIGH CPU: Spinning on poll (CPU bottleneck)\n";
+                std::cout << "    → HIGH CPU: Spinning on poll (CPU bottleneck)\n";
             } else if (cpu_util < 20.0) {
-                std::cerr << "    → LOW CPU: Waiting for NIC (NIC/network bottleneck)\n";
+                std::cout << "    → LOW CPU: Waiting for NIC (NIC/network bottleneck)\n";
             } else {
-                std::cerr << "    → MEDIUM CPU: Mixed CPU/NIC work\n";
+                std::cout << "    → MEDIUM CPU: Mixed CPU/NIC work\n";
             }
         }
     } else {
-        std::cerr << "  No WAIT metrics collected\n";
+        std::cout << "  No WAIT metrics collected\n";
     }
 
-    std::cerr << "\nBOTTLENECK SUMMARY:\n";
+    std::cout << "\nBOTTLENECK SUMMARY:\n";
     if (max_pending_seen > QP_DEPTH * 0.9) {
-        std::cerr << "  ✗ QUEUE OVERFLOW: Peak queue depth " << max_pending_seen << " exceeds 90% of QP_DEPTH=" << QP_DEPTH << "\n";
-        std::cerr << "    → Increase QP_DEPTH or reduce concurrency\n";
+        std::cout << "  ✗ QUEUE OVERFLOW: Peak queue depth " << max_pending_seen << " exceeds 90% of QP_DEPTH=" << QP_DEPTH << "\n";
+        std::cout << "    → Increase QP_DEPTH or reduce concurrency\n";
     } else {
-        std::cerr << "  ✓ Queue depth OK: Peak " << max_pending_seen << " / " << QP_DEPTH << "\n";
+        std::cout << "  ✓ Queue depth OK: Peak " << max_pending_seen << " / " << QP_DEPTH << "\n";
     }
 
     if (total_post_wall_ms > 0 && (total_post_cpu_ms / total_post_wall_ms) > 0.8) {
-        std::cerr << "  ⚠ POST is CPU-bound: Consider optimizing ibv_post_send() calls\n";
+        std::cout << "  ⚠ POST is CPU-bound: Consider optimizing ibv_post_send() calls\n";
     }
 
     if (total_wait_wall_ms > 0) {
         double wait_cpu_util = total_wait_cpu_ms / total_wait_wall_ms;
         if (wait_cpu_util > 0.8) {
-            std::cerr << "  ⚠ WAIT is CPU-bound: Spinning on poll, NIC is keeping up\n";
+            std::cout << "  ⚠ WAIT is CPU-bound: Spinning on poll, NIC is keeping up\n";
         } else if (wait_cpu_util < 0.2) {
-            std::cerr << "  ⚠ WAIT is NIC-bound: CPU waiting for completions, NIC is slow\n";
+            std::cout << "  ⚠ WAIT is NIC-bound: CPU waiting for completions, NIC is slow\n";
         }
     }
 
