@@ -17,6 +17,8 @@
 #include <string>
 #include <vector>
 #include <sys/resource.h>
+#include <sched.h>
+#include <immintrin.h>
 
 namespace {
 
@@ -559,7 +561,8 @@ void run_watch_pipeline(
         submit_op(active);
     }
 
-    // Main completion loop
+    // Main completion loop with adaptive backoff
+    uint32_t empty_polls = 0;
     while (completed < total_ops) {
         const int polled = ibv_poll_cq(client.cq(), static_cast<int>(completions.size()),
                                       completions.data());
@@ -574,6 +577,23 @@ void run_watch_pipeline(
                 if (polled > 0) {
                     op.poll_completions += polled;
                 }
+            }
+        }
+
+        // Adaptive backoff: reduce CPU spinning when no completions
+        if (polled > 0) {
+            empty_polls = 0;  // Reset on successful poll
+        } else {
+            empty_polls++;
+            if (empty_polls < 100) {
+                // Phase 1: Tight spin for low latency (first 100 empty polls)
+                continue;
+            } else if (empty_polls < 1000) {
+                // Phase 2: CPU pause hint to reduce power (next 900 polls)
+                _mm_pause();
+            } else {
+                // Phase 3: Yield to OS scheduler after 1000 empty polls
+                sched_yield();
             }
         }
 

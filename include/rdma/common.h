@@ -45,7 +45,7 @@ inline const size_t SUPER_QUORUM = (3 * CLUSTER_NODES.size() + 3) / 4;
 
 constexpr uint16_t RDMA_PORT = 6969;
 constexpr size_t ENTRY_SIZE = 8;
-constexpr size_t QP_DEPTH = 16384;  // Increased from 8192 to 16384 to avoid queue overflow with high watcher counts
+constexpr size_t QP_DEPTH = 8192;  // Reset to 8192
 constexpr size_t MAX_INLINE_DEPTH = 64;
 constexpr size_t MAX_REPLICAS = 10;
 constexpr uint8_t RDMA_RESPONDER_RESOURCES = 16;
@@ -54,14 +54,14 @@ constexpr uint8_t RDMA_INITIATOR_DEPTH = 16;
 // ─── Benchmark / workload config ───
 // These knobs define the workload shape shared across all pipelines.
 
-constexpr size_t NUM_OPS = 10000;  // Experiment 3
+constexpr size_t NUM_OPS = 1000;  // Experiment 1
 constexpr size_t NUM_CLIENTS_PER_MACHINE = 8;
 constexpr size_t TOTAL_CLIENTS = NUM_CLIENTS_PER_MACHINE * TOTAL_CLIENT_MACHINES;
 constexpr size_t NUM_OPS_PER_CLIENT = NUM_OPS / TOTAL_CLIENTS;
 constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * TOTAL_CLIENTS;
 constexpr size_t WATCH_EXTRA_NOTIFICATIONS = 10000;  // Extra notification ops for watch benchmarks (increased to stress notification phase)
 constexpr size_t MAX_TOTAL_OPS = NUM_TOTAL_OPS + WATCH_EXTRA_NOTIFICATIONS;
-constexpr size_t MAX_LOCKS = 50;  // Moderate watcher concentration
+constexpr size_t MAX_LOCKS = 100;  // Increased to 100 objects
 
 // ─── CAS config ───
 // Wrapped per-lock replicated log plus owner-node control word.
