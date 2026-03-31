@@ -1,0 +1,381 @@
+Cleaning up any leftover rdma processes...
+Cleanup complete.
+=========================================
+Running Experiment 1: 1000 ops
+=========================================
+[mu-watch-no-global-ordering f4be205] Experiment 1: 1000 ops
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+To https://github.com/yingjianwu98/rdma.git
+   f7dd157..f4be205  mu-watch-no-global-ordering -> mu-watch-no-global-ordering
+Rebuilding all nodes...
+✓ All nodes rebuilt successfully
+Stopping all RDMA processes...
+Verifying all processes stopped...
+✓ All processes stopped
+Starting servers...
+✓ Servers started
+Starting client on 1 node (8 threads)...
+
+=========================================
+Results for Experiment 1:
+=========================================
+
+--- Phase Throughput & Latency ---
+
+--- Phase-Separated Latency ---
+ PHASE-SEPARATED RESULTS
+==================================================
+REGISTRATION PHASE (1000 ops):
+  P50:      34.99 μs
+  P90:      48.90 μs
+  P99:      57.04 μs
+  P99.9:    60.91 μs
+
+NOTIFICATION PHASE (2000 ops):
+  P50:       0.00 μs
+  P90:       0.00 μs
+  P99:      37.30 μs
+  P99.9:   493.95 μs
+==================================================
+
+==================================================
+
+--- Overall Benchmark Summary ---
+ RDMA LOCK BENCHMARK RESULTS
+==================================================
+Strategy:                watch
+Locks:                     100
+Active Window:               8
+Zipf Skew:                0.00
+Owner Mode:            sharded
+Clients:                     8 (8 on this machine)
+Ops/Client:                125
+Total Ops:                3000
+--------------------------------------------------
+Wall Clock:              0.032 s
+Goodput:                 93145 ops/s
+--------------------------------------------------
+ACQUIRE LATENCY (us)
+Mean:                    13.50
+StdDev:                  35.72
+P0  (Min):                0.00
+P50 (Med):                0.00
+P90:                     43.23
+P99:                     54.71
+
+=========================================
+Running Experiment 2: 5000 ops
+=========================================
+[mu-watch-no-global-ordering 49b5afa] Experiment 2: 5000 ops
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+To https://github.com/yingjianwu98/rdma.git
+   f4be205..49b5afa  mu-watch-no-global-ordering -> mu-watch-no-global-ordering
+Rebuilding all nodes...
+✓ All nodes rebuilt successfully
+Stopping all RDMA processes...
+Verifying all processes stopped...
+✓ All processes stopped
+Starting servers...
+✓ Servers started
+Starting client on 1 node (8 threads)...
+
+=========================================
+Results for Experiment 2:
+=========================================
+
+--- Phase Throughput & Latency ---
+
+--- Phase-Separated Latency ---
+ PHASE-SEPARATED RESULTS
+==================================================
+REGISTRATION PHASE (5000 ops):
+  P50:      32.40 μs
+  P90:      41.18 μs
+  P99:      49.37 μs
+  P99.9: 11836.08 μs
+
+NOTIFICATION PHASE (2000 ops):
+  P50:       0.00 μs
+  P90:       0.00 μs
+  P99:      30.20 μs
+  P99.9:  4725.47 μs
+==================================================
+
+==================================================
+
+--- Overall Benchmark Summary ---
+ RDMA LOCK BENCHMARK RESULTS
+==================================================
+Strategy:                watch
+Locks:                     100
+Active Window:               8
+Zipf Skew:                0.00
+Owner Mode:            sharded
+Clients:                     8 (8 on this machine)
+Ops/Client:                625
+Total Ops:                7000
+--------------------------------------------------
+Wall Clock:              0.043 s
+Goodput:                163613 ops/s
+--------------------------------------------------
+ACQUIRE LATENCY (us)
+Mean:                    46.07
+StdDev:                 478.63
+P0  (Min):                0.00
+P50 (Med):               26.18
+P90:                     40.06
+P99:                     48.65
+
+=========================================
+Running Experiment 3: 10000 ops
+=========================================
+[mu-watch-no-global-ordering fa346d5] Experiment 3: 10000 ops
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+To https://github.com/yingjianwu98/rdma.git
+   49b5afa..fa346d5  mu-watch-no-global-ordering -> mu-watch-no-global-ordering
+Rebuilding all nodes...
+✓ All nodes rebuilt successfully
+Stopping all RDMA processes...
+Verifying all processes stopped...
+✓ All processes stopped
+Starting servers...
+✓ Servers started
+Starting client on 1 node (8 threads)...
+
+=========================================
+Results for Experiment 3:
+=========================================
+
+--- Phase Throughput & Latency ---
+
+--- Phase-Separated Latency ---
+ PHASE-SEPARATED RESULTS
+==================================================
+REGISTRATION PHASE (10000 ops):
+  P50:      32.74 μs
+  P90:      41.10 μs
+  P99:      52.69 μs
+  P99.9:  5538.39 μs
+
+NOTIFICATION PHASE (2000 ops):
+  P50:       0.00 μs
+  P90:       0.00 μs
+  P99:      33.34 μs
+  P99.9:  9432.54 μs
+==================================================
+
+==================================================
+
+--- Overall Benchmark Summary ---
+ RDMA LOCK BENCHMARK RESULTS
+==================================================
+Strategy:                watch
+Locks:                     100
+Active Window:               8
+Zipf Skew:                0.00
+Owner Mode:            sharded
+Clients:                     8 (8 on this machine)
+Ops/Client:               1250
+Total Ops:               12000
+--------------------------------------------------
+Wall Clock:              0.047 s
+Goodput:                255564 ops/s
+--------------------------------------------------
+ACQUIRE LATENCY (us)
+Mean:                    48.27
+StdDev:                 333.13
+P0  (Min):                0.00
+P50 (Med):               30.25
+P90:                     40.45
+P99:                     52.44
+
+=========================================
+Running Experiment 4: 30000 ops
+=========================================
+[mu-watch-no-global-ordering 194aca6] Experiment 4: 30000 ops
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+To https://github.com/yingjianwu98/rdma.git
+   fa346d5..194aca6  mu-watch-no-global-ordering -> mu-watch-no-global-ordering
+Rebuilding all nodes...
+✓ All nodes rebuilt successfully
+Stopping all RDMA processes...
+Verifying all processes stopped...
+✓ All processes stopped
+Starting servers...
+✓ Servers started
+Starting client on 1 node (8 threads)...
+
+=========================================
+Results for Experiment 4:
+=========================================
+
+--- Phase Throughput & Latency ---
+
+--- Phase-Separated Latency ---
+ PHASE-SEPARATED RESULTS
+==================================================
+REGISTRATION PHASE (30000 ops):
+  P50:      28.99 μs
+  P90:      38.21 μs
+  P99:      52.59 μs
+  P99.9:  4854.65 μs
+
+NOTIFICATION PHASE (2000 ops):
+  P50:       0.00 μs
+  P90:       0.00 μs
+  P99:     163.99 μs
+  P99.9:   925.87 μs
+==================================================
+
+==================================================
+
+--- Overall Benchmark Summary ---
+ RDMA LOCK BENCHMARK RESULTS
+==================================================
+Strategy:                watch
+Locks:                     100
+Active Window:               8
+Zipf Skew:                0.00
+Owner Mode:            sharded
+Clients:                     8 (8 on this machine)
+Ops/Client:               3750
+Total Ops:               32000
+--------------------------------------------------
+Wall Clock:              0.076 s
+Goodput:                422353 ops/s
+--------------------------------------------------
+ACQUIRE LATENCY (us)
+Mean:                    42.83
+StdDev:                 294.98
+P0  (Min):                0.00
+P50 (Med):               28.50
+P90:                     37.94
+P99:                     52.90
+
+=========================================
+Running Experiment 5: 50000 ops
+=========================================
+[mu-watch-no-global-ordering 29c6acc] Experiment 5: 50000 ops
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+To https://github.com/yingjianwu98/rdma.git
+   194aca6..29c6acc  mu-watch-no-global-ordering -> mu-watch-no-global-ordering
+Rebuilding all nodes...
+✓ All nodes rebuilt successfully
+Stopping all RDMA processes...
+Verifying all processes stopped...
+✓ All processes stopped
+Starting servers...
+✓ Servers started
+Starting client on 1 node (8 threads)...
+
+=========================================
+Results for Experiment 5:
+=========================================
+
+--- Phase Throughput & Latency ---
+
+--- Phase-Separated Latency ---
+ PHASE-SEPARATED RESULTS
+==================================================
+REGISTRATION PHASE (50000 ops):
+  P50:      28.87 μs
+  P90:      36.84 μs
+  P99:      46.23 μs
+  P99.9:  2383.00 μs
+
+NOTIFICATION PHASE (2000 ops):
+  P50:       0.00 μs
+  P90:       0.00 μs
+  P99:      20.54 μs
+  P99.9:    32.21 μs
+==================================================
+
+==================================================
+
+--- Overall Benchmark Summary ---
+ RDMA LOCK BENCHMARK RESULTS
+==================================================
+Strategy:                watch
+Locks:                     100
+Active Window:               8
+Zipf Skew:                0.00
+Owner Mode:            sharded
+Clients:                     8 (8 on this machine)
+Ops/Client:               6250
+Total Ops:               52000
+--------------------------------------------------
+Wall Clock:              0.088 s
+Goodput:                589623 ops/s
+--------------------------------------------------
+ACQUIRE LATENCY (us)
+Mean:                    37.28
+StdDev:                 343.75
+P0  (Min):                0.00
+P50 (Med):               28.60
+P90:                     36.66
+P99:                     46.05
+
+=========================================
+Running Experiment 6: 100000 ops
+=========================================
+[mu-watch-no-global-ordering 5b15f29] Experiment 6: 100000 ops
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+To https://github.com/yingjianwu98/rdma.git
+   29c6acc..5b15f29  mu-watch-no-global-ordering -> mu-watch-no-global-ordering
+Rebuilding all nodes...
+✓ All nodes rebuilt successfully
+Stopping all RDMA processes...
+Verifying all processes stopped...
+✓ All processes stopped
+Starting servers...
+✓ Servers started
+Starting client on 1 node (8 threads)...
+
+=========================================
+Results for Experiment 6:
+=========================================
+
+--- Phase Throughput & Latency ---
+
+--- Phase-Separated Latency ---
+ PHASE-SEPARATED RESULTS
+==================================================
+REGISTRATION PHASE (100000 ops):
+  P50:      28.18 μs
+  P90:      35.37 μs
+  P99:      45.99 μs
+  P99.9:   833.61 μs
+
+NOTIFICATION PHASE (2000 ops):
+  P50:       0.00 μs
+  P90:       0.00 μs
+  P99:      28.50 μs
+  P99.9:  7346.43 μs
+==================================================
+
+==================================================
+
+--- Overall Benchmark Summary ---
+ RDMA LOCK BENCHMARK RESULTS
+==================================================
+Strategy:                watch
+Locks:                     100
+Active Window:               8
+Zipf Skew:                0.00
+Owner Mode:            sharded
+Clients:                     8 (8 on this machine)
+Ops/Client:              12500
+Total Ops:              102000
+--------------------------------------------------
+Wall Clock:              0.127 s
+Goodput:                803270 ops/s
+--------------------------------------------------
+ACQUIRE LATENCY (us)
+Mean:                    34.20
+StdDev:                 219.70
+P0  (Min):                0.00
+P50 (Med):               28.06
+P90:                     35.30
+P99:                     45.97
+
+All experiments completed!

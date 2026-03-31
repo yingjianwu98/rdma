@@ -367,77 +367,85 @@ void post_notify_watchers(Client& client, WatchOpCtx& op, const RegisteredWatchB
     op.post_notify_start = std::chrono::steady_clock::now();
     op.cpu_before_post = get_thread_cpu_usage();
 
-    // OPTIMIZATION: Batch post with linked work requests to reduce ibv_post_send() overhead
-    // Build linked list of WRs and post in batches of 256 to reduce CPU overhead from ~2.5μs to ~0.5μs per write
-    constexpr uint64_t BATCH_SIZE = 256;
+    // OPTIMIZATION: Batch post per-QP with linked work requests
+    // Group writes by target QP and batch them to reduce ibv_post_send() overhead
     constexpr uint64_t SIGNAL_STRIDE = 128;
+    const size_t num_qps = conns.size();
 
-    std::vector<ibv_send_wr> wrs(std::min(notify_count, BATCH_SIZE));
-    std::vector<ibv_sge> sges(std::min(notify_count, BATCH_SIZE));
+    // Allocate per-QP batches
+    std::vector<std::vector<ibv_send_wr>> qp_wrs(num_qps);
+    std::vector<std::vector<ibv_sge>> qp_sges(num_qps);
 
-    uint64_t actually_posted = 0;
+    // Pre-allocate reasonable capacity per QP
+    for (size_t qp_idx = 0; qp_idx < num_qps; ++qp_idx) {
+        qp_wrs[qp_idx].reserve(notify_count / num_qps + 64);
+        qp_sges[qp_idx].reserve(notify_count / num_qps + 64);
+    }
+
     uint64_t signaled_count = 0;
 
-    for (uint64_t batch_offset = 0; batch_offset < notify_count; batch_offset += BATCH_SIZE) {
-        const uint64_t batch_end = std::min(batch_offset + BATCH_SIZE, notify_count);
-        const uint64_t batch_len = batch_end - batch_offset;
+    // Build per-QP batches
+    for (uint64_t i = 0; i < notify_count; ++i) {
+        notify_buf[i] = 1;  // Invalidation flag
 
-        // Build linked list of work requests
-        for (uint64_t i = 0; i < batch_len; ++i) {
-            const uint64_t global_i = batch_offset + i;
-            notify_buf[global_i] = 1;  // Invalidation flag
+        const uint32_t target_node = static_cast<uint32_t>(i % conns.size());
+        const bool should_signal = ((i % SIGNAL_STRIDE) == 0) || (i == notify_count - 1);
 
-            // Setup SGE
-            sges[i].addr = reinterpret_cast<uintptr_t>(&notify_buf[global_i]);
-            sges[i].length = sizeof(uint64_t);
-            sges[i].lkey = mr->lkey;
+        // Setup SGE
+        ibv_sge sge{};
+        sge.addr = reinterpret_cast<uintptr_t>(&notify_buf[i]);
+        sge.length = sizeof(uint64_t);
+        sge.lkey = mr->lkey;
+        qp_sges[target_node].push_back(sge);
 
-            // Choose target node
-            const uint32_t target_node = static_cast<uint32_t>(global_i % conns.size());
+        // Setup WR
+        ibv_send_wr wr{};
+        wr.wr_id = encode_wr_id(op, WatchPhase::notify_watchers, static_cast<uint8_t>(target_node));
+        wr.opcode = IBV_WR_RDMA_WRITE;
+        wr.sg_list = &qp_sges[target_node].back();
+        wr.num_sge = 1;
+        wr.wr.rdma.remote_addr = conns[target_node].addr + WATCH_TABLE_SIZE + ((batch_start + i) * sizeof(uint64_t));
+        wr.wr.rdma.rkey = conns[target_node].rkey;
+        wr.send_flags = (should_signal ? IBV_SEND_SIGNALED : 0) | IBV_SEND_INLINE;
+        wr.next = nullptr;  // Will link later
+        qp_wrs[target_node].push_back(wr);
 
-            // Setup WR
-            wrs[i] = {};  // Zero-initialize
-            wrs[i].wr_id = encode_wr_id(op, WatchPhase::notify_watchers, static_cast<uint8_t>(target_node));
-            wrs[i].opcode = IBV_WR_RDMA_WRITE;
-            wrs[i].sg_list = &sges[i];
-            wrs[i].num_sge = 1;
-            wrs[i].wr.rdma.remote_addr = conns[target_node].addr + WATCH_TABLE_SIZE + ((batch_start + global_i) * sizeof(uint64_t));
-            wrs[i].wr.rdma.rkey = conns[target_node].rkey;
+        if (should_signal) {
+            signaled_count++;
+        }
+    }
 
-            // Selective signaling and linking
-            const bool should_signal = ((global_i % SIGNAL_STRIDE) == 0) || (global_i == notify_count - 1);
-            wrs[i].send_flags = (should_signal ? IBV_SEND_SIGNALED : 0) | IBV_SEND_INLINE;
+    // Link WRs within each QP's batch and post
+    uint64_t actually_posted = 0;
+    for (size_t qp_idx = 0; qp_idx < num_qps; ++qp_idx) {
+        if (qp_wrs[qp_idx].empty()) continue;
 
-            // Link to next WR (except for last in batch)
-            if (i < batch_len - 1) {
-                wrs[i].next = &wrs[i + 1];
-            } else {
-                wrs[i].next = nullptr;
-            }
-
-            if (should_signal) {
-                signaled_count++;
+        // Link the WRs
+        for (size_t i = 0; i < qp_wrs[qp_idx].size(); ++i) {
+            qp_wrs[qp_idx][i].sg_list = &qp_sges[qp_idx][i];  // Fix pointer after vector resize
+            if (i < qp_wrs[qp_idx].size() - 1) {
+                qp_wrs[qp_idx][i].next = &qp_wrs[qp_idx][i + 1];
             }
         }
 
-        // Post entire batch with single ibv_post_send() call
+        // Post entire batch for this QP
         auto post_start = std::chrono::steady_clock::now();
         ibv_send_wr* bad_wr = nullptr;
-        if (ibv_post_send(conns[0].id->qp, &wrs[0], &bad_wr)) {
-            std::cerr << "[Client " << client.id() << " error] watch pipeline: batch notify post failed"
+        if (ibv_post_send(conns[qp_idx].id->qp, &qp_wrs[qp_idx][0], &bad_wr)) {
+            std::cerr << "[Client " << client.id() << " error] watch pipeline: batch notify post failed for QP " << qp_idx
                       << " (posted " << actually_posted << "/" << notify_count << ")\n";
-            break;
+            continue;  // Try other QPs
         }
         auto post_end = std::chrono::steady_clock::now();
 
-        // Track metrics for batch
+        // Track metrics
         double post_us = std::chrono::duration_cast<std::chrono::nanoseconds>(post_end - post_start).count() / 1000.0;
         op.post_count++;
         op.post_min_us = std::min(op.post_min_us, post_us);
         op.post_max_us = std::max(op.post_max_us, post_us);
         op.post_sum_us += post_us;
 
-        actually_posted += batch_len;
+        actually_posted += qp_wrs[qp_idx].size();
         op.max_pending = std::max(op.max_pending, actually_posted - op.notify_completed);
     }
 

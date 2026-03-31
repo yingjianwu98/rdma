@@ -1,0 +1,6 @@
+=========================================
+Running Synra Watch Benchmark
+=========================================
+
+Setting strategy to 'watch'...
+bash: line 1: cd: /users/stevie98/rdma: No such file or directory
