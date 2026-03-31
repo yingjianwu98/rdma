@@ -115,7 +115,7 @@ constexpr size_t MU_GLOBAL_LOG_CAPACITY = NUM_OPS * 2;
 // Replicated watcher registration using FAA for slot assignment.
 
 constexpr size_t WATCH_ACTIVE_WINDOW = 8;
-constexpr size_t WATCH_CQ_BATCH = 32;
+constexpr size_t WATCH_CQ_BATCH = 128;  // Increased for better bulk polling with high watcher counts
 constexpr double WATCH_ZIPF_SKEW = 0.0;  // Uniform distribution to avoid hot object overflow
 constexpr bool WATCH_SHARD_OWNER = true;
 constexpr size_t MAX_WATCHERS_PER_OBJECT = 20000;  // Max watchers that can register per object

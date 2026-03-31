@@ -367,55 +367,78 @@ void post_notify_watchers(Client& client, WatchOpCtx& op, const RegisteredWatchB
     op.post_notify_start = std::chrono::steady_clock::now();
     op.cpu_before_post = get_thread_cpu_usage();
 
-    // For each watcher in this batch, WRITE invalidation (simulate by writing to metadata area)
+    // OPTIMIZATION: Batch post with linked work requests to reduce ibv_post_send() overhead
+    // Build linked list of WRs and post in batches of 256 to reduce CPU overhead from ~2.5μs to ~0.5μs per write
+    constexpr uint64_t BATCH_SIZE = 256;
+    constexpr uint64_t SIGNAL_STRIDE = 128;
+
+    std::vector<ibv_send_wr> wrs(std::min(notify_count, BATCH_SIZE));
+    std::vector<ibv_sge> sges(std::min(notify_count, BATCH_SIZE));
+
     uint64_t actually_posted = 0;
-    uint64_t signaled_count = 0;  // Track how many signaled operations we post
-    constexpr uint64_t SIGNAL_STRIDE = 128;  // Signal every 128th write to reduce CPU polling overhead (matches Mu)
-    for (uint64_t i = 0; i < notify_count; ++i) {
-        notify_buf[i] = 1;  // Invalidation flag
+    uint64_t signaled_count = 0;
 
-        ibv_sge sge{};
-        sge.addr = reinterpret_cast<uintptr_t>(&notify_buf[i]);
-        sge.length = sizeof(uint64_t);
-        sge.lkey = mr->lkey;
+    for (uint64_t batch_offset = 0; batch_offset < notify_count; batch_offset += BATCH_SIZE) {
+        const uint64_t batch_end = std::min(batch_offset + BATCH_SIZE, notify_count);
+        const uint64_t batch_len = batch_end - batch_offset;
 
-        // Choose a random node to write to (simulate distributed watchers)
-        const uint32_t target_node = static_cast<uint32_t>(i % conns.size());
+        // Build linked list of work requests
+        for (uint64_t i = 0; i < batch_len; ++i) {
+            const uint64_t global_i = batch_offset + i;
+            notify_buf[global_i] = 1;  // Invalidation flag
 
-        ibv_send_wr wr{}, *bad_wr = nullptr;
-        wr.wr_id = encode_wr_id(op, WatchPhase::notify_watchers, static_cast<uint8_t>(target_node));
-        wr.opcode = IBV_WR_RDMA_WRITE;
-        // Selective signaling: signal every 64th write or the last write in batch
-        const bool should_signal = ((i % SIGNAL_STRIDE) == 0) || (i == notify_count - 1);
-        wr.send_flags = (should_signal ? IBV_SEND_SIGNALED : 0) | IBV_SEND_INLINE;
-        wr.sg_list = &sge;
-        wr.num_sge = 1;
-        // Write to metadata area at end of watch table (simulating dirty bit)
-        wr.wr.rdma.remote_addr = conns[target_node].addr + WATCH_TABLE_SIZE + ((batch_start + i) * sizeof(uint64_t));
-        wr.wr.rdma.rkey = conns[target_node].rkey;
+            // Setup SGE
+            sges[i].addr = reinterpret_cast<uintptr_t>(&notify_buf[global_i]);
+            sges[i].length = sizeof(uint64_t);
+            sges[i].lkey = mr->lkey;
 
-        // Measure individual post time
+            // Choose target node
+            const uint32_t target_node = static_cast<uint32_t>(global_i % conns.size());
+
+            // Setup WR
+            wrs[i] = {};  // Zero-initialize
+            wrs[i].wr_id = encode_wr_id(op, WatchPhase::notify_watchers, static_cast<uint8_t>(target_node));
+            wrs[i].opcode = IBV_WR_RDMA_WRITE;
+            wrs[i].sg_list = &sges[i];
+            wrs[i].num_sge = 1;
+            wrs[i].wr.rdma.remote_addr = conns[target_node].addr + WATCH_TABLE_SIZE + ((batch_start + global_i) * sizeof(uint64_t));
+            wrs[i].wr.rdma.rkey = conns[target_node].rkey;
+
+            // Selective signaling and linking
+            const bool should_signal = ((global_i % SIGNAL_STRIDE) == 0) || (global_i == notify_count - 1);
+            wrs[i].send_flags = (should_signal ? IBV_SEND_SIGNALED : 0) | IBV_SEND_INLINE;
+
+            // Link to next WR (except for last in batch)
+            if (i < batch_len - 1) {
+                wrs[i].next = &wrs[i + 1];
+            } else {
+                wrs[i].next = nullptr;
+            }
+
+            if (should_signal) {
+                signaled_count++;
+            }
+        }
+
+        // Post entire batch with single ibv_post_send() call
         auto post_start = std::chrono::steady_clock::now();
-        if (ibv_post_send(conns[target_node].id->qp, &wr, &bad_wr)) {
-            // Queue overflow - log error but continue to allow verification
-            std::cerr << "[Client " << client.id() << " error] watch pipeline: notify watcher post failed"
-                      << " (posted " << actually_posted << "/" << notify_count << " in this batch)\n";
+        ibv_send_wr* bad_wr = nullptr;
+        if (ibv_post_send(conns[0].id->qp, &wrs[0], &bad_wr)) {
+            std::cerr << "[Client " << client.id() << " error] watch pipeline: batch notify post failed"
+                      << " (posted " << actually_posted << "/" << notify_count << ")\n";
             break;
         }
         auto post_end = std::chrono::steady_clock::now();
 
-        // Track post metrics
+        // Track metrics for batch
         double post_us = std::chrono::duration_cast<std::chrono::nanoseconds>(post_end - post_start).count() / 1000.0;
         op.post_count++;
         op.post_min_us = std::min(op.post_min_us, post_us);
         op.post_max_us = std::max(op.post_max_us, post_us);
         op.post_sum_us += post_us;
-        op.max_pending = std::max(op.max_pending, actually_posted - op.notify_completed);
 
-        actually_posted++;
-        if (should_signal) {
-            signaled_count++;
-        }
+        actually_posted += batch_len;
+        op.max_pending = std::max(op.max_pending, actually_posted - op.notify_completed);
     }
 
     // TIMING: End posting notify writes (CPU overhead)
