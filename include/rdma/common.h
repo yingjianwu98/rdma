@@ -45,7 +45,7 @@ inline const size_t SUPER_QUORUM = (3 * CLUSTER_NODES.size() + 3) / 4;
 
 constexpr uint16_t RDMA_PORT = 6969;
 constexpr size_t ENTRY_SIZE = 8;
-constexpr size_t QP_DEPTH = 8192;  // Increased from 2048 to avoid queue overflow with high watcher counts
+constexpr size_t QP_DEPTH = 16384;  // Increased from 8192 to 16384 to avoid queue overflow with high watcher counts
 constexpr size_t MAX_INLINE_DEPTH = 64;
 constexpr size_t MAX_REPLICAS = 10;
 constexpr uint8_t RDMA_RESPONDER_RESOURCES = 16;
