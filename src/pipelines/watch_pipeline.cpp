@@ -585,14 +585,14 @@ void run_watch_pipeline(
             empty_polls = 0;  // Reset on successful poll
         } else {
             empty_polls++;
-            if (empty_polls < 100) {
-                // Phase 1: Tight spin for low latency (first 100 empty polls)
+            if (empty_polls < 10) {
+                // Phase 1: Tight spin for low latency (first 10 empty polls)
                 continue;
-            } else if (empty_polls < 1000) {
-                // Phase 2: CPU pause hint to reduce power (next 900 polls)
+            } else if (empty_polls < 50) {
+                // Phase 2: CPU pause hint to reduce power (next 40 polls)
                 _mm_pause();
             } else {
-                // Phase 3: Yield to OS scheduler after 1000 empty polls
+                // Phase 3: Yield to OS scheduler after 50 empty polls
                 sched_yield();
             }
         }
