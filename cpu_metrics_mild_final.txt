@@ -1,0 +1,17 @@
+Cleaning up any leftover rdma processes...
+Cleanup complete.
+=========================================
+Running Experiment 1: 1000 ops
+=========================================
+[mu-watch-no-global-ordering 56edca5] Experiment 1: 1000 ops
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+To https://github.com/yingjianwu98/rdma.git
+   3164a8c..56edca5  mu-watch-no-global-ordering -> mu-watch-no-global-ordering
+Rebuilding all nodes...
+❌ Build FAILED on apt083! Check /tmp/build_apt083.log
+❌ Build FAILED on apt081! Check /tmp/build_apt081.log
+❌ Build FAILED on apt138! Check /tmp/build_apt138.log
+❌ Build FAILED on apt176! Check /tmp/build_apt176.log
+❌ Build FAILED on apt072! Check /tmp/build_apt072.log
+❌ Build FAILED on apt161! Check /tmp/build_apt161.log
+Aborting due to build failures
