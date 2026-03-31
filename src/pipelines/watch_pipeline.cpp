@@ -43,7 +43,7 @@ enum class WatchPhase : uint8_t {
     notify_watchers = 5,   // Notification: Broadcast invalidations to all watchers
 };
 
-constexpr size_t MAX_NOTIFY_BATCH = 1024;  // Max watchers to notify per batch (safe with active_window=8)
+constexpr size_t MAX_NOTIFY_BATCH = 1024;  // Max watchers to notify per batch (matches Mu)
 
 struct RegisteredWatchBuffers {
     uint64_t* faa_results = nullptr;         // FAA slot result (single per op)
@@ -335,7 +335,7 @@ void post_notify_watchers(Client& client, WatchOpCtx& op, const RegisteredWatchB
     // For each watcher in this batch, WRITE invalidation (simulate by writing to metadata area)
     uint64_t actually_posted = 0;
     uint64_t signaled_count = 0;  // Track how many signaled operations we post
-    constexpr uint64_t SIGNAL_STRIDE = 64;  // Signal every 64th write to reduce CPU polling overhead
+    constexpr uint64_t SIGNAL_STRIDE = 128;  // Signal every 128th write to reduce CPU polling overhead (matches Mu)
     for (uint64_t i = 0; i < notify_count; ++i) {
         notify_buf[i] = 1;  // Invalidation flag
 

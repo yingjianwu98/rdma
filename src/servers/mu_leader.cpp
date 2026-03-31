@@ -75,6 +75,7 @@ struct NotificationCtx {
     uint64_t notify_sent = 0;
     uint64_t notify_completed = 0;
     uint64_t new_version = 0;
+    uint64_t pending_signals = 0;  // Number of signaled writes to expect completions for
 };
 
 struct MuLeaderRuntime {
@@ -874,6 +875,8 @@ void post_notify_batch(MuLeaderRuntime& rt) {
     }
 
     notif.notify_completed = 0;  // Reset for this batch
+    uint64_t signaled_count = 0;  // Track signaled writes for this batch
+    constexpr uint64_t SIGNAL_STRIDE = 128;  // Match Synra's selective signaling
 
     for (uint64_t i = 0; i < notify_count; ++i) {
         const uint64_t watcher_idx = notif.notify_sent + i;
@@ -889,12 +892,15 @@ void post_notify_batch(MuLeaderRuntime& rt) {
         sge.length = sizeof(uint64_t);
         sge.lkey = rt.local_mr->lkey;
 
+        // Selective signaling: signal every 128th write or the last write in batch
+        const bool should_signal = ((i % SIGNAL_STRIDE) == 0) || (i == notify_count - 1);
+
         ibv_send_wr wr{}, *bad_wr = nullptr;
         wr.wr_id = (MU_NOTIFY_WR_TAG << MU_WR_TAG_SHIFT);  // Tag for notification completions
         wr.opcode = IBV_WR_RDMA_WRITE;
         wr.sg_list = &sge;
         wr.num_sge = 1;
-        wr.send_flags = IBV_SEND_INLINE | IBV_SEND_SIGNALED;  // Signal every write (match syndra)
+        wr.send_flags = IBV_SEND_INLINE | (should_signal ? IBV_SEND_SIGNALED : 0);
 
         wr.wr.rdma.remote_addr = follower.remote_addr + metadata_offset + (watcher_idx * sizeof(uint64_t));
         wr.wr.rdma.rkey = follower.rkey;
@@ -908,7 +914,14 @@ void post_notify_batch(MuLeaderRuntime& rt) {
             break;
         }
         notif.notify_sent++;
+
+        if (should_signal) {
+            signaled_count++;
+        }
     }
+
+    // Only expect completions for signaled writes
+    notif.pending_signals = signaled_count;
 }
 
 // Handle notification write completion (match syndra's batch completion logic).
@@ -920,13 +933,14 @@ void handle_notify_cqe(MuLeaderRuntime& rt) {
 
     if (notif.notify_sent < notif.total_watchers) {
         // More watchers to notify - post next batch when current batch completes
-        if (notif.notify_completed >= notif.notify_sent) {
+        // Only wait for signaled writes (selective signaling)
+        if (notif.notify_completed >= notif.pending_signals) {
             // std::cerr << "[MuLeader debug] Posting next batch: completed=" << notif.notify_completed
             //           << " sent=" << notif.notify_sent << " total=" << notif.total_watchers << std::endl;
             post_notify_batch(rt);
         }
-    } else if (notif.notify_completed >= notif.notify_sent) {
-        // All notifications complete - send response to client
+    } else if (notif.notify_completed >= notif.pending_signals) {
+        // All signaled notifications complete - send response to client
         // std::cerr << "[MuLeader debug] All notifications done for object " << notif.object_id
         //           << ": sent=" << notif.notify_sent << " completed=" << notif.notify_completed
         //           << " total_watchers=" << notif.total_watchers << std::endl;
