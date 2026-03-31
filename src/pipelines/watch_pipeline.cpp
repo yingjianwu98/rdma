@@ -417,8 +417,19 @@ void post_notify_watchers(Client& client, WatchOpCtx& op, const RegisteredWatchB
 
     // Link WRs within each QP's batch and post
     uint64_t actually_posted = 0;
+    uint64_t num_batches = 0;
+    uint64_t min_batch_size = UINT64_MAX;
+    uint64_t max_batch_size = 0;
+    uint64_t total_batch_size = 0;
+
     for (size_t qp_idx = 0; qp_idx < num_qps; ++qp_idx) {
         if (qp_wrs[qp_idx].empty()) continue;
+
+        num_batches++;
+        const uint64_t batch_size = qp_wrs[qp_idx].size();
+        min_batch_size = std::min(min_batch_size, batch_size);
+        max_batch_size = std::max(max_batch_size, batch_size);
+        total_batch_size += batch_size;
 
         // Link the WRs
         for (size_t i = 0; i < qp_wrs[qp_idx].size(); ++i) {
@@ -447,6 +458,18 @@ void post_notify_watchers(Client& client, WatchOpCtx& op, const RegisteredWatchB
 
         actually_posted += qp_wrs[qp_idx].size();
         op.max_pending = std::max(op.max_pending, actually_posted - op.notify_completed);
+    }
+
+    // Verification logging: Print batching statistics for debugging
+    if (notify_count > 100) {  // Only log for substantial notifications
+        std::cout << "[Client " << client.id() << " BATCH_VERIFY] "
+                  << "Watchers=" << notify_count << " "
+                  << "Batches=" << num_batches << " "
+                  << "AvgBatchSize=" << (num_batches > 0 ? total_batch_size / num_batches : 0) << " "
+                  << "MinBatch=" << (min_batch_size == UINT64_MAX ? 0 : min_batch_size) << " "
+                  << "MaxBatch=" << max_batch_size << " "
+                  << "Posted=" << actually_posted << "/" << notify_count
+                  << " (" << (100.0 * actually_posted / notify_count) << "%)\n";
     }
 
     // TIMING: End posting notify writes (CPU overhead)
