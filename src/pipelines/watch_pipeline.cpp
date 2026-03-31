@@ -16,8 +16,25 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <sys/resource.h>
 
 namespace {
+
+// CPU utilization tracking
+struct CPUUsage {
+    double user_ms;
+    double system_ms;
+    double total_ms() const { return user_ms + system_ms; }
+};
+
+CPUUsage get_thread_cpu_usage() {
+    struct rusage usage;
+    getrusage(RUSAGE_THREAD, &usage);
+    return {
+        .user_ms = usage.ru_utime.tv_sec * 1000.0 + usage.ru_utime.tv_usec / 1000.0,
+        .system_ms = usage.ru_stime.tv_sec * 1000.0 + usage.ru_stime.tv_usec / 1000.0
+    };
+}
 
 constexpr uint64_t kConnBits = 8;
 constexpr uint64_t kRoundBits = 8;
@@ -83,6 +100,21 @@ struct WatchOpCtx {
     std::chrono::steady_clock::time_point post_notify_end{};
     std::chrono::steady_clock::time_point wait_notify_start{};
     std::chrono::steady_clock::time_point wait_notify_end{};
+
+    // Bottleneck diagnosis metrics
+    uint64_t post_count = 0;              // Number of ibv_post_send calls
+    uint64_t poll_attempts = 0;           // Number of ibv_poll_cq calls
+    uint64_t poll_completions = 0;        // Total completions polled
+    uint64_t max_pending = 0;             // Peak queue depth
+    double post_min_us = 1e9;             // Fastest post
+    double post_max_us = 0;               // Slowest post
+    double post_sum_us = 0;               // Sum for average
+
+    // CPU utilization tracking
+    CPUUsage cpu_before_post{};
+    CPUUsage cpu_after_post{};
+    CPUUsage cpu_before_wait{};
+    CPUUsage cpu_after_wait{};
 };
 
 // Encode a unique watcher ID from client ID, operation slot, and request ID.
@@ -331,6 +363,7 @@ void post_notify_watchers(Client& client, WatchOpCtx& op, const RegisteredWatchB
 
     // TIMING: Start posting notify writes (CPU overhead)
     op.post_notify_start = std::chrono::steady_clock::now();
+    op.cpu_before_post = get_thread_cpu_usage();
 
     // For each watcher in this batch, WRITE invalidation (simulate by writing to metadata area)
     uint64_t actually_posted = 0;
@@ -359,12 +392,24 @@ void post_notify_watchers(Client& client, WatchOpCtx& op, const RegisteredWatchB
         wr.wr.rdma.remote_addr = conns[target_node].addr + WATCH_TABLE_SIZE + ((batch_start + i) * sizeof(uint64_t));
         wr.wr.rdma.rkey = conns[target_node].rkey;
 
+        // Measure individual post time
+        auto post_start = std::chrono::steady_clock::now();
         if (ibv_post_send(conns[target_node].id->qp, &wr, &bad_wr)) {
             // Queue overflow - log error but continue to allow verification
             std::cerr << "[Client " << client.id() << " error] watch pipeline: notify watcher post failed"
                       << " (posted " << actually_posted << "/" << notify_count << " in this batch)\n";
             break;
         }
+        auto post_end = std::chrono::steady_clock::now();
+
+        // Track post metrics
+        double post_us = std::chrono::duration_cast<std::chrono::nanoseconds>(post_end - post_start).count() / 1000.0;
+        op.post_count++;
+        op.post_min_us = std::min(op.post_min_us, post_us);
+        op.post_max_us = std::max(op.post_max_us, post_us);
+        op.post_sum_us += post_us;
+        op.max_pending = std::max(op.max_pending, actually_posted - op.notify_completed);
+
         actually_posted++;
         if (should_signal) {
             signaled_count++;
@@ -373,6 +418,7 @@ void post_notify_watchers(Client& client, WatchOpCtx& op, const RegisteredWatchB
 
     // TIMING: End posting notify writes (CPU overhead)
     op.post_notify_end = std::chrono::steady_clock::now();
+    op.cpu_after_post = get_thread_cpu_usage();
 
     // Update response_target to only expect signaled completions
     op.response_target = static_cast<uint32_t>(signaled_count);
@@ -380,6 +426,7 @@ void post_notify_watchers(Client& client, WatchOpCtx& op, const RegisteredWatchB
 
     // TIMING: Start waiting for completions (NIC latency)
     op.wait_notify_start = std::chrono::steady_clock::now();
+    op.cpu_before_wait = get_thread_cpu_usage();
 
     // If queue was completely full (posted 0), force completion to avoid infinite loop
     if (actually_posted == 0 && notify_count > 0) {
@@ -519,6 +566,17 @@ void run_watch_pipeline(
         if (polled < 0) {
             throw std::runtime_error("watch pipeline: CQ poll failed");
         }
+
+        // Track polling metrics for all active notify_watchers operations
+        for (auto& op : ops) {
+            if (op.active && op.phase == WatchPhase::notify_watchers) {
+                op.poll_attempts++;
+                if (polled > 0) {
+                    op.poll_completions += polled;
+                }
+            }
+        }
+
         if (polled == 0) {
             continue;
         }
@@ -666,6 +724,7 @@ void run_watch_pipeline(
                 if (op.notify_completed >= op.response_target) {
                     // TIMING: End waiting for completions (NIC latency)
                     op.wait_notify_end = std::chrono::steady_clock::now();
+                    op.cpu_after_wait = get_thread_cpu_usage();
                     // Completed current batch - check if more watchers remain
                     if (op.notify_sent < op.total_watchers) {
                         // More watchers to notify - send next batch
@@ -837,6 +896,130 @@ void run_watch_pipeline(
     calc_stats(read_watcher_ids_latencies, "2. READ_WATCHER_IDS (RDMA_READ watcher IDs)");
     calc_stats(post_notify_latencies, "3. POST_NOTIFY (CPU: posting RDMA_WRITEs)");
     calc_stats(wait_notify_latencies, "4. WAIT_NOTIFY (NIC: waiting for completions)");
+
+    // ===== BOTTLENECK DIAGNOSIS METRICS =====
+    std::cerr << "\n========================================\n";
+    std::cerr << "[Client " << client.id() << "] BOTTLENECK DIAGNOSIS\n";
+    std::cerr << "========================================\n";
+
+    // Collect metrics from all completed notification operations
+    uint64_t total_posts = 0;
+    double total_post_us = 0;
+    double min_post_us = 1e9;
+    double max_post_us = 0;
+    uint64_t total_poll_attempts = 0;
+    uint64_t total_poll_completions = 0;
+    uint64_t max_pending_seen = 0;
+    double total_post_wall_ms = 0;
+    double total_post_cpu_ms = 0;
+    double total_wait_wall_ms = 0;
+    double total_wait_cpu_ms = 0;
+    size_t num_notify_ops = 0;
+
+    for (const auto& op : ops) {
+        if (op.post_count > 0) {
+            total_posts += op.post_count;
+            total_post_us += op.post_sum_us;
+            min_post_us = std::min(min_post_us, op.post_min_us);
+            max_post_us = std::max(max_post_us, op.post_max_us);
+            max_pending_seen = std::max(max_pending_seen, op.max_pending);
+
+            // CPU utilization during POST
+            if (op.post_notify_end > op.post_notify_start) {
+                double wall_ms = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    op.post_notify_end - op.post_notify_start).count() / 1000000.0;
+                double cpu_ms = op.cpu_after_post.total_ms() - op.cpu_before_post.total_ms();
+                total_post_wall_ms += wall_ms;
+                total_post_cpu_ms += cpu_ms;
+            }
+        }
+        if (op.poll_attempts > 0) {
+            total_poll_attempts += op.poll_attempts;
+            total_poll_completions += op.poll_completions;
+
+            // CPU utilization during WAIT
+            if (op.wait_notify_end > op.wait_notify_start) {
+                double wall_ms = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    op.wait_notify_end - op.wait_notify_start).count() / 1000000.0;
+                double cpu_ms = op.cpu_after_wait.total_ms() - op.cpu_before_wait.total_ms();
+                total_wait_wall_ms += wall_ms;
+                total_wait_cpu_ms += cpu_ms;
+                num_notify_ops++;
+            }
+        }
+    }
+
+    std::cerr << "\nPOST_NOTIFY Overhead:\n";
+    if (total_posts > 0) {
+        double avg_post_us = total_post_us / total_posts;
+        std::cerr << "  Total ibv_post_send calls: " << total_posts << "\n";
+        std::cerr << "  Avg time per post: " << std::fixed << std::setprecision(3) << avg_post_us << " μs\n";
+        std::cerr << "  Min time per post: " << min_post_us << " μs\n";
+        std::cerr << "  Max time per post: " << max_post_us << " μs\n";
+        std::cerr << "  Peak queue depth: " << max_pending_seen << " / " << QP_DEPTH << " ("
+                  << std::fixed << std::setprecision(1) << (100.0 * max_pending_seen / QP_DEPTH) << "%)\n";
+        if (total_post_wall_ms > 0) {
+            double cpu_util = (total_post_cpu_ms / total_post_wall_ms) * 100.0;
+            std::cerr << "  CPU utilization: " << std::fixed << std::setprecision(1) << cpu_util << "% "
+                      << "(wall=" << total_post_wall_ms << "ms, cpu=" << total_post_cpu_ms << "ms)\n";
+            if (cpu_util > 80.0) {
+                std::cerr << "    → HIGH CPU: Posting is CPU-bound\n";
+            } else {
+                std::cerr << "    → LOW CPU: Posting is NOT CPU-bound\n";
+            }
+        }
+    } else {
+        std::cerr << "  No POST metrics collected\n";
+    }
+
+    std::cerr << "\nWAIT_NOTIFY Overhead:\n";
+    if (total_poll_attempts > 0) {
+        double completions_per_poll = static_cast<double>(total_poll_completions) / total_poll_attempts;
+        std::cerr << "  Total ibv_poll_cq calls: " << total_poll_attempts << "\n";
+        std::cerr << "  Total completions polled: " << total_poll_completions << "\n";
+        std::cerr << "  Completions per poll: " << std::fixed << std::setprecision(2) << completions_per_poll << "\n";
+        std::cerr << "  Poll efficiency: " << std::fixed << std::setprecision(1) << (completions_per_poll * 100.0) << "%\n";
+        if (total_wait_wall_ms > 0 && num_notify_ops > 0) {
+            double cpu_util = (total_wait_cpu_ms / total_wait_wall_ms) * 100.0;
+            double avg_wait_wall = total_wait_wall_ms / num_notify_ops;
+            double avg_wait_cpu = total_wait_cpu_ms / num_notify_ops;
+            std::cerr << "  Avg wait per op: wall=" << std::fixed << std::setprecision(2) << avg_wait_wall
+                      << "ms, cpu=" << avg_wait_cpu << "ms\n";
+            std::cerr << "  CPU utilization: " << std::fixed << std::setprecision(1) << cpu_util << "%\n";
+            if (cpu_util > 80.0) {
+                std::cerr << "    → HIGH CPU: Spinning on poll (CPU bottleneck)\n";
+            } else if (cpu_util < 20.0) {
+                std::cerr << "    → LOW CPU: Waiting for NIC (NIC/network bottleneck)\n";
+            } else {
+                std::cerr << "    → MEDIUM CPU: Mixed CPU/NIC work\n";
+            }
+        }
+    } else {
+        std::cerr << "  No WAIT metrics collected\n";
+    }
+
+    std::cerr << "\nBOTTLENECK SUMMARY:\n";
+    if (max_pending_seen > QP_DEPTH * 0.9) {
+        std::cerr << "  ✗ QUEUE OVERFLOW: Peak queue depth " << max_pending_seen << " exceeds 90% of QP_DEPTH=" << QP_DEPTH << "\n";
+        std::cerr << "    → Increase QP_DEPTH or reduce concurrency\n";
+    } else {
+        std::cerr << "  ✓ Queue depth OK: Peak " << max_pending_seen << " / " << QP_DEPTH << "\n";
+    }
+
+    if (total_post_wall_ms > 0 && (total_post_cpu_ms / total_post_wall_ms) > 0.8) {
+        std::cerr << "  ⚠ POST is CPU-bound: Consider optimizing ibv_post_send() calls\n";
+    }
+
+    if (total_wait_wall_ms > 0) {
+        double wait_cpu_util = total_wait_cpu_ms / total_wait_wall_ms;
+        if (wait_cpu_util > 0.8) {
+            std::cerr << "  ⚠ WAIT is CPU-bound: Spinning on poll, NIC is keeping up\n";
+        } else if (wait_cpu_util < 0.2) {
+            std::cerr << "  ⚠ WAIT is NIC-bound: CPU waiting for completions, NIC is slow\n";
+        }
+    }
+
+    std::cerr << "========================================\n";
 
     // Calculate correlation between watcher count and latencies
     if (!notification_watcher_counts.empty() && notification_watcher_counts.size() == post_notify_latencies.size()) {
