@@ -310,11 +310,12 @@ void post_notify_watchers(Client& client, WatchOpCtx& op, const RegisteredWatchB
     op.round++;
     op.phase = WatchPhase::notify_watchers;
     op.responses = 0;
-    op.response_target = static_cast<uint32_t>(notify_count);
     const uint32_t batch_start = op.notify_sent;
 
     // For each watcher in this batch, WRITE invalidation (simulate by writing to metadata area)
     uint64_t actually_posted = 0;
+    uint64_t signaled_count = 0;  // Track how many signaled operations we post
+    constexpr uint64_t SIGNAL_STRIDE = 64;  // Signal every 64th write to reduce CPU polling overhead
     for (uint64_t i = 0; i < notify_count; ++i) {
         notify_buf[i] = 1;  // Invalidation flag
 
@@ -329,7 +330,9 @@ void post_notify_watchers(Client& client, WatchOpCtx& op, const RegisteredWatchB
         ibv_send_wr wr{}, *bad_wr = nullptr;
         wr.wr_id = encode_wr_id(op, WatchPhase::notify_watchers, static_cast<uint8_t>(target_node));
         wr.opcode = IBV_WR_RDMA_WRITE;
-        wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE;
+        // Selective signaling: signal every 64th write or the last write in batch
+        const bool should_signal = ((i % SIGNAL_STRIDE) == 0) || (i == notify_count - 1);
+        wr.send_flags = (should_signal ? IBV_SEND_SIGNALED : 0) | IBV_SEND_INLINE;
         wr.sg_list = &sge;
         wr.num_sge = 1;
         // Write to metadata area at end of watch table (simulating dirty bit)
@@ -343,10 +346,13 @@ void post_notify_watchers(Client& client, WatchOpCtx& op, const RegisteredWatchB
             break;
         }
         actually_posted++;
+        if (should_signal) {
+            signaled_count++;
+        }
     }
 
-    // Update response_target and track how many notifications we've actually sent
-    op.response_target = static_cast<uint32_t>(actually_posted);
+    // Update response_target to only expect signaled completions
+    op.response_target = static_cast<uint32_t>(signaled_count);
     op.notify_sent += static_cast<uint32_t>(actually_posted);
 
     // If queue was completely full (posted 0), force completion to avoid infinite loop
