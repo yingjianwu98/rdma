@@ -61,7 +61,7 @@ constexpr size_t NUM_OPS_PER_CLIENT = NUM_OPS / TOTAL_CLIENTS;
 constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * TOTAL_CLIENTS;
 constexpr size_t WATCH_EXTRA_NOTIFICATIONS = 10000;  // Extra notification ops for watch benchmarks (increased to stress notification phase)
 constexpr size_t MAX_TOTAL_OPS = NUM_TOTAL_OPS + WATCH_EXTRA_NOTIFICATIONS;
-constexpr size_t MAX_LOCKS = 10;  // Reduced to concentrate watchers per object (emphasizes notification bottleneck)
+constexpr size_t MAX_LOCKS = 50;  // Moderate watcher concentration
 
 // ─── CAS config ───
 // Wrapped per-lock replicated log plus owner-node control word.
