@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <iomanip>
+#include <map>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -72,6 +73,16 @@ struct WatchOpCtx {
 
     size_t latency_index = 0;
     std::chrono::steady_clock::time_point started_at{};
+
+    // Detailed timing metrics for notification phase breakdown
+    std::chrono::steady_clock::time_point read_count_start{};
+    std::chrono::steady_clock::time_point read_count_end{};
+    std::chrono::steady_clock::time_point read_watcher_ids_start{};
+    std::chrono::steady_clock::time_point read_watcher_ids_end{};
+    std::chrono::steady_clock::time_point post_notify_start{};
+    std::chrono::steady_clock::time_point post_notify_end{};
+    std::chrono::steady_clock::time_point wait_notify_start{};
+    std::chrono::steady_clock::time_point wait_notify_end{};
 };
 
 // Encode a unique watcher ID from client ID, operation slot, and request ID.
@@ -244,6 +255,9 @@ void post_read_count(Client& client, WatchOpCtx& op, const RegisteredWatchBuffer
     op.responses = 0;
     op.response_target = 1;
 
+    // TIMING: Start read_count phase
+    op.read_count_start = std::chrono::steady_clock::now();
+
     ibv_sge sge{};
     sge.addr = reinterpret_cast<uintptr_t>(result);
     sge.length = sizeof(uint64_t);
@@ -278,6 +292,9 @@ void post_read_watcher_ids(Client& client, WatchOpCtx& op, const RegisteredWatch
     op.responses = 0;
     op.response_target = 1;
 
+    // TIMING: Start read_watcher_ids phase
+    op.read_watcher_ids_start = std::chrono::steady_clock::now();
+
     ibv_sge sge{};
     sge.addr = reinterpret_cast<uintptr_t>(ids_buf);
     sge.length = read_count * sizeof(uint64_t);
@@ -311,6 +328,9 @@ void post_notify_watchers(Client& client, WatchOpCtx& op, const RegisteredWatchB
     op.phase = WatchPhase::notify_watchers;
     op.responses = 0;
     const uint32_t batch_start = op.notify_sent;
+
+    // TIMING: Start posting notify writes (CPU overhead)
+    op.post_notify_start = std::chrono::steady_clock::now();
 
     // For each watcher in this batch, WRITE invalidation (simulate by writing to metadata area)
     uint64_t actually_posted = 0;
@@ -351,9 +371,15 @@ void post_notify_watchers(Client& client, WatchOpCtx& op, const RegisteredWatchB
         }
     }
 
+    // TIMING: End posting notify writes (CPU overhead)
+    op.post_notify_end = std::chrono::steady_clock::now();
+
     // Update response_target to only expect signaled completions
     op.response_target = static_cast<uint32_t>(signaled_count);
     op.notify_sent += static_cast<uint32_t>(actually_posted);
+
+    // TIMING: Start waiting for completions (NIC latency)
+    op.wait_notify_start = std::chrono::steady_clock::now();
 
     // If queue was completely full (posted 0), force completion to avoid infinite loop
     if (actually_posted == 0 && notify_count > 0) {
@@ -433,6 +459,18 @@ void run_watch_pipeline(
     std::chrono::steady_clock::time_point notification_start_time;
     bool registration_timing_done = false;
     bool notification_timing_started = false;
+
+    // Detailed notification phase metrics collection
+    std::vector<uint64_t> read_count_latencies;
+    std::vector<uint64_t> read_watcher_ids_latencies;
+    std::vector<uint64_t> post_notify_latencies;
+    std::vector<uint64_t> wait_notify_latencies;
+    std::vector<uint64_t> notification_watcher_counts;  // Track watcher count per notification
+    read_count_latencies.reserve(notification_ops);
+    read_watcher_ids_latencies.reserve(notification_ops);
+    post_notify_latencies.reserve(notification_ops);
+    wait_notify_latencies.reserve(notification_ops);
+    notification_watcher_counts.reserve(notification_ops);
 
     // Track phase-separated latency indices
     size_t registration_latency_start = 0;
@@ -568,6 +606,9 @@ void run_watch_pipeline(
             }
 
             if (phase == WatchPhase::read_count) {
+                // TIMING: End read_count phase
+                op.read_count_end = std::chrono::steady_clock::now();
+
                 // Got watcher count, now read all watcher IDs (notification phase only)
                 op.total_watchers = buffers.count_result[op.slot];
 
@@ -599,6 +640,9 @@ void run_watch_pipeline(
             }
 
             if (phase == WatchPhase::read_watcher_ids) {
+                // TIMING: End read_watcher_ids phase
+                op.read_watcher_ids_end = std::chrono::steady_clock::now();
+
                 // Got watcher IDs, now broadcast notifications
 
                 // Validate watcher IDs
@@ -620,6 +664,8 @@ void run_watch_pipeline(
                 op.notify_completed++;
 
                 if (op.notify_completed >= op.response_target) {
+                    // TIMING: End waiting for completions (NIC latency)
+                    op.wait_notify_end = std::chrono::steady_clock::now();
                     // Completed current batch - check if more watchers remain
                     if (op.notify_sent < op.total_watchers) {
                         // More watchers to notify - send next batch
@@ -629,6 +675,29 @@ void run_watch_pipeline(
 
                     // All notifications sent! Track total notifications sent
                     total_notifications_sent += op.notify_sent;
+
+                    // Collect detailed timing metrics for this notification operation
+                    if (op.read_count_end > op.read_count_start) {
+                        read_count_latencies.push_back(
+                            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                op.read_count_end - op.read_count_start).count());
+                    }
+                    if (op.read_watcher_ids_end > op.read_watcher_ids_start) {
+                        read_watcher_ids_latencies.push_back(
+                            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                op.read_watcher_ids_end - op.read_watcher_ids_start).count());
+                    }
+                    if (op.post_notify_end > op.post_notify_start) {
+                        post_notify_latencies.push_back(
+                            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                op.post_notify_end - op.post_notify_start).count());
+                    }
+                    if (op.wait_notify_end > op.wait_notify_start) {
+                        wait_notify_latencies.push_back(
+                            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                op.wait_notify_end - op.wait_notify_start).count());
+                    }
+                    notification_watcher_counts.push_back(op.total_watchers);
 
                     latencies[op.latency_index] = std::chrono::duration_cast<std::chrono::nanoseconds>(
                         std::chrono::steady_clock::now() - op.started_at).count();
@@ -731,5 +800,103 @@ void run_watch_pipeline(
     } else {
         std::cerr << "  ✗ Check 3: Found " << invalid_watcher_ids << " invalid watcher IDs\n";
     }
+
+    // ===== DETAILED NOTIFICATION PHASE BREAKDOWN =====
+    std::cerr << "\n========================================\n";
+    std::cerr << "[Client " << client.id() << "] NOTIFICATION PHASE BREAKDOWN\n";
+    std::cerr << "========================================\n";
+
+    auto calc_stats = [](const std::vector<uint64_t>& data, const char* name) {
+        if (data.empty()) {
+            std::cerr << name << ": No data\n";
+            return;
+        }
+        std::vector<uint64_t> sorted = data;
+        std::sort(sorted.begin(), sorted.end());
+
+        double sum = 0;
+        for (uint64_t val : sorted) sum += val;
+        double mean_us = (sum / sorted.size()) / 1000.0;
+
+        auto p = [&](double percentile) -> double {
+            size_t idx = static_cast<size_t>(percentile * (sorted.size() - 1));
+            return sorted[idx] / 1000.0;
+        };
+
+        std::cerr << name << ":\n";
+        std::cerr << "  Count: " << sorted.size() << "\n";
+        std::cerr << "  Mean:  " << std::fixed << std::setprecision(2) << mean_us << " μs\n";
+        std::cerr << "  P50:   " << p(0.50) << " μs\n";
+        std::cerr << "  P90:   " << p(0.90) << " μs\n";
+        std::cerr << "  P99:   " << p(0.99) << " μs\n";
+        std::cerr << "  P99.9: " << p(0.999) << " μs\n";
+        std::cerr << "  Max:   " << p(1.0) << " μs\n";
+    };
+
+    calc_stats(read_count_latencies, "1. READ_COUNT (RDMA_READ watcher count)");
+    calc_stats(read_watcher_ids_latencies, "2. READ_WATCHER_IDS (RDMA_READ watcher IDs)");
+    calc_stats(post_notify_latencies, "3. POST_NOTIFY (CPU: posting RDMA_WRITEs)");
+    calc_stats(wait_notify_latencies, "4. WAIT_NOTIFY (NIC: waiting for completions)");
+
+    // Calculate correlation between watcher count and latencies
+    if (!notification_watcher_counts.empty() && notification_watcher_counts.size() == post_notify_latencies.size()) {
+        std::cerr << "\nWATCHER SCALING ANALYSIS:\n";
+        std::cerr << "  Total notifications: " << notification_watcher_counts.size() << "\n";
+
+        // Group by watcher count ranges
+        std::map<std::string, std::vector<uint64_t>> grouped_post_latencies;
+        std::map<std::string, std::vector<uint64_t>> grouped_wait_latencies;
+
+        for (size_t i = 0; i < notification_watcher_counts.size(); ++i) {
+            uint64_t count = notification_watcher_counts[i];
+            std::string bucket;
+            if (count == 0) bucket = "0";
+            else if (count <= 10) bucket = "1-10";
+            else if (count <= 50) bucket = "11-50";
+            else if (count <= 100) bucket = "51-100";
+            else if (count <= 500) bucket = "101-500";
+            else if (count <= 1000) bucket = "501-1000";
+            else bucket = "1001+";
+
+            if (i < post_notify_latencies.size()) {
+                grouped_post_latencies[bucket].push_back(post_notify_latencies[i]);
+            }
+            if (i < wait_notify_latencies.size()) {
+                grouped_wait_latencies[bucket].push_back(wait_notify_latencies[i]);
+            }
+        }
+
+        std::cerr << "\nPOST_NOTIFY latency by watcher count:\n";
+        for (const auto& [bucket, lats] : grouped_post_latencies) {
+            if (lats.empty()) continue;
+            auto sorted = lats;
+            std::sort(sorted.begin(), sorted.end());
+            double mean = 0;
+            for (uint64_t v : sorted) mean += v;
+            mean = (mean / sorted.size()) / 1000.0;
+            double p50 = sorted[sorted.size() / 2] / 1000.0;
+            std::cerr << "  " << std::setw(10) << std::left << bucket << ": "
+                      << "mean=" << std::fixed << std::setprecision(2) << std::setw(8) << mean << " μs, "
+                      << "p50=" << std::setw(8) << p50 << " μs, "
+                      << "samples=" << lats.size() << "\n";
+        }
+
+        std::cerr << "\nWAIT_NOTIFY latency by watcher count:\n";
+        for (const auto& [bucket, lats] : grouped_wait_latencies) {
+            if (lats.empty()) continue;
+            auto sorted = lats;
+            std::sort(sorted.begin(), sorted.end());
+            double mean = 0;
+            for (uint64_t v : sorted) mean += v;
+            mean = (mean / sorted.size()) / 1000.0;
+            double p50 = sorted[sorted.size() / 2] / 1000.0;
+            std::cerr << "  " << std::setw(10) << std::left << bucket << ": "
+                      << "mean=" << std::fixed << std::setprecision(2) << std::setw(8) << mean << " μs, "
+                      << "p50=" << std::setw(8) << p50 << " μs, "
+                      << "samples=" << lats.size() << "\n";
+        }
+    }
+
+    std::cerr << "========================================\n";
     // Phase-separated stats now aggregated and printed in main.cpp
 }
