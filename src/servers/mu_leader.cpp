@@ -875,52 +875,88 @@ void post_notify_batch(MuLeaderRuntime& rt) {
     }
 
     notif.notify_completed = 0;  // Reset for this batch
-    uint64_t signaled_count = 0;  // Track signaled writes for this batch
     constexpr uint64_t SIGNAL_STRIDE = 128;  // Match Synra's selective signaling
 
+    // PER-QP BATCHED POSTING: Group writes by target QP and post as linked list
+    // Build per-QP work request vectors
+    std::vector<std::vector<ibv_send_wr>> qp_wrs(num_followers);
+    std::vector<std::vector<ibv_sge>> qp_sges(num_followers);
+    std::vector<std::vector<uint64_t>> qp_data(num_followers);  // Store notification data
+    std::vector<uint64_t> last_write_per_qp(num_followers, 0);
+
+    // Track last write index for each QP
+    for (uint64_t i = 0; i < notify_count; ++i) {
+        const uint64_t watcher_idx = notif.notify_sent + i;
+        const size_t follower_idx = rt.follower_indices[watcher_idx % num_followers];
+        last_write_per_qp[follower_idx] = i;
+    }
+
+    // Build work requests grouped by QP
     for (uint64_t i = 0; i < notify_count; ++i) {
         const uint64_t watcher_idx = notif.notify_sent + i;
         const size_t follower_idx = rt.follower_indices[watcher_idx % num_followers];
         auto& follower = rt.peers[follower_idx];
 
-        auto* local_data = reinterpret_cast<uint64_t*>(
-            rt.local_buf + metadata_offset + (watcher_idx * sizeof(uint64_t)));
-        *local_data = notif.new_version;
+        // Allocate and initialize notification data
+        qp_data[follower_idx].push_back(notif.new_version);
+        uint64_t* local_data = &qp_data[follower_idx].back();
 
+        // Create SGE
         ibv_sge sge{};
         sge.addr = reinterpret_cast<uintptr_t>(local_data);
         sge.length = sizeof(uint64_t);
         sge.lkey = rt.local_mr->lkey;
+        qp_sges[follower_idx].push_back(sge);
 
-        // Selective signaling: signal every 128th write or the last write in batch
-        const bool should_signal = ((i % SIGNAL_STRIDE) == 0) || (i == notify_count - 1);
+        // Selective signaling: signal every 128th write or last write for this QP
+        const bool is_last_for_qp = (i == last_write_per_qp[follower_idx]);
+        const bool should_signal = ((i % SIGNAL_STRIDE) == 0) || is_last_for_qp;
 
-        ibv_send_wr wr{}, *bad_wr = nullptr;
-        wr.wr_id = (MU_NOTIFY_WR_TAG << MU_WR_TAG_SHIFT);  // Tag for notification completions
+        // Create work request
+        ibv_send_wr wr{};
+        wr.wr_id = (MU_NOTIFY_WR_TAG << MU_WR_TAG_SHIFT);
         wr.opcode = IBV_WR_RDMA_WRITE;
-        wr.sg_list = &sge;
+        wr.sg_list = &qp_sges[follower_idx][qp_wrs[follower_idx].size()];
         wr.num_sge = 1;
         wr.send_flags = IBV_SEND_INLINE | (should_signal ? IBV_SEND_SIGNALED : 0);
-
         wr.wr.rdma.remote_addr = follower.remote_addr + metadata_offset + (watcher_idx * sizeof(uint64_t));
         wr.wr.rdma.rkey = follower.rkey;
+        wr.next = nullptr;  // Will be linked later
 
-        if (ibv_post_send(follower.cm_id->qp, &wr, &bad_wr)) {
-            // QP overflow - break and wait for completions (match syndra behavior)
-            // if (MU_DEBUG) {
-            //     std::cerr << "[MuLeader debug] QP overflow at notification " << i << "/" << notify_count
-            //               << " for object " << notif.object_id << " (errno=" << errno << ")" << std::endl;
-            // }
-            break;
-        }
-        notif.notify_sent++;
+        qp_wrs[follower_idx].push_back(wr);
+    }
 
-        if (should_signal) {
-            signaled_count++;
+    // Link work requests into per-QP chains
+    for (size_t qp = 0; qp < num_followers; ++qp) {
+        for (size_t i = 0; i < qp_wrs[qp].size() - 1; ++i) {
+            qp_wrs[qp][i].next = &qp_wrs[qp][i + 1];
         }
     }
 
-    // Only expect completions for signaled writes
+    // Post batched work requests per QP (ONE call per QP instead of N calls total!)
+    uint64_t total_posted = 0;
+    uint64_t signaled_count = 0;
+    for (size_t qp = 0; qp < num_followers; ++qp) {
+        if (qp_wrs[qp].empty()) continue;
+
+        ibv_send_wr* bad_wr = nullptr;
+        if (ibv_post_send(rt.peers[rt.follower_indices[qp]].cm_id->qp, &qp_wrs[qp][0], &bad_wr)) {
+            // QP overflow - stop posting
+            break;
+        }
+
+        // Count posted writes
+        total_posted += qp_wrs[qp].size();
+
+        // Count signaled writes
+        for (const auto& wr : qp_wrs[qp]) {
+            if (wr.send_flags & IBV_SEND_SIGNALED) {
+                signaled_count++;
+            }
+        }
+    }
+
+    notif.notify_sent += total_posted;
     notif.pending_signals = signaled_count;
 }
 
