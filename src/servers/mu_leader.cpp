@@ -910,12 +910,17 @@ void post_notify_batch(MuLeaderRuntime& rt) {
     std::cerr << "[MuLeader BUILD] About to enter loop" << std::endl << std::flush;
     for (uint64_t i = 0; i < notify_count; ++i) {
         std::cerr << "[MuLeader BUILD] Iteration " << i << std::endl << std::flush;
+        std::cerr << "[MuLeader BUILD] Computing watcher_idx..." << std::endl << std::flush;
         const uint64_t watcher_idx = notif.notify_sent + i;
+        std::cerr << "[MuLeader BUILD] watcher_idx=" << watcher_idx << " num_followers=" << num_followers << std::endl << std::flush;
         const size_t follower_idx = rt.follower_indices[watcher_idx % num_followers];
+        std::cerr << "[MuLeader BUILD] follower_idx=" << follower_idx << std::endl << std::flush;
         auto& follower = rt.peers[follower_idx];
+        std::cerr << "[MuLeader BUILD] Got follower reference" << std::endl << std::flush;
 
         // Allocate and initialize notification data
         qp_data[follower_idx].push_back(notif.new_version);
+        std::cerr << "[MuLeader BUILD] Pushed data" << std::endl << std::flush;
         uint64_t* local_data = &qp_data[follower_idx].back();
 
         // Create SGE
@@ -924,6 +929,7 @@ void post_notify_batch(MuLeaderRuntime& rt) {
         sge.length = sizeof(uint64_t);
         sge.lkey = rt.local_mr->lkey;
         qp_sges[follower_idx].push_back(sge);
+        std::cerr << "[MuLeader BUILD] Pushed SGE" << std::endl << std::flush;
 
         // Selective signaling: signal every 128th write or last write for this QP
         const bool is_last_for_qp = (i == last_write_per_qp[follower_idx]);
