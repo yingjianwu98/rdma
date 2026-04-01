@@ -384,12 +384,20 @@ void post_notify_watchers(Client& client, WatchOpCtx& op, const RegisteredWatchB
 
     uint64_t signaled_count = 0;
 
+    // FIX: Track last write index for each QP to ensure we signal it
+    std::vector<uint64_t> last_write_per_qp(num_qps, 0);
+    for (uint64_t i = 0; i < notify_count; ++i) {
+        uint32_t target_qp = i % conns.size();
+        last_write_per_qp[target_qp] = i;
+    }
+
     // Build per-QP batches
     for (uint64_t i = 0; i < notify_count; ++i) {
         notify_buf[i] = 1;  // Invalidation flag
 
         const uint32_t target_node = static_cast<uint32_t>(i % conns.size());
-        const bool should_signal = ((i % SIGNAL_STRIDE) == 0) || (i == notify_count - 1);
+        const bool is_last_for_qp = (i == last_write_per_qp[target_node]);
+        const bool should_signal = ((i % SIGNAL_STRIDE) == 0) || is_last_for_qp;
 
         // Setup SGE
         ibv_sge sge{};
@@ -460,7 +468,7 @@ void post_notify_watchers(Client& client, WatchOpCtx& op, const RegisteredWatchB
         op.max_pending = std::max(op.max_pending, actually_posted - op.notify_completed);
     }
 
-    // Verification logging: Print batching statistics for debugging
+    // Enhanced verification logging with per-QP signaling details
     if (notify_count > 100) {  // Only log for substantial notifications
         std::cout << "[Client " << client.id() << " BATCH_VERIFY] "
                   << "Watchers=" << notify_count << " "
@@ -469,7 +477,29 @@ void post_notify_watchers(Client& client, WatchOpCtx& op, const RegisteredWatchB
                   << "MinBatch=" << (min_batch_size == UINT64_MAX ? 0 : min_batch_size) << " "
                   << "MaxBatch=" << max_batch_size << " "
                   << "Posted=" << actually_posted << "/" << notify_count
-                  << " (" << (100.0 * actually_posted / notify_count) << "%)\n";
+                  << " (" << (100.0 * actually_posted / notify_count) << "%)"
+                  << " Signaled=" << signaled_count << "\n";
+
+        // Per-QP detailed verification
+        for (size_t qp_idx = 0; qp_idx < num_qps; ++qp_idx) {
+            if (qp_wrs[qp_idx].empty()) continue;
+
+            // Count signaled writes for this QP
+            uint64_t qp_signaled = 0;
+            bool last_is_signaled = false;
+            for (size_t i = 0; i < qp_wrs[qp_idx].size(); ++i) {
+                if (qp_wrs[qp_idx][i].send_flags & IBV_SEND_SIGNALED) {
+                    qp_signaled++;
+                    if (i == qp_wrs[qp_idx].size() - 1) {
+                        last_is_signaled = true;
+                    }
+                }
+            }
+
+            std::cout << "  QP" << qp_idx << ": " << qp_wrs[qp_idx].size() << " writes, "
+                      << qp_signaled << " signaled"
+                      << (last_is_signaled ? " [LAST✓]" : " [LAST✗]") << "\n";
+        }
     }
 
     // TIMING: End posting notify writes (CPU overhead)
