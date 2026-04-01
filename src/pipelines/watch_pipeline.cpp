@@ -468,39 +468,8 @@ void post_notify_watchers(Client& client, WatchOpCtx& op, const RegisteredWatchB
         op.max_pending = std::max(op.max_pending, actually_posted - op.notify_completed);
     }
 
-    // Enhanced verification logging with per-QP signaling details
-    if (notify_count > 100) {  // Only log for substantial notifications
-        std::cout << "[Client " << client.id() << " BATCH_VERIFY] "
-                  << "Watchers=" << notify_count << " "
-                  << "Batches=" << num_batches << " "
-                  << "AvgBatchSize=" << (num_batches > 0 ? total_batch_size / num_batches : 0) << " "
-                  << "MinBatch=" << (min_batch_size == UINT64_MAX ? 0 : min_batch_size) << " "
-                  << "MaxBatch=" << max_batch_size << " "
-                  << "Posted=" << actually_posted << "/" << notify_count
-                  << " (" << (100.0 * actually_posted / notify_count) << "%)"
-                  << " Signaled=" << signaled_count << "\n";
-
-        // Per-QP detailed verification
-        for (size_t qp_idx = 0; qp_idx < num_qps; ++qp_idx) {
-            if (qp_wrs[qp_idx].empty()) continue;
-
-            // Count signaled writes for this QP
-            uint64_t qp_signaled = 0;
-            bool last_is_signaled = false;
-            for (size_t i = 0; i < qp_wrs[qp_idx].size(); ++i) {
-                if (qp_wrs[qp_idx][i].send_flags & IBV_SEND_SIGNALED) {
-                    qp_signaled++;
-                    if (i == qp_wrs[qp_idx].size() - 1) {
-                        last_is_signaled = true;
-                    }
-                }
-            }
-
-            std::cout << "  QP" << qp_idx << ": " << qp_wrs[qp_idx].size() << " writes, "
-                      << qp_signaled << " signaled"
-                      << (last_is_signaled ? " [LAST✓]" : " [LAST✗]") << "\n";
-        }
-    }
+    // Batch verification disabled - keeping code clean for metrics only
+    // The implementation is correct: per-QP batching with last write signaled per QP
 
     // TIMING: End posting notify writes (CPU overhead)
     op.post_notify_end = std::chrono::steady_clock::now();

@@ -1,0 +1,531 @@
+Cleaning up any leftover rdma processes...
+Cleanup complete.
+=========================================
+Running Experiment 1: 1000 ops
+=========================================
+[mu-watch-no-global-ordering ded30f5] Experiment 1: 1000 ops
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+To https://github.com/yingjianwu98/rdma.git
+   e39dd3e..ded30f5  mu-watch-no-global-ordering -> mu-watch-no-global-ordering
+Rebuilding all nodes...
+✓ All nodes rebuilt successfully
+Stopping all RDMA processes...
+Verifying all processes stopped...
+✓ All processes stopped
+Starting servers...
+✓ Servers started
+Starting client on 1 node (8 threads)...
+
+=========================================
+Results for Experiment 1:
+=========================================
+
+--- Phase Throughput & Latency ---
+ PHASE THROUGHPUT
+ PHASE THROUGHPUT
+========================================
+REGISTRATION PHASE:
+  Ops: ========================================
+REGISTRATION PHASE:
+  Ops: 125
+  Wall Clock: 125
+  Wall Clock: 0.000577 s
+  Throughput: 0.000597 s
+  Throughput: 216637 ops/s
+
+NOTIFICATION PHASE:
+209380  Ops: 250
+ ops/s
+
+========================================
+  Wall Clock: 
+NOTIFICATION PHASE:
+ PHASE THROUGHPUT
+========================================
+REGISTRATION PHASE:
+  Ops:   Ops: 250
+  Wall Clock: 0.002630 s
+  Throughput: 0.002586 s
+
+--- Phase-Separated Latency ---
+ PHASE-SEPARATED RESULTS
+==================================================
+REGISTRATION PHASE (1000 ops):
+  P50:      36.29 μs
+  P90:      49.29 μs
+  P99:      63.12 μs
+  P99.9:    72.13 μs
+
+NOTIFICATION PHASE (2000 ops):
+  P50:      82.06 μs
+  P90:      95.11 μs
+  P99:     128.01 μs
+  P99.9:   140.82 μs
+==================================================
+
+==================================================
+
+--- Overall Benchmark Summary ---
+ RDMA LOCK BENCHMARK RESULTS
+==================================================
+Strategy:                watch
+Locks:                     100
+Active Window:               8
+Zipf Skew:                0.00
+Owner Mode:            sharded
+Clients:                     8 (8 on this machine)
+Ops/Client:                125
+Total Ops:                3000
+--------------------------------------------------
+Wall Clock:              0.025 s
+Goodput:                120924 ops/s
+--------------------------------------------------
+ACQUIRE LATENCY (us)
+Mean:                    67.82
+StdDev:                  26.10
+P0  (Min):               10.55
+P50 (Med):               80.07
+P90:                     88.81
+P99:                    124.87
+
+=========================================
+Running Experiment 2: 5000 ops
+=========================================
+[mu-watch-no-global-ordering 4de36f8] Experiment 2: 5000 ops
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+To https://github.com/yingjianwu98/rdma.git
+   ded30f5..4de36f8  mu-watch-no-global-ordering -> mu-watch-no-global-ordering
+Rebuilding all nodes...
+✓ All nodes rebuilt successfully
+Stopping all RDMA processes...
+Verifying all processes stopped...
+✓ All processes stopped
+Starting servers...
+✓ Servers started
+Starting client on 1 node (8 threads)...
+
+=========================================
+Results for Experiment 2:
+=========================================
+
+--- Phase Throughput & Latency ---
+ PHASE THROUGHPUT
+========================================
+REGISTRATION PHASE:
+  Ops: 625
+  Wall Clock: 0.002574 s
+  Throughput: 242812 ops/s
+
+NOTIFICATION PHASE:
+  Ops: 250
+  Wall Clock: 0.003672 s
+  Throughput: 68082 ops/s
+========================================
+
+[VERIFICATION-START] Client 0 reached end of benchmark
+
+========================================
+[Client 0] Watch Verification
+========================================
+REGISTRATION PHASE:
+  Completed registrations: 632 / 625 ✗ MISMATCH
+
+--
+ PHASE THROUGHPUT
+========================================
+REGISTRATION PHASE:
+
+--- Phase-Separated Latency ---
+ PHASE-SEPARATED RESULTS
+==================================================
+REGISTRATION PHASE (5000 ops):
+  P50:      33.01 μs
+  P90:      42.85 μs
+  P99:      53.33 μs
+  P99.9:    66.11 μs
+
+NOTIFICATION PHASE (2000 ops):
+  P50:     122.10 μs
+  P90:     147.05 μs
+  P99:     185.14 μs
+  P99.9:   195.24 μs
+==================================================
+
+==================================================
+
+--- Overall Benchmark Summary ---
+ RDMA LOCK BENCHMARK RESULTS
+==================================================
+Strategy:                watch
+Locks:                     100
+Active Window:               8
+Zipf Skew:                0.00
+Owner Mode:            sharded
+Clients:                     8 (8 on this machine)
+Ops/Client:                625
+Total Ops:                7000
+--------------------------------------------------
+Wall Clock:              0.029 s
+Goodput:                245459 ops/s
+--------------------------------------------------
+ACQUIRE LATENCY (us)
+Mean:                    58.21
+StdDev:                  43.31
+P0  (Min):                7.72
+P50 (Med):               37.45
+P90:                    128.87
+P99:                    164.98
+
+=========================================
+Running Experiment 3: 10000 ops
+=========================================
+[mu-watch-no-global-ordering edd2628] Experiment 3: 10000 ops
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+To https://github.com/yingjianwu98/rdma.git
+   4de36f8..edd2628  mu-watch-no-global-ordering -> mu-watch-no-global-ordering
+Rebuilding all nodes...
+✓ All nodes rebuilt successfully
+Stopping all RDMA processes...
+Verifying all processes stopped...
+✓ All processes stopped
+Starting servers...
+✓ Servers started
+Starting client on 1 node (8 threads)...
+
+=========================================
+Results for Experiment 3:
+=========================================
+
+--- Phase Throughput & Latency ---
+ PHASE THROUGHPUT
+ signaled [LAST✓]
+: ========================================
+REGISTRATION PHASE:
+:   Ops: 20 writes, 1 signaled [LAST✓]
+24 writes, 1250
+  Wall Clock: 2 signaled [LAST✓]
+  QP1: 24 writes, 0.0049291 s
+ signaled  Throughput:  [LAST✓]253601 ops/s
+[Client 
+
+NOTIFICATION PHASE:
+  Ops:   QP7250 BATCH_VERIFY] 2
+  Wall Clock: Watchers=: 24 writes, 0.022463106 s
+  Throughput:  Batches=[Client 5 AvgBatchSize=21 [Client 1MinBatch= BATCH_VERIFY] Watchers=5111291115 ops/s
+========================================
+ BATCH_VERIFY]  Batches=Watchers=5 AvgBatchSize=114 Batches=23 MinBatch=5 AvgBatchSize=23 MaxBatch=22 MinBatch=23 Posted=22115/ signaled115 (  [LAST✓]21MaxBatch=[Client 
+[VERIFICATION-START] Client 
+23  QP  3Posted=: MaxBatch=24 writes, 100.0000001 signaled [LAST✓]1144[Client 3 reached end of benchmark
+ BATCH_VERIFY] 6 BATCH_VERIFY] Watchers=22101
+ Posted=
+--
+  QP1: 21 PHASE THROUGHPUT
+ writes, 563.801 signaled [LAST✓]3
+[Client 27 BATCH_VERIFY] Watchers=: 101 :  writes,   QP========================================
+
+--- Phase-Separated Latency ---
+ PHASE-SEPARATED RESULTS
+==================================================
+REGISTRATION PHASE (10000 ops):
+  P50:      31.43 μs
+  P90:      41.17 μs
+  P99:      50.03 μs
+  P99.9:    66.36 μs
+
+NOTIFICATION PHASE (2000 ops):
+  P50:     813.00 μs
+  P90:    1187.05 μs
+  P99:    1667.12 μs
+  P99.9:  2099.85 μs
+==================================================
+
+==================================================
+
+--- Overall Benchmark Summary ---
+ RDMA LOCK BENCHMARK RESULTS
+==================================================
+Strategy:                watch
+Locks:                     100
+Active Window:               8
+Zipf Skew:                0.00
+Owner Mode:            sharded
+Clients:                     8 (8 on this machine)
+Ops/Client:               1250
+Total Ops:               12000
+--------------------------------------------------
+Wall Clock:              0.049 s
+Goodput:                242969 ops/s
+--------------------------------------------------
+ACQUIRE LATENCY (us)
+Mean:                   162.52
+StdDev:                 318.36
+P0  (Min):               10.03
+P50 (Med):               33.54
+P90:                    746.32
+P99:                   1278.47
+
+=========================================
+Running Experiment 4: 30000 ops
+=========================================
+[mu-watch-no-global-ordering dd3baa9] Experiment 4: 30000 ops
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+To https://github.com/yingjianwu98/rdma.git
+   edd2628..dd3baa9  mu-watch-no-global-ordering -> mu-watch-no-global-ordering
+Rebuilding all nodes...
+✓ All nodes rebuilt successfully
+Stopping all RDMA processes...
+Verifying all processes stopped...
+✓ All processes stopped
+Starting servers...
+✓ Servers started
+Starting client on 1 node (8 threads)...
+
+=========================================
+Results for Experiment 4:
+=========================================
+
+--- Phase Throughput & Latency ---
+ PHASE THROUGHPUT
+MaxBatch=4 writes, 2 signaled [LAST✓] BATCH_VERIFY] 
+6161Watchers= writes,   QP272 Batches=========================================
+542 :  : AvgBatchSize=6360 writes, 1 writes, 1 signaled [LAST✓]
+  QP543:  signaled1 59 [LAST✓]
+ signaled Posted= writes, Posted=MinBatch= [LAST✓]REGISTRATION PHASE:
+542304 signaled295/304  QP (/295 (
+ [LAST✓]
+  QP4:  10059100MaxBatch=%)  Ops:  writes, 1 signaled [LAST✓]
+%) Signaled=37508 Signaled=
+
+  Wall Clock:   QP0: 59 writes, 8
+55 2  QP3Posted=[Client 0: 0.014338272 s
+1  Throughput: 61261542 ops/s
+/ BATCH_VERIFY] 
+NOTIFICATION PHASE:
+: 272 ( writes,   Ops: Watchers=61250
+2  Wall Clock:  signaled writes,  signaled2942 [LAST✓]  [LAST✓] signaled [LAST✓]
+0.042753  QP100.000000
+4: Batches=60 writes, %) Signaled=1  QP signaled8
+5  QP [LAST✓]1
+--
+ PHASE THROUGHPUT
+63 [LAST✓] writes, ========================================
+REGISTRATION PHASE:
+
+--- Phase-Separated Latency ---
+ PHASE-SEPARATED RESULTS
+==================================================
+REGISTRATION PHASE (30000 ops):
+  P50:      30.95 μs
+  P90:      38.96 μs
+  P99:      47.52 μs
+  P99.9:    57.56 μs
+
+NOTIFICATION PHASE (2000 ops):
+  P50:    1416.67 μs
+  P90:    1563.02 μs
+  P99:    2013.88 μs
+  P99.9:  2906.18 μs
+==================================================
+
+==================================================
+
+--- Overall Benchmark Summary ---
+ RDMA LOCK BENCHMARK RESULTS
+==================================================
+Strategy:                watch
+Locks:                     100
+Active Window:               8
+Zipf Skew:                0.00
+Owner Mode:            sharded
+Clients:                     8 (8 on this machine)
+Ops/Client:               3750
+Total Ops:               32000
+--------------------------------------------------
+Wall Clock:              0.078 s
+Goodput:                410467 ops/s
+--------------------------------------------------
+ACQUIRE LATENCY (us)
+Mean:                   115.60
+StdDev:                 337.35
+P0  (Min):                9.66
+P50 (Med):               31.55
+P90:                     42.15
+P99:                   1522.12
+
+=========================================
+Running Experiment 5: 50000 ops
+=========================================
+[mu-watch-no-global-ordering 971becb] Experiment 5: 50000 ops
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+To https://github.com/yingjianwu98/rdma.git
+   dd3baa9..971becb  mu-watch-no-global-ordering -> mu-watch-no-global-ordering
+Rebuilding all nodes...
+✓ All nodes rebuilt successfully
+Stopping all RDMA processes...
+Verifying all processes stopped...
+✓ All processes stopped
+Starting servers...
+✓ Servers started
+Starting client on 1 node (8 threads)...
+
+=========================================
+Results for Experiment 5:
+=========================================
+
+--- Phase Throughput & Latency ---
+292 MinBatch= PHASE THROUGHPUT
+10292 MaxBatch= writes, 93 Posted=2463/ signaled [LAST✓]
+463 (  QP2: ========================================
+REGISTRATION PHASE:
+102  Ops: 100 signaled%) Signaled= writes,  [LAST✓]916250 signaled [LAST✓]
+
+  Wall Clock: 
+
+  QP3:   QP102 writes, 2 signaled00.021993 s
+  Throughput:  [LAST✓]: 28418193 ops/s
+
+NOTIFICATION PHASE:
+  Ops: 
+ writes, 250  QP24
+:   Wall Clock: [Client  signaled101 writes, 0.0430382 signaled [LAST✓]
+ [LAST✓] s
+  Throughput: 
+5808  QP61 ops/s
+: ========================================
+ BATCH_VERIFY] 93Watchers= writes, 2 signaled476 [LAST✓]
+  QP Batches=2: 593 writes,  1AvgBatchSize= signaled [LAST✓]
+--
+ PHASE THROUGHPUT
+========================================
+4[Client  BATCH_VERIFY] [Client 
+
+--- Phase-Separated Latency ---
+ PHASE-SEPARATED RESULTS
+==================================================
+REGISTRATION PHASE (50000 ops):
+  P50:      27.66 μs
+  P90:      35.67 μs
+  P99:      45.50 μs
+  P99.9:    53.56 μs
+
+NOTIFICATION PHASE (2000 ops):
+  P50:    1448.80 μs
+  P90:    1624.81 μs
+  P99:    2451.82 μs
+  P99.9:  2674.89 μs
+==================================================
+
+==================================================
+
+--- Overall Benchmark Summary ---
+ RDMA LOCK BENCHMARK RESULTS
+==================================================
+Strategy:                watch
+Locks:                     100
+Active Window:               8
+Zipf Skew:                0.00
+Owner Mode:            sharded
+Clients:                     8 (8 on this machine)
+Ops/Client:               6250
+Total Ops:               52000
+--------------------------------------------------
+Wall Clock:              0.086 s
+Goodput:                602773 ops/s
+--------------------------------------------------
+ACQUIRE LATENCY (us)
+Mean:                    81.84
+StdDev:                 276.60
+P0  (Min):                9.80
+P50 (Med):               27.91
+P90:                     37.63
+P99:                   1515.77
+
+=========================================
+Running Experiment 6: 100000 ops
+=========================================
+[mu-watch-no-global-ordering 09bcb57] Experiment 6: 100000 ops
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+To https://github.com/yingjianwu98/rdma.git
+   971becb..09bcb57  mu-watch-no-global-ordering -> mu-watch-no-global-ordering
+Rebuilding all nodes...
+✓ All nodes rebuilt successfully
+Stopping all RDMA processes...
+Verifying all processes stopped...
+✓ All processes stopped
+Starting servers...
+✓ Servers started
+Starting client on 1 node (8 threads)...
+
+=========================================
+Results for Experiment 6:
+=========================================
+
+--- Phase Throughput & Latency ---
+ PHASE THROUGHPUT
+========================================
+REGISTRATION PHASE:
+  Ops: 12500
+  Wall Clock: 0.045163 s
+  Throughput: 276775 ops/s
+
+NOTIFICATION PHASE:
+  Ops: 250
+  Wall Clock: [Client 0.091661 s
+  Throughput: 12727 BATCH_VERIFY]  ops/s
+========================================
+Watchers=1007 Batches=5 AvgBatchSize=201 MinBatch=201 MaxBatch=202 Posted=1007/1007 (100.000000%) Signaled=13
+  QP0: 
+[VERIFICATION-START] Client 202 writes, 3 signaled [LAST✓]
+  QP1: 202 writes, 3 signaled [LAST✓]
+  QP2: 201 writes, 2 signaled [LAST✓]
+  QP3: 2201 writes,  reached end of benchmark
+3 signaled [LAST✓]
+
+========================================
+--
+ PHASE THROUGHPUT
+========================================
+REGISTRATION PHASE:
+
+--- Phase-Separated Latency ---
+ PHASE-SEPARATED RESULTS
+==================================================
+REGISTRATION PHASE (100000 ops):
+  P50:      28.38 μs
+  P90:      35.33 μs
+  P99:      44.06 μs
+  P99.9:    53.08 μs
+
+NOTIFICATION PHASE (2000 ops):
+  P50:    2046.57 μs
+  P90:    8039.36 μs
+  P99:   13335.17 μs
+  P99.9: 14605.32 μs
+==================================================
+
+==================================================
+
+--- Overall Benchmark Summary ---
+ RDMA LOCK BENCHMARK RESULTS
+==================================================
+Strategy:                watch
+Locks:                     100
+Active Window:               8
+Zipf Skew:                0.00
+Owner Mode:            sharded
+Clients:                     8 (8 on this machine)
+Ops/Client:              12500
+Total Ops:              102000
+--------------------------------------------------
+Wall Clock:              0.162 s
+Goodput:                629206 ops/s
+--------------------------------------------------
+ACQUIRE LATENCY (us)
+Mean:                    87.95
+StdDev:                 595.15
+P0  (Min):                8.96
+P50 (Med):               28.51
+P90:                     36.01
+P99:                   2025.65
+
+All experiments completed!
