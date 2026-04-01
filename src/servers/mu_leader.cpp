@@ -878,28 +878,28 @@ void post_notify_batch(MuLeaderRuntime& rt) {
     constexpr uint64_t SIGNAL_STRIDE = 128;  // Match Synra's selective signaling
 
     std::cerr << "[MuLeader NOTIFY_START] notify_count=" << notify_count << " sent=" << notif.notify_sent
-              << " total=" << notif.total_watchers << " num_followers=" << num_followers << std::endl;
+              << " total=" << notif.total_watchers << " num_followers=" << num_followers << std::endl << std::flush;
 
     // PER-QP BATCHED POSTING: Group writes by target QP and post as linked list
     // Build per-QP work request vectors
-    std::cerr << "[MuLeader ALLOC] Allocating vectors for " << num_followers << " followers..." << std::endl;
+    std::cerr << "[MuLeader ALLOC] Allocating vectors for " << num_followers << " followers..." << std::endl << std::flush;
     std::vector<std::vector<ibv_send_wr>> qp_wrs(num_followers);
     std::vector<std::vector<ibv_sge>> qp_sges(num_followers);
     std::vector<std::vector<uint64_t>> qp_data(num_followers);  // Store notification data
     std::vector<uint64_t> last_write_per_qp(num_followers, 0);
-    std::cerr << "[MuLeader ALLOC] Vectors allocated" << std::endl;
+    std::cerr << "[MuLeader ALLOC] Vectors allocated" << std::endl << std::flush;
 
     // Track last write index for each QP
-    std::cerr << "[MuLeader TRACK] Tracking last writes for " << notify_count << " notifications..." << std::endl;
+    std::cerr << "[MuLeader TRACK] Tracking last writes for " << notify_count << " notifications..." << std::endl << std::flush;
     for (uint64_t i = 0; i < notify_count; ++i) {
         const uint64_t watcher_idx = notif.notify_sent + i;
         const size_t follower_idx = rt.follower_indices[watcher_idx % num_followers];
         last_write_per_qp[follower_idx] = i;
     }
-    std::cerr << "[MuLeader TRACK] Tracking complete" << std::endl;
+    std::cerr << "[MuLeader TRACK] Tracking complete" << std::endl << std::flush;
 
     // Build work requests grouped by QP
-    std::cerr << "[MuLeader BUILD] Building WRs for " << notify_count << " notifications..." << std::endl;
+    std::cerr << "[MuLeader BUILD] Building WRs for " << notify_count << " notifications..." << std::endl << std::flush;
     for (uint64_t i = 0; i < notify_count; ++i) {
         const uint64_t watcher_idx = notif.notify_sent + i;
         const size_t follower_idx = rt.follower_indices[watcher_idx % num_followers];

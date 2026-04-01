@@ -128,3 +128,29 @@ Verifying all processes stopped...
 Starting servers...
 ✓ Servers started
 Starting client on 1 node (8 threads)...
+
+=========================================
+Results for Experiment 5:
+=========================================
+
+--- Phase Throughput & Latency ---
+
+--- Phase-Separated Latency ---
+
+--- Overall Benchmark Summary ---
+
+=========================================
+Running Experiment 6: 100000 ops
+=========================================
+[mu-watch-no-global-ordering a7cc79d] Experiment 6: 100000 ops
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+To https://github.com/yingjianwu98/rdma.git
+   46af619..a7cc79d  mu-watch-no-global-ordering -> mu-watch-no-global-ordering
+Rebuilding all nodes...
+✓ All nodes rebuilt successfully
+Stopping all RDMA processes...
+Verifying all processes stopped...
+✓ All processes stopped
+Starting servers...
+✓ Servers started
+Starting client on 1 node (8 threads)...
