@@ -154,3 +154,15 @@ Verifying all processes stopped...
 Starting servers...
 ✓ Servers started
 Starting client on 1 node (8 threads)...
+
+=========================================
+Results for Experiment 6:
+=========================================
+
+--- Phase Throughput & Latency ---
+
+--- Phase-Separated Latency ---
+
+--- Overall Benchmark Summary ---
+
+All experiments completed!

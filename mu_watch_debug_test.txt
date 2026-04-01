@@ -1,0 +1,6 @@
+=========================================
+Running Mu Watch Benchmark
+=========================================
+
+Setting strategy to 'mu_watch'...
+bash: line 1: cd: /users/stevie98/rdma: No such file or directory

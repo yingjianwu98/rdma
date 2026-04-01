@@ -887,6 +887,13 @@ void post_notify_batch(MuLeaderRuntime& rt) {
     std::vector<std::vector<ibv_sge>> qp_sges(num_followers);
     std::vector<std::vector<uint64_t>> qp_data(num_followers);  // Store notification data
     std::vector<uint64_t> last_write_per_qp(num_followers, 0);
+
+    // Reserve space to prevent reallocation (which would invalidate pointers)
+    for (size_t i = 0; i < num_followers; ++i) {
+        qp_wrs[i].reserve(notify_count);
+        qp_sges[i].reserve(notify_count);
+        qp_data[i].reserve(notify_count);
+    }
     std::cerr << "[MuLeader ALLOC] Vectors allocated" << std::endl << std::flush;
 
     // Track last write index for each QP

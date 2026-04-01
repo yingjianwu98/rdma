@@ -14,13 +14,13 @@ echo ""
 
 # Update strategy in main.cpp
 echo "Setting strategy to 'mu_watch'..."
-ssh $SSH_OPTS "${NODES[0]}" "cd ~/rdma && sed -i 's/constexpr const char\* STRATEGY = \".*\";/constexpr const char* STRATEGY = \"mu_watch\";/' src/main.cpp"
+ssh $SSH_OPTS "${NODES[0]}" "cd /local/rdma && sed -i 's/constexpr const char\* STRATEGY = \".*\";/constexpr const char* STRATEGY = \"mu_watch\";/' src/main.cpp"
 
 # Recompile on all nodes
 echo "Recompiling on all nodes..."
 for i in $(seq 0 $((NUM_NODES-1))); do
     node="${NODES[$i]}"
-    ssh $SSH_OPTS "$node" "cd ~/rdma/build && make -j > /dev/null 2>&1" &
+    ssh $SSH_OPTS "$node" "cd /local/rdma/build && make -j > /dev/null 2>&1" &
 done
 wait
 echo "✓ Recompiled"
@@ -31,7 +31,7 @@ echo "Starting $NUM_NODES server processes..."
 for i in $(seq 0 $((NUM_NODES-1))); do
     node="${NODES[$i]}"
     echo "  Starting server on Node$i ($node)..."
-    ssh $SSH_OPTS "$node" "bash -c 'RAW_ID=\$(ip -4 addr show ibp8s0 | grep inet | awk \"{print \\\$2}\" | cut -d. -f4 | cut -d/ -f1); NODE_ID=\$((RAW_ID - 1)); cd ~/rdma/build && sudo NODE_ID=\$NODE_ID IS_CLIENT=0 nohup ./rdma > server_\${NODE_ID}.log 2>&1 < /dev/null &'" > /dev/null 2>&1
+    ssh $SSH_OPTS "$node" "bash -c 'RAW_ID=\$(ip -4 addr show ibp8s0 | grep inet | awk \"{print \\\$2}\" | cut -d. -f4 | cut -d/ -f1); NODE_ID=\$((RAW_ID - 1)); cd /local/rdma/build && sudo NODE_ID=\$NODE_ID IS_CLIENT=0 nohup ./rdma > server_\${NODE_ID}.log 2>&1 < /dev/null &'" > /dev/null 2>&1
 done
 sleep 5
 echo "✓ Servers started"
@@ -41,7 +41,7 @@ echo ""
 echo "Running client on Node0..."
 echo "(This will take ~30 seconds...)"
 echo ""
-ssh $SSH_OPTS "${NODES[0]}" "cd ~/rdma/build && sudo IS_CLIENT=1 MACHINE_ID=0 ./rdma" | tee mu_watch_results.txt
+ssh $SSH_OPTS "${NODES[0]}" "cd /local/rdma/build && sudo IS_CLIENT=1 MACHINE_ID=0 ./rdma" | tee mu_watch_results.txt
 
 echo ""
 echo "✓ Benchmark complete!"
