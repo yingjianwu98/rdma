@@ -1,5 +1,5 @@
 #!/bin/bash
-# Auto-generated cluster configuration (3 working nodes - apt130/apt131 excluded due to hardware issues)
-NUM_NODES=3
-NODES=(stevie98@apt129.apt.emulab.net stevie98@apt132.apt.emulab.net stevie98@apt136.apt.emulab.net)
-IPS=(128.110.96.129 128.110.96.132 128.110.96.136)
+# 5-node server cluster
+NUM_NODES=5
+NODES=(stevie98@apt083.apt.emulab.net stevie98@apt081.apt.emulab.net stevie98@apt138.apt.emulab.net stevie98@apt176.apt.emulab.net stevie98@apt072.apt.emulab.net)
+IPS=(192.168.1.1 192.168.1.2 192.168.1.3 192.168.1.4 192.168.1.5)

@@ -909,44 +909,38 @@ void post_notify_batch(MuLeaderRuntime& rt) {
     std::cerr << "[MuLeader BUILD] Building WRs for " << notify_count << " notifications..." << std::endl << std::flush;
     std::cerr << "[MuLeader BUILD] About to enter loop" << std::endl << std::flush;
     for (uint64_t i = 0; i < notify_count; ++i) {
-        std::cerr << "[MuLeader BUILD] Iteration " << i << std::endl << std::flush;
-        std::cerr << "[MuLeader BUILD] Computing watcher_idx..." << std::endl << std::flush;
         const uint64_t watcher_idx = notif.notify_sent + i;
-        std::cerr << "[MuLeader BUILD] watcher_idx=" << watcher_idx << " num_followers=" << num_followers << std::endl << std::flush;
-        const size_t follower_idx = rt.follower_indices[watcher_idx % num_followers];
-        std::cerr << "[MuLeader BUILD] follower_idx=" << follower_idx << std::endl << std::flush;
-        auto& follower = rt.peers[follower_idx];
-        std::cerr << "[MuLeader BUILD] Got follower reference" << std::endl << std::flush;
+        const size_t follower_pos = watcher_idx % num_followers;  // Position in follower array (0 to num_followers-1)
+        const size_t peer_idx = rt.follower_indices[follower_pos];  // Actual peer index
+        auto& follower = rt.peers[peer_idx];
 
         // Allocate and initialize notification data
-        qp_data[follower_idx].push_back(notif.new_version);
-        std::cerr << "[MuLeader BUILD] Pushed data" << std::endl << std::flush;
-        uint64_t* local_data = &qp_data[follower_idx].back();
+        qp_data[follower_pos].push_back(notif.new_version);
+        uint64_t* local_data = &qp_data[follower_pos].back();
 
         // Create SGE
         ibv_sge sge{};
         sge.addr = reinterpret_cast<uintptr_t>(local_data);
         sge.length = sizeof(uint64_t);
         sge.lkey = rt.local_mr->lkey;
-        qp_sges[follower_idx].push_back(sge);
-        std::cerr << "[MuLeader BUILD] Pushed SGE" << std::endl << std::flush;
+        qp_sges[follower_pos].push_back(sge);
 
         // Selective signaling: signal every 128th write or last write for this QP
-        const bool is_last_for_qp = (i == last_write_per_qp[follower_idx]);
+        const bool is_last_for_qp = (i == last_write_per_qp[follower_pos]);
         const bool should_signal = ((i % SIGNAL_STRIDE) == 0) || is_last_for_qp;
 
         // Create work request
         ibv_send_wr wr{};
         wr.wr_id = (MU_NOTIFY_WR_TAG << MU_WR_TAG_SHIFT);
         wr.opcode = IBV_WR_RDMA_WRITE;
-        wr.sg_list = &qp_sges[follower_idx][qp_wrs[follower_idx].size()];
+        wr.sg_list = &qp_sges[follower_pos][qp_wrs[follower_pos].size()];
         wr.num_sge = 1;
         wr.send_flags = IBV_SEND_INLINE | (should_signal ? IBV_SEND_SIGNALED : 0);
         wr.wr.rdma.remote_addr = follower.remote_addr + metadata_offset + (watcher_idx * sizeof(uint64_t));
         wr.wr.rdma.rkey = follower.rkey;
         wr.next = nullptr;  // Will be linked later
 
-        qp_wrs[follower_idx].push_back(wr);
+        qp_wrs[follower_pos].push_back(wr);
     }
     std::cerr << "[MuLeader BUILD] WR building complete" << std::endl;
 
