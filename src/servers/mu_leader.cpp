@@ -877,6 +877,9 @@ void post_notify_batch(MuLeaderRuntime& rt) {
     notif.notify_completed = 0;  // Reset for this batch
     constexpr uint64_t SIGNAL_STRIDE = 128;  // Match Synra's selective signaling
 
+    std::cerr << "[MuLeader NOTIFY_START] notify_count=" << notify_count << " sent=" << notif.notify_sent
+              << " total=" << notif.total_watchers << " num_followers=" << num_followers << std::endl;
+
     // PER-QP BATCHED POSTING: Group writes by target QP and post as linked list
     // Build per-QP work request vectors
     std::vector<std::vector<ibv_send_wr>> qp_wrs(num_followers);
@@ -936,11 +939,17 @@ void post_notify_batch(MuLeaderRuntime& rt) {
     // Post batched work requests per QP (ONE call per QP instead of N calls total!)
     uint64_t total_posted = 0;
     uint64_t signaled_count = 0;
+    std::cerr << "[MuLeader POSTING] num_followers=" << num_followers << std::endl;
     for (size_t qp = 0; qp < num_followers; ++qp) {
-        if (qp_wrs[qp].empty()) continue;
+        if (qp_wrs[qp].empty()) {
+            std::cerr << "[MuLeader POST] QP " << qp << " empty, skipping" << std::endl;
+            continue;
+        }
 
+        std::cerr << "[MuLeader POST] QP " << qp << " posting " << qp_wrs[qp].size() << " WRs..." << std::endl;
         ibv_send_wr* bad_wr = nullptr;
         if (ibv_post_send(rt.peers[rt.follower_indices[qp]].cm_id->qp, &qp_wrs[qp][0], &bad_wr)) {
+            std::cerr << "[MuLeader POST_ERROR] QP " << qp << " post failed, stopping" << std::endl;
             // QP overflow - stop posting
             break;
         }
@@ -954,8 +963,11 @@ void post_notify_batch(MuLeaderRuntime& rt) {
                 signaled_count++;
             }
         }
+        std::cerr << "[MuLeader POST_OK] QP " << qp << " posted " << qp_wrs[qp].size()
+                  << " WRs, signaled=" << signaled_count << std::endl;
     }
 
+    std::cerr << "[MuLeader NOTIFY_END] total_posted=" << total_posted << " signaled=" << signaled_count << std::endl;
     notif.notify_sent += total_posted;
     notif.pending_signals = signaled_count;
 }
