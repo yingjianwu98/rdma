@@ -907,7 +907,9 @@ void post_notify_batch(MuLeaderRuntime& rt) {
 
     // Build work requests grouped by QP
     std::cerr << "[MuLeader BUILD] Building WRs for " << notify_count << " notifications..." << std::endl << std::flush;
+    std::cerr << "[MuLeader BUILD] About to enter loop" << std::endl << std::flush;
     for (uint64_t i = 0; i < notify_count; ++i) {
+        std::cerr << "[MuLeader BUILD] Iteration " << i << std::endl << std::flush;
         const uint64_t watcher_idx = notif.notify_sent + i;
         const size_t follower_idx = rt.follower_indices[watcher_idx % num_followers];
         auto& follower = rt.peers[follower_idx];
