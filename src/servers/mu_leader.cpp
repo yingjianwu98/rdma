@@ -882,19 +882,24 @@ void post_notify_batch(MuLeaderRuntime& rt) {
 
     // PER-QP BATCHED POSTING: Group writes by target QP and post as linked list
     // Build per-QP work request vectors
+    std::cerr << "[MuLeader ALLOC] Allocating vectors for " << num_followers << " followers..." << std::endl;
     std::vector<std::vector<ibv_send_wr>> qp_wrs(num_followers);
     std::vector<std::vector<ibv_sge>> qp_sges(num_followers);
     std::vector<std::vector<uint64_t>> qp_data(num_followers);  // Store notification data
     std::vector<uint64_t> last_write_per_qp(num_followers, 0);
+    std::cerr << "[MuLeader ALLOC] Vectors allocated" << std::endl;
 
     // Track last write index for each QP
+    std::cerr << "[MuLeader TRACK] Tracking last writes for " << notify_count << " notifications..." << std::endl;
     for (uint64_t i = 0; i < notify_count; ++i) {
         const uint64_t watcher_idx = notif.notify_sent + i;
         const size_t follower_idx = rt.follower_indices[watcher_idx % num_followers];
         last_write_per_qp[follower_idx] = i;
     }
+    std::cerr << "[MuLeader TRACK] Tracking complete" << std::endl;
 
     // Build work requests grouped by QP
+    std::cerr << "[MuLeader BUILD] Building WRs for " << notify_count << " notifications..." << std::endl;
     for (uint64_t i = 0; i < notify_count; ++i) {
         const uint64_t watcher_idx = notif.notify_sent + i;
         const size_t follower_idx = rt.follower_indices[watcher_idx % num_followers];
@@ -928,13 +933,16 @@ void post_notify_batch(MuLeaderRuntime& rt) {
 
         qp_wrs[follower_idx].push_back(wr);
     }
+    std::cerr << "[MuLeader BUILD] WR building complete" << std::endl;
 
     // Link work requests into per-QP chains
+    std::cerr << "[MuLeader LINK] Linking WRs into chains..." << std::endl;
     for (size_t qp = 0; qp < num_followers; ++qp) {
         for (size_t i = 0; i < qp_wrs[qp].size() - 1; ++i) {
             qp_wrs[qp][i].next = &qp_wrs[qp][i + 1];
         }
     }
+    std::cerr << "[MuLeader LINK] Linking complete" << std::endl;
 
     // Post batched work requests per QP (ONE call per QP instead of N calls total!)
     uint64_t total_posted = 0;
