@@ -1,0 +1,44 @@
+Cleaning up any leftover rdma processes...
+Cleanup complete.
+=========================================
+Running Experiment 1: 1000 ops
+=========================================
+[mu-watch-no-global-ordering 27133c5] Experiment 1: 1000 ops
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+To https://github.com/yingjianwu98/rdma.git
+   e97971a..27133c5  mu-watch-no-global-ordering -> mu-watch-no-global-ordering
+Rebuilding all nodes...
+✓ All nodes rebuilt successfully
+Stopping all RDMA processes...
+Verifying all processes stopped...
+✓ All processes stopped
+Starting servers...
+✓ Servers started
+Starting client on 1 node (8 threads)...
+bash: line 1: 55364 Killed                  sudo IS_CLIENT=1 MACHINE_ID=0 timeout 300 ./rdma 2>&1
+
+=========================================
+Results for Experiment 1:
+=========================================
+
+--- Phase Throughput & Latency ---
+
+--- Phase-Separated Latency ---
+
+--- Overall Benchmark Summary ---
+
+=========================================
+Running Experiment 2: 5000 ops
+=========================================
+[mu-watch-no-global-ordering 8d5217c] Experiment 2: 5000 ops
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+To https://github.com/yingjianwu98/rdma.git
+   27133c5..8d5217c  mu-watch-no-global-ordering -> mu-watch-no-global-ordering
+Rebuilding all nodes...
+✓ All nodes rebuilt successfully
+Stopping all RDMA processes...
+Verifying all processes stopped...
+✓ All processes stopped
+Starting servers...
+✓ Servers started
+Starting client on 1 node (8 threads)...

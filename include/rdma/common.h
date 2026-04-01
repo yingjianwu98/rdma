@@ -104,7 +104,7 @@ constexpr uint32_t TICKET_FAA_TURN_SPIN_FAR = 0;
 
 constexpr size_t MU_ACTIVE_WINDOW = 8;
 constexpr size_t MU_CQ_BATCH = 128;  // Match Synra's CQ batch size for fair polling comparison
-constexpr uint32_t MU_CLIENT_SEND_SIGNAL_EVERY = 128;  // Match Synra's signaling stride (was 4)
+constexpr uint32_t MU_CLIENT_SEND_SIGNAL_EVERY = 4;  // Must be < active_window to avoid send queue deadlock
 constexpr uint32_t MU_SERVER_SEND_SIGNAL_EVERY = 1;  // Signal every op to reduce tail latency
 constexpr double MU_ZIPF_SKEW = 0.0;  // Match watch_pipeline: uniform distribution
 constexpr bool MU_DEBUG = false;
