@@ -947,8 +947,10 @@ void post_notify_batch(MuLeaderRuntime& rt) {
     // Link work requests into per-QP chains
     std::cerr << "[MuLeader LINK] Linking WRs into chains..." << std::endl;
     for (size_t qp = 0; qp < num_followers; ++qp) {
-        for (size_t i = 0; i < qp_wrs[qp].size() - 1; ++i) {
-            qp_wrs[qp][i].next = &qp_wrs[qp][i + 1];
+        if (qp_wrs[qp].size() > 1) {
+            for (size_t i = 0; i < qp_wrs[qp].size() - 1; ++i) {
+                qp_wrs[qp][i].next = &qp_wrs[qp][i + 1];
+            }
         }
     }
     std::cerr << "[MuLeader LINK] Linking complete" << std::endl;
