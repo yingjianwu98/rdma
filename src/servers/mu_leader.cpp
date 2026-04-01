@@ -963,10 +963,11 @@ void post_notify_batch(MuLeaderRuntime& rt) {
             continue;
         }
 
-        std::cerr << "[MuLeader POST] QP " << qp << " posting " << qp_wrs[qp].size() << " WRs..." << std::endl;
+        const size_t peer_idx = rt.follower_indices[qp];
+        std::cerr << "[MuLeader POST] QP " << qp << " (peer " << peer_idx << ") posting " << qp_wrs[qp].size() << " WRs..." << std::endl;
         ibv_send_wr* bad_wr = nullptr;
-        if (ibv_post_send(rt.peers[rt.follower_indices[qp]].cm_id->qp, &qp_wrs[qp][0], &bad_wr)) {
-            std::cerr << "[MuLeader POST_ERROR] QP " << qp << " post failed, stopping" << std::endl;
+        if (ibv_post_send(rt.peers[peer_idx].cm_id->qp, &qp_wrs[qp][0], &bad_wr)) {
+            std::cerr << "[MuLeader POST_ERROR] QP " << qp << " (peer " << peer_idx << ") post failed, stopping" << std::endl;
             // QP overflow - stop posting
             break;
         }
